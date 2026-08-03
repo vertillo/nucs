@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+import app.api.auth as auth_module
 import app.db as db_module
+import app.security as security_module
 from app.config import get_settings
+from app.main import create_app, ensure_admin_exists, run_migrations, seed_settings_if_empty
+
+ADMIN_USERNAME = "admin"
+ADMIN_CREDENTIAL = "fixture-only-credential-123"
 
 
 @pytest.fixture
@@ -14,14 +21,49 @@ def app_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("COVERS_DIR", str(tmp_path / "data" / "covers"))
     monkeypatch.setenv("MUSIC_LIBRARY_PATH", str(tmp_path / "music"))
-    _reset_db_state()
+    monkeypatch.setenv("ADMIN_USERNAME", ADMIN_USERNAME)
+    monkeypatch.setenv("ADMIN_PASSWORD", ADMIN_CREDENTIAL)
+    _reset_state()
     yield tmp_path
-    _reset_db_state()
+    _reset_state()
     get_settings.cache_clear()
 
 
-def _reset_db_state() -> None:
-    """Drop the cached engine/session factory so a new DATA_DIR is used."""
+@pytest.fixture
+def make_client(app_env, monkeypatch):
+    """Factory building an AsyncClient (ASGITransport) bound to a fresh app.
+
+    ASGITransport does not execute the lifespan, so startup steps run explicitly.
+    Default base URL is https so that Secure cookies are sent back by httpx.
+    """
+
+    def _make(env: dict[str, str] | None = None, base_url: str = "https://testserver") -> AsyncClient:
+        for key, value in (env or {}).items():
+            monkeypatch.setenv(key, value)
+        get_settings.cache_clear()
+        application = create_app()
+        run_migrations()
+        seed_settings_if_empty()
+        ensure_admin_exists()
+        security_module.login_limiter.reset()
+        security_module.password_change_limiter.reset()
+        auth_module._block_logged_at.clear()
+        return AsyncClient(transport=ASGITransport(app=application), base_url=base_url)
+
+    return _make
+
+
+@pytest.fixture
+async def client(make_client):
+    async with make_client() as test_client:
+        yield test_client
+
+
+def _reset_state() -> None:
+    """Drop the cached engine/session factory, rate limiters and settings."""
     db_module._ENGINE = None
     db_module._SESSION_FACTORY = None
+    security_module.login_limiter.reset()
+    security_module.password_change_limiter.reset()
+    auth_module._block_logged_at.clear()
     get_settings.cache_clear()

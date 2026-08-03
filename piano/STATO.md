@@ -6,11 +6,63 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **01 (completata)** → prossima: 02
-- Fasi completate: 00, 01
-- Branch attivo: `fase-01` (da merge su main dopo review)
-- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante)
+- Fase corrente: **03** → aprire `piano/fasi/fase-03-scan-libreria.md`
+- Fasi completate: 00, 01, 02
+- Branch attivo: `fase-03-scan-libreria` (fase-02 mergiata su main dopo review)
+- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## FASE 02 — Autenticazione, sessioni, rate limiting, header di sicurezza — 2026-08-03
+- Branch: fase-02 (il prompt diceva "lavora sul branch corrente (fase-02)" ma il branch corrente era `main`: creato `fase-02` da `main` — interpretazione annotata)
+- Cosa è stato fatto:
+  - `backend/requirements.txt`: aggiunti `argon2-cffi==25.1.0` e `python-multipart==0.0.32` (commento inline: richiesto da FastAPI per endpoint form). Installate e verificate su Python 3.12.13.
+  - `backend/app/security.py`: hash/verify argon2id (parametri default argon2-cffi: time=3, mem=64MiB ≥ floor 32MiB, par=4); `DUMMY_HASH` precalcolato a modulo per verifica a tempo costante su username inesistente; sessioni opache (`secrets.token_urlsafe(32)`, nel DB solo sha256 hex 64 char, `expires_at`=now+7gg, rolling renewal se <3gg); `revoke_session`/`revoke_other_sessions`/`cleanup_expired_sessions`/`list_active_sessions`; `LoginRateLimiter` in-memoria (finestra scorrevole 5 tentativi/5min per IP; 10 fallimenti consecutivi globali → blocco 15min con Retry-After; reset su successo); `parse_trusted_networks`/`resolve_client_ip` (X-Forwarded-For solo da proxy fidati, ultimo IP della lista); helpers `get_setting`/`set_setting`/`create_admin_user`.
+  - `backend/app/services/audit.py`: `log_event(db, event, ip, detail)` con redazione difensiva delle chiavi sensibili (password/token/secret/cookie/authorization → `[redacted]`) prima del persist JSON; costanti evento (`login_ok`, `login_fail`, `logout`, `password_change`, `settings_change`).
+  - `backend/app/deps.py`: `require_user` (cookie `nucs_session` → `verify_session`, 401 `{"detail":"Not authenticated"}`, aggiorna `last_seen_at`) esportata per i router futuri; `get_client_ip` (legge `request.state.client_ip` dal middleware).
+  - `backend/app/api/auth.py` (prefix `/api/v1/auth`): POST `/login` (rate limit 429+Retry-After → dummy verify → 401 generico "Invalid credentials"; successo → audit `login_ok`, 204 + Set-Cookie HttpOnly/SameSite=Lax/Path=/Secure-salvo-DEV_INSECURE_COOKIES/Max-Age=604800, nessun Domain), POST `/logout` (revoca + cancella cookie + audit), GET `/me` (`{username, theme}` da settings), POST `/password` (verifica attuale → 400 "Current password is incorrect", policy ≥12 via pydantic, re-hash, revoca altre sessioni, audit `password_change`), GET `/sessions` (id=hash troncato 8 char, ip, user_agent, last_seen_at, current), POST `/sessions/revoke-others`.
+  - `backend/app/main.py`: `SecurityHeadersMiddleware` (CSP §5.5, nosniff, DENY, Referrer-Policy, Permissions-Policy, X-Robots-Tag: noindex, HSTS solo se scheme=https, rimozione Server/X-Powered-By a livello app), `OriginCheckMiddleware` (POST/PUT/PATCH/DELETE richiedono X-Requested-With: XMLHttpRequest E Origin/Referer con netloc == Host → 403 `{"detail":"Forbidden"}`, nessuna eccezione), `ClientIPMiddleware` (risolve IP effettivo con `ipaddress` + TRUSTED_PROXY_CIDRS in `request.state.client_ip`); ordine: headers outermost. `ensure_admin_exists()` al boot (manca admin → da env con policy check + log "admin created from env", altrimenti `sys.exit(1)` con messaggio che indica il comando CLI); job asyncio orario di cleanup sessioni scadute nel lifespan; route `/robots.txt` ("User-agent: *\nDisallow: /"); auth router incluso.
+  - `backend/app/cli.py`: `python -m app.cli create-admin <username> <password>` (argparse) con policy ≥12 (exit 2 + stderr), migrazioni applicate prima della creazione.
+  - `backend/app/schemas.py`: `LoginRequest`, `PasswordChangeRequest` (pydantic, lunghezze max; `new_password` min 12).
+  - Test: `tests/test_security.py` (24 unit test: hashing, dummy hash, sessioni CRUD/rolling/scadenza, rate limiter window/slide/reset/lockout/expiry, CIDR parsing, XFF trust, redazione audit) e `tests/test_auth.py` (26 test API con httpx AsyncClient + ASGITransport: login ok/ko identico messaggio, dummy-verify su utente ignoto, cookie flags ± DEV_INSECURE_COOKIES, 6° tentativo → 429 + Retry-After, reset contatori su successo, lockout globale, 401 senza cookie su tutti gli endpoint, 403 senza X-Requested-With/Origin/Referer o con Origin estraneo, Referer valido accettato, logout/revoca, cambio password che revoca altre sessioni, lista sessioni + revoke-others, header sicurezza, HSTS solo https, robots.txt, XFF fidato/non fidato, boot senza admin → SystemExit, boot con password corta → SystemExit, CLI create-admin).
+- Versioni dipendenze introdotte: argon2-cffi 25.1.0, python-multipart 0.0.32 (esatte, `==`).
+- Decisioni prese (e perché):
+  - Cookie di test: fixture `make_client` usa base_url `https://testserver` perché httpx non rispedisce cookie `Secure` su http; test dedicato per `DEV_INSECURE_COOKIES=true`.
+  - ASGITransport non esegue il lifespan FastAPI: le fixture eseguono esplicitamente `run_migrations()`/`seed_settings_if_empty()`/`ensure_admin_exists()` (documentato in conftest).
+  - Contatore globale del rate limiter azzerato allo scattare del blocco (dopo i 15 min si riparte da zero): interpretazione semplice di "i contatori si resettano" estesa al lockout; commento nel codice.
+  - `pyproject.toml`: `testpaths` da `backend/tests` a `tests` (il prompt di verifica di fase 02 esegue `python -m pytest -q` da `backend/`; con il valore precedente non trovava i test), aggiunto `asyncio_mode = "auto"` (pytest-asyncio), `extend-immutable-calls` per `fastapi.Depends` (B008), per-file-ignores S105/S106 su `tests/**` con doppia glob (`tests/**` e `backend/tests/**`) perché la CI invoca ruff da root.
+  - `.coverage` aggiunto a `.gitignore` (artefatto pytest-cov).
+- Deviazioni dalle specifiche (approvate da chi): nessuna.
+- Ambiguità riscontrate (interpretazione scelta):
+  - §5.5 "Nessun header Server esposto": il middleware ASGI rimuove header app-level, ma **uvicorn aggiunge `server: uvicorn` a livello protocollo**, fuori portata del middleware (verificato con curl: header presente). Fix = `--no-server-header` nel CMD uvicorn del Dockerfile → **rimandato alla fase 11** (annotato qui e nei problemi aperti).
+  - "Lavora sul branch corrente (fase-02)": il branch corrente era `main`; creato `fase-02` (come da nome nel prompt, non `fase-02-auth` dell'header del file di fase).
+- Esito verifica (comandi eseguiti e risultato):
+  - `cd backend && .venv/bin/python -m pytest -q` → **58 passed** (4.0s)
+  - `.venv/bin/ruff check .` + `ruff format --check .` → OK; anche invocazione CI da root (`ruff check backend/ --config backend/pyproject.toml`) → OK
+  - Coverage: `app/security.py` **100%**, `app/services/audit.py` **100%**, TOTAL 98% (target §13 ≥70% superato)
+  - Boot senza admin: `DATA_DIR=/tmp/nucs-d2a uvicorn ...` → processo esce (code 3) con msg "no admin user configured: set ADMIN_USERNAME and ADMIN_PASSWORD ... python -m app.cli create-admin <username> <password>"
+  - Boot con env: log "admin created from env"; login sbagliato → 401 `{"detail":"Invalid credentials"}`; login giusto → 204 + `Set-Cookie: nucs_session=...; HttpOnly; Max-Age=604800; Path=/; SameSite=lax; Secure`; `/me` senza cookie → 401, con cookie → 200 `{"username":"admin","theme":"dark"}`; login senza X-Requested-With → 403; 6° tentativo → 429 `Retry-After: 300`; header sicurezza tutti presenti su `/api/health`; `/robots.txt` → `Disallow: /`
+  - DB reale ispezionato: `sessions.id_hash` solo hex 64 char, token in chiaro assente (assert su token noto); audit_log con eventi `login_ok`/`login_fail` e detail `{"username":"admin"}` (nessun segreto)
+  - CLI: `create-admin cliuser 'cli-password-lunga-1'` → creato (`$argon2id$` nel DB); password corta → exit 2 + stderr
+  - Grep segreti: `grep -rniE "(logger\.(info|warning|error|exception|debug)|logging\.|print\()" backend/app --include="*.py" | grep -iE "password|token|secret|cookie"` → **nessun risultato** (il grep più ampio del prompt di verifica matcha solo un import e file .pyc binari: nessun log statement contiene segreti)
+- Esito review (modello avanzato, 2026-08-03): 3 findings **MEDIA** + 6 BASSA, tutti risolti con fix minimi:
+  - **MEDIA** — `POST /auth/password` senza rate limit né audit sui fallimenti → limiter dedicato (chiave `IP|id_sessione`, 5/5min, 429+Retry-After) + evento audit `password_fail` (`app/api/auth.py`).
+  - **MEDIA** — HSTS mai emesso dietro cloudflared/tailscale (l'origin vede sempre scheme http) → HSTS emesso anche con `X-Forwarded-Proto: https`, ma **solo** da peer in `TRUSTED_PROXY_CIDRS` (`is_trusted_peer` in `app/security.py`, middleware in `app/main.py`).
+  - **MEDIA** — `LoginRateLimiter`: crescita memoria illimitata → rimozione chiavi vuote dopo pruning + cap `max_tracked_ips` (default 100k) con eviction.
+  - **BASSA** — origin check confrontava Host con porta non normalizzata → `_strip_default_port` (:80/:443 e IPv6 normalizzati, porte non-default restano significative).
+  - **BASSA** — redazione audit non ricorsiva → `_sanitize_value` ricorsivo su dict/list (`app/services/audit.py`).
+  - **BASSA** — tentativi 429 non auditati → evento `login_blocked` con debounce 60s/IP (niente flood del trail).
+  - **BASSA** — password admin come argv CLI → argomento opzionale + `getpass` quando omesso (`app/cli.py`).
+  - **BASSA** — digest/timestamp corrotti nel DB → 500: `verify_password` catch `Exception`, `verify_session` guarda `fromisoformat`.
+  - **BASSA** — side-effect `seen=true` su `GET /releases/{id}` (spec §10): impatto minimo (SameSite=Lax), da valutare deroga spec in fase 05 (endpoint non ancora implementato in fase 02).
+- Esito review: **fase 02 APPROVATA** (0 findings ALTA/MEDIA residui).
+- Re-verifica dopo fix (tutti i comandi): `pytest` → **68 passed**; `ruff check` + `ruff format --check` OK da `backend/` e da root (invocazione CI); coverage TOTAL **97%** (security.py 99%, audit.py 100%); boot reale + curl: login 204+Set-Cookie (HttpOnly/Secure/SameSite=Lax), /me 401 senza cookie, 5 login errati → 401 e 6° → 429 Retry-After, cambio password rate-limitato (6° con password corretta → 429), HSTS via X-Forwarded-Proto solo da peer fidato, audit `login_ok/login_fail/login_blocked/password_fail` senza segreti, `sessions.id_hash` solo sha256 hex 64 char.
+- Nuovi test per i fix (10): `test_auth.py` (password change rate limit, login_blocked auditato, HSTS XFP fidato/non fidato, origin con porta default/non-default), `test_security.py` (release empty IP slots, cap tracked IPs, timestamp corrotto, `verify_password` su input corrotti, sanitize ricorsivo). Fixture: reset di `password_change_limiter` e `_block_logged_at`.
+- Problemi noti / debito tecnico:
+  - `server: uvicorn` esposto in dev (livello server, non middleware): aggiungere `--no-server-header` al CMD in fase 11.
+  - Warning deprecazione Starlette TestClient/httpx2 (già noto da fase 01).
+  - Rate limiter in-memoria: contatori persi al restart (accettato, spec 5.3 "in memoria"; il blocco globale riparte da zero dopo restart).
 
 ---
 

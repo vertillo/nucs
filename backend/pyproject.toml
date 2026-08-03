@@ -10,9 +10,19 @@ ignore = ["S101", "S104", "S301", "S403", "S404", "S603", "S607"]
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body", "fastapi.Header"]
+
+[tool.ruff.lint.per-file-ignores]
+# Dummy credentials in fixtures are intentional. Both globs are needed so the
+# ignores apply when ruff runs from backend/ and from the repo root (CI).
+"tests/**" = ["S105", "S106"]
+"backend/tests/**" = ["S105", "S106"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["backend/tests"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
