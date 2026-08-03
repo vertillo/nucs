@@ -9,11 +9,28 @@ import app.api.auth as auth_module
 import app.db as db_module
 import app.security as security_module
 import app.services.library_scan as library_scan_module
+import app.services.mb_matching as mb_matching_module
+import app.services.musicbrainz as musicbrainz_module
 from app.config import get_settings
 from app.main import create_app, ensure_admin_exists, run_migrations, seed_settings_if_empty
 
 ADMIN_USERNAME = "admin"
 ADMIN_CREDENTIAL = "fixture-only-credential-123"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_musicbrainz(monkeypatch):
+    """Never hit musicbrainz.org from tests (spec 7: 1 req/s is for production).
+
+    The auto-match triggered at the end of a library scan becomes a fast no-op.
+    Dedicated MB tests re-patch match_all_pending/search_artist and the rate
+    limiter (see test_mb_matching.py); the production rate limiter is untouched.
+    """
+
+    async def _no_match(db, limit=100):
+        return {"processed": 0, "matched": 0, "split": 0, "unmatched": 0}
+
+    monkeypatch.setattr(mb_matching_module, "match_all_pending", _no_match)
 
 
 @pytest.fixture
@@ -68,4 +85,5 @@ def _reset_state() -> None:
     security_module.password_change_limiter.reset()
     auth_module._block_logged_at.clear()
     library_scan_module.reset_state()
+    musicbrainz_module.reset_for_tests()
     get_settings.cache_clear()

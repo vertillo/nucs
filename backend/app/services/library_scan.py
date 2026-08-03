@@ -26,6 +26,7 @@ from sqlalchemy import delete, func, select
 from app.config import get_settings
 from app.db import get_session_factory
 from app.models import Artist, ScanFile, ScanRun, utc_now
+from app.services import mb_matching
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.names import extract_feat_from_title, is_trivial_artist, normalize_name
 
@@ -323,9 +324,21 @@ async def start_library_scan(full: bool = False) -> bool:
 async def _run_scan_task(full: bool, lock: asyncio.Lock) -> None:
     try:
         stats = await asyncio.to_thread(scan_library_sync, full)
-        logger.info("library scan done stats=%s", json.dumps(stats))
+        match_stats = await _match_pending_after_scan()
+        logger.info("library scan done stats=%s match=%s", json.dumps(stats), json.dumps(match_stats))
     except Exception:
         logger.exception("library scan task failed")
     finally:
         _running.pop(SCAN_TYPE_LIBRARY, None)
         lock.release()
+
+
+async def _match_pending_after_scan() -> dict:
+    """Auto-match pending artists after a library scan (cap 100 per run).
+
+    Decision recorded in piano/STATO.md (phase 04): matching runs automatically
+    at the end of the library scan AND manually via POST /artists/{id}/rematch;
+    no new scan type is added (spec 10 allows only library|releases|feat).
+    """
+    with get_session_factory()() as db:
+        return await mb_matching.match_all_pending(db, limit=100)
