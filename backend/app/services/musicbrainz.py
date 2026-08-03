@@ -19,6 +19,7 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 MB_BASE_URL = "https://musicbrainz.org/ws/2/"
+COVER_ART_BASE_URL = "https://coverartarchive.org/"
 RATE_LIMIT_SECONDS = 1.0
 REQUEST_TIMEOUT_SECONDS = 15.0
 MAX_ATTEMPTS = 5
@@ -77,10 +78,16 @@ class MusicBrainzClient:
         stop=stop_after_attempt(MAX_ATTEMPTS),
         retry=retry_if_exception(_is_retryable),
     )
-    async def _request(self, method: str, path: str, params: dict) -> httpx.Response:
-        """One rate-limited attempt; retries on 429/5xx/transport errors."""
+    async def _request(
+        self, method: str, path: str, params: dict, follow_redirects: bool = False
+    ) -> httpx.Response:
+        """One rate-limited attempt; retries on 429/5xx/transport errors.
+
+        Redirects are followed only when requested (Cover Art Archive responds
+        with a 302 toward archive.org; the MusicBrainz API never does).
+        """
         await _rate_limit()
-        response = await self._http.request(method, path, params=params)
+        response = await self._http.request(method, path, params=params, follow_redirects=follow_redirects)
         response.raise_for_status()
         return response
 
@@ -140,6 +147,18 @@ class MusicBrainzClient:
     async def get_release_group(self, rgid: str) -> dict:
         """Release-group details: artist-credit, primary-type, secondary-types, first-release-date."""
         return await self._get(f"release-group/{rgid}", {"inc": "artist-credits"})
+
+    async def get_cover_art_front(self, rgid: str, size: int = 500) -> httpx.Response:
+        """Cover Art Archive front cover (spec 7: same global rate limiter).
+
+        Returns the raw response with the image body; the retry policy of
+        ``_request`` applies (429/5xx/transport). A 404 (no cover) raises
+        ``httpx.HTTPStatusError`` immediately, which the caller uses as the
+        "fall back to Deezer" signal. Redirects (CAA -> archive.org) are
+        followed inside the single rate-limited call.
+        """
+        url = f"{COVER_ART_BASE_URL}release-group/{rgid}/front-{size}"
+        return await self._request("GET", url, params={}, follow_redirects=True)
 
     async def aclose(self) -> None:
         """Close the underlying httpx AsyncClient."""

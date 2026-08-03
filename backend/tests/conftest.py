@@ -8,11 +8,13 @@ from httpx import ASGITransport, AsyncClient
 import app.api.auth as auth_module
 import app.db as db_module
 import app.security as security_module
+import app.services.deezer as deezer_module
 import app.services.discovery as discovery_module
 import app.services.library_scan as library_scan_module
 import app.services.mb_matching as mb_matching_module
 import app.services.musicbrainz as musicbrainz_module
 import app.services.scan_locks as scan_locks_module
+import app.services.spotify as spotify_module
 from app.config import get_settings
 from app.main import create_app, ensure_admin_exists, run_migrations, seed_settings_if_empty
 
@@ -22,17 +24,34 @@ ADMIN_CREDENTIAL = "fixture-only-credential-123"
 
 @pytest.fixture(autouse=True)
 def _no_real_musicbrainz(monkeypatch):
-    """Never hit musicbrainz.org from tests (spec 7: 1 req/s is for production).
+    """Never hit musicbrainz.org / coverartarchive.org / Deezer / Spotify from tests.
 
-    The auto-match triggered at the end of a library scan becomes a fast no-op.
-    Dedicated MB tests re-patch match_all_pending/search_artist and the rate
-    limiter (see test_mb_matching.py); the production rate limiter is untouched.
+    The auto-match triggered at the end of a library scan becomes a fast no-op,
+    and the phase-06 enrich pipeline (cover + links, spec 8.4) runs with inert
+    providers so run_discovery tests stay deterministic and offline. Dedicated
+    tests re-patch each provider (see test_mb_matching.py, test_covers.py and
+    the pipeline tests in test_discovery.py); the production rate limiters are
+    untouched.
     """
 
     async def _no_match(db, limit=100):
         return {"processed": 0, "matched": 0, "split": 0, "unmatched": 0}
 
+    async def _no_cover(db, release):
+        return None
+
+    class _InertDeezer:
+        async def resolve_album(self, artist, title):
+            return (None, None)
+
+    class _InertSpotify:
+        async def resolve_album(self, db, artist, title):
+            return None
+
     monkeypatch.setattr(mb_matching_module, "match_all_pending", _no_match)
+    monkeypatch.setattr(discovery_module, "fetch_cover", _no_cover)
+    monkeypatch.setattr(discovery_module, "deezer", _InertDeezer())
+    monkeypatch.setattr(discovery_module, "spotify", _InertSpotify())
 
 
 @pytest.fixture
@@ -90,4 +109,6 @@ def _reset_state() -> None:
     discovery_module.reset_state()
     scan_locks_module.reset_state()
     musicbrainz_module.reset_for_tests()
+    deezer_module.reset_for_tests()
+    spotify_module.reset_for_tests()
     get_settings.cache_clear()

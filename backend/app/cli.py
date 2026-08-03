@@ -1,4 +1,5 @@
-"""Management CLI: ``python -m app.cli create-admin`` / ``scan-library`` (spec 5.1, 6)."""
+"""Management CLI: ``python -m app.cli create-admin`` / ``scan-library`` /
+``backfill-links`` (spec 5.1, 6, 8.4)."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import sys
 from app.db import get_session_factory
 from app.main import run_migrations
 from app.security import MIN_PASSWORD_LENGTH, create_admin_user, password_policy_ok
-from app.services import library_scan
+from app.services import discovery, library_scan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +23,10 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--full", action="store_true", help="Ignore the incremental cache and rescan everything"
     )
+    backfill = sub.add_parser("backfill-links", help="Enrich existing releases with covers and links")
+    backfill.add_argument(
+        "--limit", type=int, default=200, help="Maximum number of releases to process (default 200)"
+    )
     return parser
 
 
@@ -31,6 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         return _create_admin(args.username, args.password)
     if args.command == "scan-library":
         return _scan_library(args.full)
+    if args.command == "backfill-links":
+        return _backfill_links(args.limit)
     return 2  # pragma: no cover - argparse enforces a valid command
 
 
@@ -63,6 +70,22 @@ def _scan_library(full: bool) -> int:
         f"files_skipped={stats['files_skipped']} files_error={stats['files_error']} "
         f"artists_new={stats['artists_new']} artists_total={stats['artists_total']} "
         f"duration_s={stats['duration_s']}"
+    )
+    return 0
+
+
+def _backfill_links(limit: int) -> int:
+    try:
+        run_migrations()
+        with get_session_factory()() as db:
+            stats = discovery.backfill_links_covers(db, limit=limit)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        "Backfill finished: "
+        f"covers_fetched={stats['covers_fetched']} links_resolved={stats['links_resolved']} "
+        f"errors={stats['pipeline_errors']}"
     )
     return 0
 

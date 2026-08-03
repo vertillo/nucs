@@ -636,6 +636,247 @@ async def test_run_discovery_cancelled_mid_run_records_error_status(disc_db, mon
         assert run.type == "releases"
 
 
+# --- Phase-06 pipeline (spec 8.4): covers + links on new releases ------------
+
+
+async def test_pipeline_enriches_new_releases_with_covers_and_links(disc_db, monkeypatch):
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-enrich", "Album Enrich", "Album", "2024-07-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    async def _fake_cover(db, release):
+        release.cover_path = f"{release.rgid}.jpg"
+        return None
+
+    async def _fake_spotify(db, artist, title):
+        return "https://open.spotify.com/album/abc123"
+
+    async def _fake_deezer(artist, title):
+        return ("https://www.deezer.com/album/4321", "https://cdn.example/xl.jpg")
+
+    monkeypatch.setattr(discovery, "fetch_cover", _fake_cover)
+    monkeypatch.setattr(discovery.spotify, "resolve_album", _fake_spotify)
+    monkeypatch.setattr(discovery.deezer, "resolve_album", _fake_deezer)
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1
+    assert stats["covers_fetched"] == 1
+    assert stats["links_resolved"] == 4
+    assert stats["pipeline_errors"] == 0
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.rgid == "rg-enrich"))
+        assert row.cover_path == "rg-enrich.jpg"
+        assert row.spotify_url == "https://open.spotify.com/album/abc123"
+        assert row.deezer_url == "https://www.deezer.com/album/4321"
+        assert row.ytm_url == "https://music.youtube.com/search?q=Mio%20Album%20Enrich"
+        assert row.google_url == "https://www.google.com/search?q=Mio%20Album%20Enrich%20album"
+
+
+async def test_pipeline_uses_deezer_cover_result_for_deezer_link(disc_db, monkeypatch):
+    """The Deezer search done for the cover is reused for the link: fetch_cover
+    returns the direct URL and resolve_album is NOT called a second time."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-reuse", "Album Reuse", "Album", "2024-07-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    async def _fake_cover(db, release):
+        release.cover_path = f"{release.rgid}.jpg"
+        return "https://www.deezer.com/album/99"  # Deezer resolved during the cover step
+
+    calls: list[tuple[str, str]] = []
+
+    async def _fake_deezer(artist, title):
+        calls.append((artist, title))
+        return ("https://www.deezer.com/album/OTHER", None)
+
+    monkeypatch.setattr(discovery, "fetch_cover", _fake_cover)
+    monkeypatch.setattr(discovery.deezer, "resolve_album", _fake_deezer)
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["pipeline_errors"] == 0
+    assert calls == []  # the cover-step result is reused, no second Deezer search
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.rgid == "rg-reuse"))
+        assert row.deezer_url == "https://www.deezer.com/album/99"
+
+
+async def test_pipeline_failure_isolated_per_release(disc_db, monkeypatch):
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [
+            _rg("rg-ok", "Ok Album", "Album", "2024-07-01", _credit(("Mio", ""))),
+            _rg("rg-boom", "Boom Album", "Album", "2024-07-02", _credit(("Mio", ""))),
+        ]
+    ]
+    fake.search_counts["mb-mio"] = 2
+
+    async def _boom_cover(db, release):
+        if release.rgid == "rg-boom":
+            raise RuntimeError("boom")
+        release.cover_path = f"{release.rgid}.jpg"
+        return None
+
+    monkeypatch.setattr(discovery, "fetch_cover", _boom_cover)
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 2
+    assert stats["covers_fetched"] == 1
+    assert stats["pipeline_errors"] == 1
+    with get_session_factory()() as db:
+        run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
+        assert run.status == "ok"  # a single failure never fails the run
+        ok = db.scalar(select(Release).where(Release.rgid == "rg-ok"))
+        assert ok.cover_path == "rg-ok.jpg"
+        boom = db.scalar(select(Release).where(Release.rgid == "rg-boom"))
+        assert boom.cover_path is None
+        assert boom.spotify_url is None  # the failed release kept no partial links
+
+
+async def test_pipeline_skips_releases_that_already_exist(disc_db, monkeypatch):
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-old", "Vecchio Album", "Album", "2024-06-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+    with get_session_factory()() as db:
+        db.add(
+            Release(
+                rgid="rg-old",
+                title="Vecchio Album",
+                primary_artist="Mio",
+                type="album",
+                first_release_date="2024-06-01",
+                cover_path="rg-old.jpg",
+                spotify_url="https://open.spotify.com/album/x",
+                ytm_url="https://music.youtube.com/search?q=x",
+                deezer_url="https://www.deezer.com/album/1",
+                google_url="https://www.google.com/search?q=x",
+            )
+        )
+        db.commit()
+    enriched: list[str] = []
+
+    async def _fake_cover(db, release):
+        enriched.append(release.rgid)
+        return None
+
+    monkeypatch.setattr(discovery, "fetch_cover", _fake_cover)
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 0
+    assert stats["releases_updated"] == 1
+    assert stats["covers_fetched"] == 0
+    assert enriched == []  # existing releases are never re-enriched
+
+
+async def test_enrich_new_releases_caps_concurrency_at_two(disc_db, monkeypatch):
+    active = 0
+    peak = 0
+
+    async def _fake_enrich(rgid, stats):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    monkeypatch.setattr(discovery, "_enrich_release", _fake_enrich)
+    stats: dict[str, int] = {"pipeline_errors": 0}
+    await discovery._enrich_new_releases([f"rg-{i}" for i in range(4)], stats)
+    assert peak <= 2
+
+
+def test_backfill_links_covers_selects_only_incomplete_releases(disc_db, monkeypatch):
+    with get_session_factory()() as db:
+        db.add_all(
+            [
+                Release(
+                    rgid="rg-complete",
+                    title="A",
+                    primary_artist="Mio",
+                    type="album",
+                    cover_path="rg-complete.jpg",
+                    cover_url="https://x",
+                    spotify_url="https://s",
+                    ytm_url="https://y",
+                    deezer_url="https://d",
+                    google_url="https://g",
+                ),
+                Release(rgid="rg-incomplete", title="B", primary_artist="Mio", type="album"),
+            ]
+        )
+        db.commit()
+    seen: list[list[str]] = []
+
+    async def _fake_enrich(rgids, stats):
+        seen.append(list(rgids))
+
+    monkeypatch.setattr(discovery, "_enrich_new_releases", _fake_enrich)
+
+    with get_session_factory()() as db:
+        stats = discovery.backfill_links_covers(db, limit=200)
+
+    assert seen == [["rg-incomplete"]]
+    assert stats["covers_fetched"] == 0
+    assert stats["links_resolved"] == 0
+    assert stats["pipeline_errors"] == 0
+
+
+def test_backfill_links_covers_respects_limit(disc_db, monkeypatch):
+    with get_session_factory()() as db:
+        for index in range(3):
+            db.add(Release(rgid=f"rg-l-{index}", title=f"T{index}", primary_artist="Mio", type="album"))
+        db.commit()
+    seen: list[list[str]] = []
+
+    async def _fake_enrich(rgids, stats):
+        seen.append(list(rgids))
+
+    monkeypatch.setattr(discovery, "_enrich_new_releases", _fake_enrich)
+    with get_session_factory()() as db:
+        discovery.backfill_links_covers(db, limit=2)
+    assert seen == [["rg-l-0", "rg-l-1"]]
+
+
+def test_cli_backfill_links_command(disc_db, monkeypatch, capsys):
+    with get_session_factory()() as db:
+        db.add(Release(rgid="rg-cli", title="C", primary_artist="Mio", type="album"))
+        db.commit()
+
+    async def _fake_enrich(rgids, stats):
+        stats["covers_fetched"] = 1
+        stats["links_resolved"] = 4
+
+    monkeypatch.setattr(discovery, "_enrich_new_releases", _fake_enrich)
+    from app import cli
+
+    assert cli.main(["backfill-links", "--limit", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "covers_fetched=1" in out
+    assert "links_resolved=4" in out
+    assert "errors=0" in out
+
+
 # --- Rate limit is never bypassed ---------------------------------------------
 
 
