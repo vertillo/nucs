@@ -532,6 +532,30 @@ async def test_run_discovery_records_error_status_on_fatal_exception(disc_db, mo
         assert run.type == "releases"
 
 
+async def test_run_discovery_cancelled_mid_run_records_error_status(disc_db, monkeypatch):
+    """Graceful shutdown cancels the background task: the partial run must
+    be persisted as status=error, never as ok (coherent /scans/status)."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    fake.gate = asyncio.Event()
+    _seed_artists(("Mio", "mb-mio"))
+
+    async def _gated_run() -> dict:
+        with get_session_factory()() as db:
+            return await discovery.run_discovery(db)
+
+    task = asyncio.create_task(_gated_run())
+    await asyncio.sleep(0.05)  # let the task reach the gated API call
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with get_session_factory()() as db:
+        run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
+        assert run.status == "error"
+        assert run.type == "releases"
+
+
 # --- Rate limit is never bypassed ---------------------------------------------
 
 
@@ -588,6 +612,34 @@ async def test_start_releases_scan_runs_in_background_and_releases_lock(disc_db,
         row = db.scalar(select(Release).where(Release.rgid == "rg-bg"))
         assert row is not None
         assert db.scalar(select(ScanRun).order_by(ScanRun.id.desc())).type == "releases"
+
+
+async def test_cancel_all_persists_error_run_and_releases_locks(disc_db, monkeypatch):
+    """Graceful shutdown cancels in-flight tasks: partial run persisted as
+    status=error and the scan locks are released."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    fake.gate = asyncio.Event()
+    _seed_artists(("Mio", "mb-mio"))
+
+    assert await discovery.start_releases_scan() is True
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while not fake.search_calls and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert fake.search_calls  # the task is mid-run, parked at the gate
+    await discovery.cancel_all()
+
+    assert not discovery.running_scans()
+    with get_session_factory()() as db:
+        run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
+        assert run.type == "releases"
+        assert run.status == "error"
+    # lock released: a new scan can start immediately
+    assert await discovery.start_releases_scan() is True
+    fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
 
 
 async def test_seen_recordings_table_created_by_migration(disc_db):

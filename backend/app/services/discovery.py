@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import suppress
 from datetime import date, timedelta
 
 from sqlalchemy import select
@@ -412,6 +413,11 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
                 await _level2(db, stats)
         else:
             await _level1(db, stats)
+    except asyncio.CancelledError:
+        # Graceful shutdown mid-run: the run did not finish, persist it as error.
+        logger.warning("discovery cancelled mid-run type=%s", scan_type)
+        status = "error"
+        raise
     except Exception:
         logger.exception("discovery aborted")
         status = "error"
@@ -422,6 +428,7 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
 
 _running: dict[str, str] = {}
 _locks: dict[str, asyncio.Lock] = {}
+_tasks: set[asyncio.Task] = set()
 
 
 def running_scans() -> dict[str, str]:
@@ -433,6 +440,7 @@ def reset_state() -> None:
     """Clear locks and the running snapshot (test isolation)."""
     _locks.clear()
     _running.clear()
+    _tasks.clear()
 
 
 def _get_lock(scan_type: str) -> asyncio.Lock:
@@ -453,6 +461,27 @@ async def start_feat_scan() -> bool:
     return await _start_scan(SCAN_TYPE_FEAT)
 
 
+async def cancel_all() -> None:
+    """Cancel every in-flight discovery task (graceful shutdown).
+
+    The cancelled run is persisted as status=error by run_discovery, so an
+    interrupted scan never looks like a finished one. A task cancelled before
+    it ever started never executes its finally block, so any leftover lock /
+    running entry is force-cleaned afterwards.
+    """
+    tasks = [task for task in _tasks if not task.done()]
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError):
+            await task
+    for scan_type in list(_running):
+        lock = _locks.get(scan_type)
+        if lock is not None and lock.locked():
+            lock.release()
+        _running.pop(scan_type, None)
+
+
 async def _start_scan(scan_type: str) -> bool:
     lock = _get_lock(scan_type)
     if lock.locked():
@@ -460,7 +489,9 @@ async def _start_scan(scan_type: str) -> bool:
     await lock.acquire()
     _running[scan_type] = utc_now()
     try:
-        asyncio.get_running_loop().create_task(_run_discovery_task(scan_type, lock))
+        task = asyncio.get_running_loop().create_task(_run_discovery_task(scan_type, lock))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
     except Exception:
         _running.pop(scan_type, None)
         lock.release()
