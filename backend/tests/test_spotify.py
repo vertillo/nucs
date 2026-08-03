@@ -39,9 +39,12 @@ async def _resolve(artist: str, title: str) -> str | None:
 class _StubTransport(httpx.AsyncBaseTransport):
     """Scripted transport: token POST + album search GET."""
 
-    def __init__(self, album_name: str = "Album Uno", token_status: int = 200) -> None:
+    def __init__(
+        self, album_name: str = "Album Uno", token_status: int = 200, token_payload: dict | None = None
+    ) -> None:
         self.album_name = album_name
         self.token_status = token_status
+        self.token_payload = token_payload or {}
         self.requests: list[httpx.Request] = []
         self.authorizations: list[str | None] = []
 
@@ -50,7 +53,9 @@ class _StubTransport(httpx.AsyncBaseTransport):
         if request.url.path == "/api/token":
             if self.token_status != 200:
                 return httpx.Response(self.token_status, json={"error": "invalid_client"}, request=request)
-            return httpx.Response(200, json={"access_token": "tok-123", "expires_in": 3600}, request=request)
+            payload = {"access_token": "tok-123", "expires_in": 3600}
+            payload.update(self.token_payload)
+            return httpx.Response(200, json=payload, request=request)
         self.authorizations.append(request.headers.get("authorization"))
         if request.url.path == "/v1/search":
             return httpx.Response(
@@ -123,6 +128,16 @@ async def test_auth_failure_makes_module_inert_once(spotify_env, monkeypatch, ca
         assert await _resolve("Mio", "Album Uno") is None
         assert await _resolve("Mio", "Album Uno") is None
     assert caplog.text.count("inactive") == 1  # INFO once, then quiet
+
+
+async def test_garbage_expires_in_leaves_no_partial_token_cache(spotify_env, monkeypatch):
+    """BASSA-3 regression: a ValueError on expires_in must not leave a
+    half-updated token cache (the old token is kept valid, never overwritten)."""
+    _set_credentials()
+    transport = _StubTransport(token_payload={"expires_in": "garbage"})
+    _install_transport(monkeypatch, transport)
+    assert await _resolve("Mio", "Album Uno") is None
+    assert spotify._token is None  # no partial state: token and expiry stay consistent
 
 
 async def test_invalidate_token_drops_cache(spotify_env, monkeypatch):

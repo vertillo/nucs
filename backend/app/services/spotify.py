@@ -83,10 +83,14 @@ async def _fetch_token(client_id: str, client_secret: str) -> bool:
         )
         response.raise_for_status()
         data = response.json()
-        _token = data.get("access_token")
-        if not _token:
+        token = data.get("access_token")
+        if not token:
             return False
-        _token_expires_at = time.monotonic() + float(data.get("expires_in", 3600)) - _TOKEN_EXPIRY_MARGIN
+        # Compute the expiry first: a ValueError on a garbage expires_in must
+        # leave the cache untouched (no half-updated token state).
+        expires_at = time.monotonic() + float(data.get("expires_in", 3600)) - _TOKEN_EXPIRY_MARGIN
+        _token = token
+        _token_expires_at = expires_at
         return True
     except Exception as exc:
         logger.warning("spotify token fetch failed: %s", type(exc).__name__)

@@ -131,6 +131,23 @@ async def test_deezer_resolve_miss_on_title_mismatch(cover_env, monkeypatch):
     assert await deezer_module.resolve_album("Mio", "Album Uno") == (None, None)
 
 
+async def test_deezer_resolve_rejects_non_numeric_album_id(cover_env, monkeypatch):
+    await _install_deezer_search(
+        monkeypatch,
+        [{"id": "../../etc/passwd", "title": "Album Uno", "cover_xl": "https://cdn.example/x.jpg"}],
+    )
+    assert await deezer_module.resolve_album("Mio", "Album Uno") == (None, None)
+
+
+async def test_deezer_resolve_drops_insecure_cover_but_keeps_url(cover_env, monkeypatch):
+    await _install_deezer_search(
+        monkeypatch, [{"id": 4321, "title": "Album Uno", "cover_xl": "http://insecure.example/x.jpg"}]
+    )
+    url, cover = await deezer_module.resolve_album("Mio", "Album Uno")
+    assert url == "https://www.deezer.com/album/4321"
+    assert cover is None  # plain-HTTP cover URLs are never downloaded
+
+
 async def test_deezer_resolve_miss_on_empty_data(cover_env, monkeypatch):
     await _install_deezer_search(monkeypatch, [])
     assert await deezer_module.resolve_album("Mio", "Album Uno") == (None, None)
@@ -293,6 +310,30 @@ async def test_cover_too_large_is_discarded(cover_env, monkeypatch):
     assert not (_covers_dir() / f"{_RGID}.jpg").exists()
 
 
+async def test_cover_body_capped_without_content_length_header(cover_env, monkeypatch):
+    """Review BASSA-1 regression: a body without Content-Length is streamed
+    with a hard cap (5 MB), never buffered beyond the limit."""
+    _install_mb(
+        monkeypatch,
+        _FakeMBClient(
+            response=httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=b"x" * (covers.MAX_COVER_BYTES + 1),
+                request=_request(_caa_url()),
+            )
+        ),
+    )
+    seed = _seed_release()
+    with get_session_factory()() as db:
+        row = db.get(Release, seed.id)
+        result = await covers.fetch_cover(db, row)
+    assert result is None
+    assert row.cover_path is None
+    assert not (_covers_dir() / f"{_RGID}.jpg").exists()
+    assert not any(tmp.name.startswith(f".{_RGID}.jpg.") for tmp in _covers_dir().iterdir())
+
+
 async def test_cover_invalid_rgid_never_writes_files(cover_env, monkeypatch):
     _install_mb(monkeypatch, _FakeMBClient(response=_image_response()))
     seed = _seed_release(rgid="../../etc/passwd")
@@ -361,3 +402,49 @@ def test_valid_rgid_regex():
     assert not covers.valid_rgid("../../etc/passwd")
     assert not covers.valid_rgid("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")
     assert not covers.valid_rgid("056e4f3e-d505-4dad-8ec1-d04f521cbb5")
+
+
+# --- Real MB client path: CAA redirects are followed inside one rate-limited call (BASSA-6) ---
+
+
+async def test_mb_client_get_cover_art_follows_redirects_within_one_call(cover_env, monkeypatch):
+    """CAA answers 302 -> archive.org: the redirect is followed inside the
+    single rate-limited request, and a 404 raises HTTPStatusError immediately."""
+    from app.services.musicbrainz import MusicBrainzClient
+
+    seen: list[tuple[str, str]] = []
+
+    class _StubTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            seen.append((str(request.url), request.headers.get("user-agent", "")))
+            if request.url.path.startswith("/release-group/"):
+                if _RGID in request.url.path:
+                    return httpx.Response(
+                        302,
+                        headers={"location": "https://archive.org.example/img.jpg"},
+                        request=request,
+                    )
+                return httpx.Response(404, request=request)
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg"},
+                content=_JPEG,
+                request=request,
+            )
+
+    client = MusicBrainzClient(contact_email="dev@example.com", transport=_StubTransport())
+    response = await client.get_cover_art_front(_RGID)
+    assert response.status_code == 200
+    assert response.content == _JPEG
+    # One logical (rate-limited) call that internally followed the redirect.
+    assert len(seen) == 2
+    assert seen[0][0].startswith("https://coverartarchive.org/release-group/")
+    assert seen[1][0] == "https://archive.org.example/img.jpg"
+    assert all("nucs/1.0 ( dev@example.com )" in ua for _, ua in seen)
+    await client.aclose()
+
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        client = MusicBrainzClient(contact_email="dev@example.com", transport=_StubTransport())
+        await client.get_cover_art_front("00000000-0000-0000-0000-000000000000")
+    assert excinfo.value.response.status_code == 404
+    await client.aclose()

@@ -155,6 +155,31 @@ async def test_settings_put_invalid_email_rejected(client):
         assert response.status_code == 422, bad
 
 
+async def test_settings_put_overlong_values_rejected(client):
+    """BASSA-4 regression: unbounded value lengths are capped."""
+    await _login(client)
+    huge_urls = "https://a " * 2001  # > 4000 chars
+    response = await client.put("/api/v1/settings", json={"notify_urls": huge_urls}, headers=API_HEADERS)
+    assert response.status_code == 422
+    response = await client.put(
+        "/api/v1/settings", json={"mb_contact_email": "a" * 300 + "@example.com"}, headers=API_HEADERS
+    )
+    assert response.status_code == 422
+    response = await client.put(
+        "/api/v1/settings", json={"release_types": "album," * 60}, headers=API_HEADERS
+    )
+    assert response.status_code == 422
+
+
+async def test_settings_put_too_many_keys_rejected(client):
+    """BASSA-4 regression: a bloated payload cannot produce a huge error detail."""
+    await _login(client)
+    payload = {f"key-{index}": "x" for index in range(40)}
+    response = await client.put("/api/v1/settings", json=payload, headers=API_HEADERS)
+    assert response.status_code == 422
+    assert "Too many settings" in response.json()["detail"]
+
+
 async def test_settings_put_notify_enabled_requires_urls(client):
     await _login(client)
     response = await client.put(

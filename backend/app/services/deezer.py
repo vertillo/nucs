@@ -100,9 +100,12 @@ async def resolve_album(artist: str, title: str) -> tuple[str | None, str | None
     if normalize_name(hit.get("title") or "") != normalize_name(title):
         return (None, None)
     album_id = hit.get("id")
-    if not album_id:
+    if album_id is None or not str(album_id).isdigit():
         return (None, None)
-    return (f"https://www.deezer.com/album/{album_id}", hit.get("cover_xl"))
+    cover_xl = hit.get("cover_xl") or None
+    if cover_xl and not cover_xl.startswith("https://"):
+        cover_xl = None
+    return (f"https://www.deezer.com/album/{album_id}", cover_xl)
 
 
 async def download(url: str) -> httpx.Response:

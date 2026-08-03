@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import require_user
+from app.deps import get_client_ip, require_user
 from app.models import Session as DbSession
 from app.security import get_setting, set_setting
 from app.services import spotify
@@ -30,6 +30,10 @@ _RELEASE_TYPES = frozenset({"album", "single", "ep", "other"})
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _APP_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+_MAX_NOTIFY_URLS_LENGTH = 4000
+_MAX_EMAIL_LENGTH = 254
+_MAX_RELEASE_TYPES_LENGTH = 100
 
 _SECRET_KEYS = frozenset({"spotify_client_id", "spotify_client_secret"})
 
@@ -100,7 +104,10 @@ def _validate_theme(key: str, value: object) -> str:
 
 @_validator("release_types")
 def _validate_release_types(key: str, value: object) -> str:
-    parts = [part.strip().lower() for part in str(value).split(",") if part.strip()]
+    text = str(value)
+    if len(text) > _MAX_RELEASE_TYPES_LENGTH:
+        _fail(key, f"too long (max {_MAX_RELEASE_TYPES_LENGTH} characters)")
+    parts = [part.strip().lower() for part in text.split(",") if part.strip()]
     if not parts or any(part not in _RELEASE_TYPES for part in parts):
         _fail(key, "expected a CSV subset of album,single,ep,other")
     return ",".join(dict.fromkeys(parts))
@@ -108,7 +115,10 @@ def _validate_release_types(key: str, value: object) -> str:
 
 @_validator("notify_urls")
 def _validate_notify_urls(key: str, value: object) -> str:
-    urls = [line.strip() for line in re.split(r"[\n,]", str(value)) if line.strip()]
+    text = str(value)
+    if len(text) > _MAX_NOTIFY_URLS_LENGTH:
+        _fail(key, f"too long (max {_MAX_NOTIFY_URLS_LENGTH} characters)")
+    urls = [line.strip() for line in re.split(r"[\n,]", text) if line.strip()]
     for url in urls:
         if not _APP_URL_RE.match(url):
             _fail(key, f"expected Apprise URLs (scheme://...), got {url!r}")
@@ -118,6 +128,8 @@ def _validate_notify_urls(key: str, value: object) -> str:
 @_validator("mb_contact_email")
 def _validate_email(key: str, value: object) -> str:
     text = str(value).strip()
+    if len(text) > _MAX_EMAIL_LENGTH:
+        _fail(key, f"too long (max {_MAX_EMAIL_LENGTH} characters)")
     if text and not _EMAIL_RE.fullmatch(text):
         _fail(key, "expected a valid email address or an empty value")
     return text
@@ -158,12 +170,15 @@ async def update_settings(
     payload: dict[str, str | bool],
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
+    client_ip: str = Depends(get_client_ip),
 ) -> dict:
     """Whitelisted key update with per-key validation (spec 10).
 
     Unknown keys are rejected; the Spotify secret is write-only. The response
     is the same GET body (never contains secret values).
     """
+    if len(payload) > len(_VALIDATORS):
+        raise HTTPException(status_code=422, detail="Too many settings in request")
     unknown = set(payload) - set(_VALIDATORS)
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown setting(s): {', '.join(sorted(unknown))}")
@@ -177,7 +192,7 @@ async def update_settings(
         )
     for key, value in normalized.items():
         set_setting(db, key, value)
-    log_event(db, EVENT_SETTINGS_CHANGE, None, {"keys": sorted(normalized)})
+    log_event(db, EVENT_SETTINGS_CHANGE, client_ip, {"keys": sorted(normalized)})
     db.commit()
     if _SECRET_KEYS.intersection(normalized):
         spotify.invalidate_token()

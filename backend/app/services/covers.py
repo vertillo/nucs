@@ -47,12 +47,26 @@ def _content_type_ok(response: httpx.Response) -> bool:
     return raw.split(";")[0].strip().lower().startswith("image/")
 
 
-def _size_ok(response: httpx.Response) -> bool:
-    """Reject bodies >= 5 MB; the Content-Length header short-circuits large files."""
+async def _read_limited(response: httpx.Response, limit: int = MAX_COVER_BYTES) -> bytes | None:
+    """Stream the body with a hard byte cap; None when the cap is exceeded.
+
+    The Content-Length header short-circuits large files before any byte is
+    read; without a (truthful) header the stream itself is counted, so a lying
+    or missing Content-Length can never buffer more than ``limit`` bytes.
+    """
     header = response.headers.get("content-length")
-    if header and header.isdigit() and int(header) >= MAX_COVER_BYTES:
-        return False
-    return len(response.content) < MAX_COVER_BYTES
+    if header and header.isdigit() and int(header) >= limit:
+        await response.aclose()
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total >= limit:
+            await response.aclose()
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _save_cover_atomic(rgid: str, content: bytes) -> str:
@@ -74,10 +88,11 @@ async def _download_and_save(rgid: str, response: httpx.Response, source_url: st
             response.headers.get("content-type"),
         )
         return None
-    if not _size_ok(response):
+    content = await _read_limited(response)
+    if content is None:
         logger.warning("cover %s discarded: body too large", rgid)
         return None
-    filename = _save_cover_atomic(rgid, response.content)
+    filename = _save_cover_atomic(rgid, content)
     logger.debug("cover saved for %s from %s", rgid, source_url)
     return filename
 
