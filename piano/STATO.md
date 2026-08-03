@@ -6,11 +6,54 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **03** → aprire `piano/fasi/fase-03-scan-libreria.md`
-- Fasi completate: 00, 01, 02
-- Branch attivo: `fase-03-scan-libreria` (fase-02 mergiata su main dopo review)
+- Fase corrente: **04** → aprire `piano/fasi/fase-04-matching-artisti.md`
+- Fasi completate: 00, 01, 02, 03
+- Branch attivo: `fase-03-scan-libreria`
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## FASE 03 — Scansione libreria musicale ed estrazione artisti — 2026-08-03
+- Branch: fase-03-scan-libreria
+- Cosa è stato fatto:
+  - `backend/requirements.txt`: aggiunto `mutagen==1.48.1` (commento inline: lettura tag audio, spec 6). Installato e verificato su Python 3.12.13.
+  - `backend/app/models.py`: nuova tabella `ScanFile(path PK, mtime INTEGER (st_mtime_ns), size INTEGER)` (§6.5) + migration Alembic `f78ca2bec293_add_scan_files_table` (catena lineare da `9cb782c0d8f5`).
+  - `backend/app/services/names.py`: `normalize_name` esattamente §6.3 (NFKD → strip combining → lower → `[^\w\s]`→spazio + `_`→spazio → collapse spazi); `extract_feat_from_title` (regex case-insensitive su gruppi `(...)`/`[...]` con keyword `feat.|ft.|featuring|con`, split interno su `,`/`&`/` e `; **solo parentesi**, il suffisso `" - feat. X"` senza parentesi NON è gestito — documentato nel docstring, per fase 04); `is_trivial_artist` (varianti lower/raw + normalizzate di "various artists", "aa.vv.", "unknown artist", "unknown", nomi < 2 char, §6.4.6).
+  - `backend/app/services/library_scan.py`: `scan_library_sync(full=False)` — `os.walk(followlinks=False)` di `MUSIC_LIBRARY_PATH` (estensioni .mp3/.flac/.m4a/.mp4/.ogg/.opus case-insensitive); lettura tag con `mutagen.File(easy=False)` con mappatura §6.2 per ID3 (TPE1/TPE2/TIT2/TIPL/TMCL), Vorbis/FLAC/Ogg (ARTIST+ARTISTS/ALBUMARTIST/TITLE/PERFORMER/COMPOSER/REMIXER), MP4 (©ART/aART/©nam, `©wrt` best-effort come compositore); split SOLO su `;` (decisione operativa §6.4) + trim + dedup; feat dal titolo → `tag_feat`; upsert su `normalized_name` con regola source forte/debole (tag_artist/tag_albumartist sovrascrive tag_feat/tag_contrib, mai il contrario, mai il nome visualizzato); incrementale via `scan_files` (mtime_ns+size, `full=True` svuota scan_files); `scan_runs` con stats JSON {files_seen, files_parsed, files_skipped, files_error, artists_new, artists_total, duration_s} e status ok/error; audit event `scan_run` (nuovo `EVENT_SCAN_RUN` in `app/services/audit.py`). Errori di lettura → warning + contatore, mai eccezioni; eccezione fatale (es. libreria inesistente) → status error su scan_runs. **Nessuna write sulla libreria**: grep su open/write/unlink/mkdir in library_scan.py → zero risultati; verificato anche a runtime confrontando mtime.
+  - `backend/app/api/scans.py` (protetto da `require_user`): `POST /api/v1/scans/library?full=` → 202, 409 `{"detail":"Scan already in progress"}` se già attivo; `GET /api/v1/scans/status` → `{running: null|{type,since}, last_runs: [ultimi 10 scan_runs con stats parsato]}`. Router registrato in `main.py`.
+  - Lock asyncio globale per tipo di scan (dict `_locks`, esposto `start_library_scan`/`running_scans`/`reset_state`); worker sync eseguito in `asyncio.to_thread` (l'event loop non viene mai bloccato — mutagen è sync).
+  - `backend/app/cli.py`: `python -m app.cli scan-library [--full]` → migrazioni + scan sync + stampa stats; libreria inesistente → errore su stderr + exit 2.
+  - Test: `backend/tests/test_library_scan.py` (16 test) + fixture audio reali: `tests/fixtures/audio/s.{flac,ogg,opus,m4a,mp4,mp3}` (skeleton validi generati una volta con ffmpeg — silenzio 10ms; mutagen 1.48 non permette più di costruire file da costruttore vuoto, "FileType constructor requires a filename" — i test copiano lo skeleton in tmp_path, taggano con mutagen e salvano in place). FLAC minimale 42-byte via struct → NO (scartato: save in place ok ma ~1.2KB vs 8KB skeleton ffmpeg, alla fine usati gli skeleton ffmpeg per tutti). Nota: la build Homebrew di ffmpeg manca di libvorbis → il fixture `.ogg` contiene Opus (letto come `OggOpus`, stessa code path di OggVorbis via `OggFileType`).
+  - `backend/tests/conftest.py`: `_reset_state()` ora chiama anche `library_scan.reset_state()` (locks/running per isolamento test).
+- Decisione operativa §6.4 (registrata come richiesto dal prompt di fase): **split duro SOLO su `;`** (separatore sicuro dei tagger per valori multipli) + featuring dal titolo (parentesi/quadre). Gli split morbidi (` feat. `, ` & `, `, `, ` vs `, ` with `, ` con `) NON implementati: rimandati alla fase 04, da eseguire **dopo** il match-first MusicBrainz del nome intero (score ≥ 90 → nome intero come singolo artista, salva "Earth, Wind & Fire" e "AC/DC").
+- Decisioni prese (e perché):
+  - `scan_files.mtime` salvato come `st_mtime_ns` INTEGER (precisione sub-secondo; file riscritti nello stesso secondo vengono rilevati).
+  - File corrotti/illeggibili NON vengono inseriti in `scan_files` → ritentati a ogni scan (files_error costante finché non si sistemano). Comportamento voluto (spec: contati e loggati, mai bloccanti).
+  - Gli artisti non vengono mai cancellati dallo scan (spec non lo prevede): un artista non più presente in libreria resta in `artists` (test dedicato `test_scan_detects_changed_file` documenta il comportamento).
+  - `POST /scans/library` restituisce **202** (accettato, scan in background) invece di 200.
+  - `TIPL/TMCL.people` in mutagen 1.48 è una lista di coppie `[role, name]` (non lista piatta): scanner e test usano le coppie.
+  - Feat regex: `\b` finale **solo** dopo `featuring`/`con`, NON dopo `feat.`/`ft.` (il punto è seguito da spazio → `\b` dopo il punto non matcherebbe mai, bug trovato in fase di test).
+- Deviazioni dalle specifiche (approvate da chi): nessuna.
+- Ambiguità riscontrate (interpretazione scelta):
+  - Il prompt chiedeva test con "artist multiplo 'A; B'", ma §6.4.6 filtra i nomi < 2 char → nei test il multi-artista usa "AA; BB" e il filtro <2 char è verificato a parte.
+  - `OggOpus` NON è sottoclasse di `OggVorbis` in mutagen 1.48 (fratelli, entrambi da `OggFileType`): lo scanner usa `OggFileType` per coprire ogg/opus.
+- Esito verifica (comandi eseguiti e risultato):
+  - `cd backend && .venv/bin/python -m pytest -q` → **81 passed** (erano 58 alla fine fase 02; +16 nuovi scan, +7 altri da fix fase 02)
+  - `ruff check .` + `ruff format --check .` → OK; anche invocazione CI da root (`ruff check backend/ --config backend/pyproject.toml`) → OK
+  - Coverage: TOTAL **95%** (target §13 ≥70%): `services/names.py` 100%, `services/library_scan.py` 89%, `api/scans.py` 100%, `security.py` 99%
+  - Scan reale su libreria di prova (`/tmp/nucs-lib-test`: 7 file — FLAC con artist multiplo "Beyoncé; Jay-Z" + album artist + feat + PERFORMER; FLAC "Daft Punk" con "(feat. Pharrell Williams & Nile Rodgers)" + COMPOSER; MP3 "AC/DC" + remixer TIPL; M4A "Vasco Rossi (con Elisa)"; OGG con "Various Artists" (trivial) + feat; file corrotto): `scan-library --full` → files_seen=7 files_parsed=6 files_skipped=0 files_error=1 artists_new=13 artists_total=13; `SELECT source, COUNT(*)` → tag_artist 5, tag_albumartist 1, tag_feat 4, tag_contrib 3; campione verificato (beyonce, the carters, travis scott tag_feat, pianista nera tag_contrib, jay z); "Various Artists" assente (trivial filtrato); "Nile Rodgers" dedupato feat+composer → un solo row tag_contrib.
+  - Rilancio `scan-library` SENZA `--full` → files_seen=7 files_parsed=0 files_skipped=6 files_error=1 artists_new=0 (il corrotto è ritentato, vedi decisioni)
+  - Read-only libreria: `stat -f %m` su tutti i file prima/dopo due scan → **identici**; grep write-calls in library_scan.py → nessuno
+  - Via API (uvicorn su porta 8099, login admin con cookie, DEV_INSECURE_COOKIES=true): POST `/api/v1/scans/library` con X-Requested-With+Origin → **202**; GET `/api/v1/scans/status` → `running: null` + last_runs (3 righe) con stats coerenti; status senza cookie → **401**
+  - Concorrenza 409: coperto dal test automatico `test_api_scan_conflict_409` (worker monkeypatch-ato lento → secondo POST → 409 "Scan already in progress")
+- Esito review: non ancora eseguita (fase economico; la review formale va incollata a un modello separato — i criteri di completamento della fase 03 la prevedono).
+- Problemi noti / debito tecnico:
+  - File corrotti ritentati a ogni scan (mai cache-ati): comportamento voluto, annotato sopra.
+  - `server: uvicorn` esposto in dev (livello server, non middleware): aggiungere `--no-server-header` al CMD in fase 11.
+  - Warning deprecazione Starlette TestClient/httpx2 (già noto da fase 01).
+  - `backend/tests/fixtures/audio/*` sono binari generati con ffmpeg: se si rigenerano, assicurarsi che restino piccoli e validi (mutagen 1.48).
+  - Il test API end-to-end usa polling (`_wait_until_idle`, 5s timeout): robusto ma leggermente lento.
 
 ---
 

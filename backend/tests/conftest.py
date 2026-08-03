@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 import app.api.auth as auth_module
 import app.db as db_module
 import app.security as security_module
+import app.services.library_scan as library_scan_module
 from app.config import get_settings
 from app.main import create_app, ensure_admin_exists, run_migrations, seed_settings_if_empty
 
@@ -66,4 +67,5 @@ def _reset_state() -> None:
     security_module.login_limiter.reset()
     security_module.password_change_limiter.reset()
     auth_module._block_logged_at.clear()
+    library_scan_module.reset_state()
     get_settings.cache_clear()

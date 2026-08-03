@@ -114,3 +114,16 @@ class ScanRun(Base):
     finished_at: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     stats: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ScanFile(Base):
+    """Incremental-scan cache: one row per scanned file (spec 6.5).
+
+    ``mtime`` stores ``st_mtime_ns`` so sub-second edits are detected.
+    """
+
+    __tablename__ = "scan_files"
+
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    mtime: Mapped[int] = mapped_column(Integer, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
