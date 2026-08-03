@@ -218,11 +218,29 @@ def _scan_one_file(db, path: Path, known: dict[str, tuple[int, int]], full: bool
         stats["files_error"] += 1
 
 
+def _record_scan_run(started_at: str, start_time: float, status: str, stats: dict) -> None:
+    """Persist one scan_runs row with the final stats (spec 4)."""
+    stats["duration_s"] = round(time.monotonic() - start_time, 3)
+    with get_session_factory()() as db:
+        db.add(
+            ScanRun(
+                type=SCAN_TYPE_LIBRARY,
+                started_at=started_at,
+                finished_at=utc_now(),
+                status=status,
+                stats=json.dumps(stats),
+            )
+        )
+        db.commit()
+
+
 def scan_library_sync(full: bool = False) -> dict:
     """Scan MUSIC_LIBRARY_PATH and upsert artists (spec 6). Never raises on file errors.
 
     ``full=True`` clears the incremental cache (scan_files) and rescans everything.
-    Returns the stats dict persisted on the scan_runs row.
+    Returns the stats dict persisted on the scan_runs row. A missing library path
+    records a ``status=error`` run and then raises (CLI exits non-zero; the API
+    background task logs it and the failed run is visible via /scans/status).
     """
     started_at = utc_now()
     start_time = time.monotonic()
@@ -238,6 +256,7 @@ def scan_library_sync(full: bool = False) -> dict:
     status = "ok"
     root = Path(get_settings().music_library_path)
     if not root.is_dir():
+        _record_scan_run(started_at, start_time, "error", stats)
         raise FileNotFoundError(f"music library path does not exist: {root}")
 
     try:
@@ -258,18 +277,7 @@ def scan_library_sync(full: bool = False) -> dict:
         logger.exception("library scan aborted")
         status = "error"
     finally:
-        stats["duration_s"] = round(time.monotonic() - start_time, 3)
-        with get_session_factory()() as db:
-            db.add(
-                ScanRun(
-                    type=SCAN_TYPE_LIBRARY,
-                    started_at=started_at,
-                    finished_at=utc_now(),
-                    status=status,
-                    stats=json.dumps(stats),
-                )
-            )
-            db.commit()
+        _record_scan_run(started_at, start_time, status, stats)
     return stats
 
 

@@ -42,15 +42,20 @@ async def scan_status(
     for scan_type, since in library_scan.running_scans().items():
         running = {"type": scan_type, "since": since}
     rows = db.scalars(select(ScanRun).order_by(ScanRun.id.desc()).limit(10)).all()
-    last_runs = [
-        {
-            "id": row.id,
-            "type": row.type,
-            "started_at": row.started_at,
-            "finished_at": row.finished_at,
-            "status": row.status,
-            "stats": json.loads(row.stats) if row.stats else None,
-        }
-        for row in rows
-    ]
+    last_runs = []
+    for row in rows:
+        try:
+            stats = json.loads(row.stats) if row.stats else None
+        except ValueError:
+            stats = None
+        last_runs.append(
+            {
+                "id": row.id,
+                "type": row.type,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+                "status": row.status,
+                "stats": stats,
+            }
+        )
     return {"running": running, "last_runs": last_runs}

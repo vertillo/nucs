@@ -11,7 +11,10 @@ _TRIVIAL_NAMES = frozenset(
 
 _GROUP_RE = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
 _FEAT_KEYWORD_RE = re.compile(r"\b(?:feat\.|ft\.|featuring\b|con\b)", re.IGNORECASE)
-_NAME_SPLIT_RE = re.compile(r"\s*[,&]\s*|\s+e\s+")
+# Comma splits even when attached ("A,B"); "&" and "e" only with surrounding
+# whitespace so names like "R&B" or "R.E.M."-style attaches are never broken
+# (spec 6.4.3: never split on an attached "&").
+_NAME_SPLIT_RE = re.compile(r"\s*,\s*|\s+&\s+|\s+e\s+")
 
 
 def normalize_name(s: str) -> str:

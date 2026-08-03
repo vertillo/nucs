@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from app.db import get_session_factory
 from app.main import run_migrations
-from app.models import Artist, ScanFile
+from app.models import Artist, ScanFile, ScanRun
 from app.services import library_scan
 from app.services.names import extract_feat_from_title, is_trivial_artist, normalize_name
 
@@ -123,6 +123,8 @@ def test_extract_feat_from_title():
     assert extract_feat_from_title("Pezzo (featuring P, Q)") == ["P", "Q"]
     assert extract_feat_from_title("Brano (con R)") == ["R"]
     assert extract_feat_from_title("Song (feat. X e Y)") == ["X", "Y"]
+    assert extract_feat_from_title("Song (feat. R&B Star)") == ["R&B Star"]
+    assert extract_feat_from_title("Song (feat. A&B)") == ["A&B"]
     assert extract_feat_from_title("Niente (remix)") == []
     assert extract_feat_from_title("Niente feat. senza parentesi") == []
     assert extract_feat_from_title("") == []
@@ -280,6 +282,16 @@ def test_scan_upgrades_weak_to_strong_source(scan_db, tmp_path):
     assert artists[("nome forte", "tag_artist")] == "Nome Forte"
     assert ("nome forte", "tag_feat") not in artists
     assert len(artists) == 1
+
+
+def test_scan_missing_library_records_error_run(scan_db, tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSIC_LIBRARY_PATH", str(tmp_path / "nonesiste"))
+    with pytest.raises(FileNotFoundError):
+        library_scan.scan_library_sync()
+    with get_session_factory()() as db:
+        run = db.scalar(select(ScanRun))
+        assert run is not None
+        assert run.status == "error"
 
 
 async def _login(client: AsyncClient) -> None:
