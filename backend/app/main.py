@@ -22,6 +22,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 from app.api.auth import router as auth_router
+from app.api.scans import router as scans_router
 from app.config import get_settings
 from app.db import get_engine, get_session_factory
 from app.models import Setting
@@ -272,6 +273,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router)
+    app.include_router(scans_router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
