@@ -23,7 +23,7 @@ import time
 from contextlib import suppress
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,9 +31,11 @@ from sqlalchemy.orm import Session
 from app.db import get_session_factory
 from app.models import Artist, Release, ReleaseArtist, ScanRun, SeenRecording, utc_now
 from app.security import get_setting
-from app.services import scan_locks
+from app.services import deezer, scan_locks, spotify
 from app.services.audit import EVENT_SCAN_RUN, log_event
+from app.services.covers import fetch_cover
 from app.services.dates import parse_mb_date, release_in_range
+from app.services.links import build_search_links
 from app.services.musicbrainz import MBError, get_client
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,7 @@ ROLE_FEATURED = "featured"
 _PAGE_SIZE = 100
 _CURSOR_OVERLAP_DAYS = 7
 _MAX_FEAT_RECORDINGS_PER_ARTIST = 2000
+_PIPELINE_CONCURRENCY = 2
 
 _DEFAULT_DISCOVERY_LOOKBACK_DAYS = 30
 _DEFAULT_RELEASE_TYPES = "album,single,ep"
@@ -194,11 +197,14 @@ async def _process_release_group(
     allowed_types: set[str],
     stats: dict,
     role: str | None = None,
+    new_rgids: list[str] | None = None,
 ) -> str | None:
     """Filter one release group (type/date) and upsert it for ``artist``.
 
     Returns the release first-release-date when it was accepted, else None.
     ``role`` overrides the credit-phrase heuristic (level 2 always featured).
+    Newly created rgids are appended to ``new_rgids`` when provided (the
+    phase-06 enrich pipeline runs only on them, spec 8.4).
     """
     rgid = release_group.get("id")
     if not rgid:
@@ -231,6 +237,8 @@ async def _process_release_group(
     )
     if created:
         stats["releases_new"] += 1
+        if new_rgids is not None:
+            new_rgids.append(rgid)
     else:
         stats["releases_updated"] += 1
     _add_release_artist(db, row.id, artist.id, role if role is not None else _role_for(artist, release_group))
@@ -238,7 +246,12 @@ async def _process_release_group(
 
 
 async def _level1_artist(
-    db: Session, artist: Artist, discovery_from: date, allowed_types: set[str], stats: dict
+    db: Session,
+    artist: Artist,
+    discovery_from: date,
+    allowed_types: set[str],
+    stats: dict,
+    new_rgids: list[str],
 ) -> None:
     """Level 1 for one artist: paginated release-group search (spec 8.1)."""
     from_date = _cursor_from_date(artist, discovery_from)
@@ -254,7 +267,7 @@ async def _level1_artist(
         count = data.get("count")
         for release_group in groups:
             seen = await _process_release_group(
-                db, artist, release_group, discovery_from, allowed_types, stats
+                db, artist, release_group, discovery_from, allowed_types, stats, new_rgids=new_rgids
             )
             if seen and (latest_seen is None or seen > latest_seen):
                 latest_seen = seen
@@ -264,7 +277,7 @@ async def _level1_artist(
     artist.last_release_check = latest_seen
 
 
-async def _level1(db: Session, stats: dict) -> None:
+async def _level1(db: Session, stats: dict, new_rgids: list[str]) -> None:
     artists = db.scalars(
         select(Artist).where(Artist.ignored == 0, Artist.mbid.is_not(None)).order_by(Artist.id)
     ).all()
@@ -273,7 +286,7 @@ async def _level1(db: Session, stats: dict) -> None:
     allowed_types = _allowed_types(db)
     for artist in artists:
         try:
-            await _level1_artist(db, artist, discovery_from, allowed_types, stats)
+            await _level1_artist(db, artist, discovery_from, allowed_types, stats, new_rgids)
             db.commit()
         except MBError:
             db.rollback()
@@ -284,7 +297,12 @@ async def _level1(db: Session, stats: dict) -> None:
 
 
 async def _level2_artist(
-    db: Session, artist: Artist, discovery_from: date, allowed_types: set[str], stats: dict
+    db: Session,
+    artist: Artist,
+    discovery_from: date,
+    allowed_types: set[str],
+    stats: dict,
+    new_rgids: list[str],
 ) -> None:
     """Level 2 for one artist: paginated recording browse, capped per artist.
 
@@ -339,6 +357,7 @@ async def _level2_artist(
                         allowed_types,
                         stats,
                         role=ROLE_FEATURED,
+                        new_rgids=new_rgids,
                     ):
                         accepted_any = True
             except MBError:
@@ -356,7 +375,7 @@ async def _level2_artist(
             break
 
 
-async def _level2(db: Session, stats: dict) -> None:
+async def _level2(db: Session, stats: dict, new_rgids: list[str]) -> None:
     artists = db.scalars(
         select(Artist).where(Artist.ignored == 0, Artist.mbid.is_not(None)).order_by(Artist.id)
     ).all()
@@ -365,7 +384,7 @@ async def _level2(db: Session, stats: dict) -> None:
     allowed_types = _allowed_types(db)
     for artist in artists:
         try:
-            await _level2_artist(db, artist, discovery_from, allowed_types, stats)
+            await _level2_artist(db, artist, discovery_from, allowed_types, stats, new_rgids)
             db.commit()
         except MBError:
             db.rollback()
@@ -392,6 +411,91 @@ def _record_scan_run(scan_type: str, started_at: str, start_time: float, status:
         db.commit()
 
 
+async def _enrich_release(rgid: str, stats: dict) -> None:
+    """Cover + links for one new release (spec 8.4); never raises.
+
+    A per-release failure is counted in ``pipeline_errors`` and logged, so the
+    run never aborts because of a single cover/link. Each task uses its own
+    session (no shared-state races; the caller's session is untouched).
+    """
+    try:
+        with get_session_factory()() as db:
+            row = db.scalar(select(Release).where(Release.rgid == rgid))
+            if row is None:
+                return
+            # Cover first: CAA -> Deezer fallback. fetch_cover returns the
+            # direct Deezer URL when Deezer resolved, so the link step reuses
+            # the same single Deezer search instead of repeating it.
+            deezer_link = await fetch_cover(db, row)
+            if row.cover_path is not None:
+                stats["covers_fetched"] += 1
+            search = build_search_links(row.primary_artist, row.title, row.type)
+            if deezer_link is None:
+                deezer_direct, _ = await deezer.resolve_album(row.primary_artist, row.title)
+                deezer_link = deezer_direct
+            spotify_direct = await spotify.resolve_album(db, row.primary_artist, row.title)
+            row.spotify_url = spotify_direct or search["spotify_search"]
+            row.ytm_url = search["ytm"]
+            row.deezer_url = deezer_link or search["deezer_search"]
+            row.google_url = search["google"]
+            stats["links_resolved"] += sum(
+                1 for url in (row.spotify_url, row.ytm_url, row.deezer_url, row.google_url) if url
+            )
+            db.commit()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        stats["pipeline_errors"] += 1
+        logger.warning("cover/link pipeline failed for release %s", rgid, exc_info=True)
+
+
+async def _enrich_new_releases(new_rgids: list[str], stats: dict) -> None:
+    """Run the §8.4 pipeline over the new releases, 2 tasks at a time.
+
+    Every external service keeps its own rate limiter (1 req/s MusicBrainz
+    shared with CAA, 2 req/s Deezer, 5 req/s Spotify), so the concurrency cap
+    only bounds the number of in-flight downloads, never the request rate.
+    """
+    if not new_rgids:
+        return
+    semaphore = asyncio.Semaphore(_PIPELINE_CONCURRENCY)
+
+    async def _one(rgid: str) -> None:
+        async with semaphore:
+            await _enrich_release(rgid, stats)
+
+    await asyncio.gather(*(_one(rgid) for rgid in new_rgids))
+
+
+def backfill_links_covers(db: Session, limit: int = 200) -> dict:
+    """Enrich releases from earlier phases that lack covers or links (CLI).
+
+    Selects up to ``limit`` incomplete releases (any cover or link column
+    still NULL) and runs the same per-release pipeline as discovery; each task
+    uses its own session, ``db`` is only used to pick the candidates.
+    Returns the stats dict (covers_fetched / links_resolved / pipeline_errors).
+    """
+    rgids = db.scalars(
+        select(Release.rgid)
+        .where(
+            or_(
+                Release.cover_path.is_(None),
+                Release.cover_url.is_(None),
+                Release.spotify_url.is_(None),
+                Release.ytm_url.is_(None),
+                Release.deezer_url.is_(None),
+                Release.google_url.is_(None),
+            )
+        )
+        .order_by(Release.id)
+        .limit(limit)
+    ).all()
+    stats: dict[str, int] = {"covers_fetched": 0, "links_resolved": 0, "pipeline_errors": 0}
+    if rgids:
+        asyncio.run(_enrich_new_releases(rgids, stats))
+    return stats
+
+
 async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
     """Run one discovery pass; returns the persisted stats (spec 8).
 
@@ -410,19 +514,26 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         "skipped_no_date": 0,
         "skipped_type": 0,
         "api_calls": 0,
+        "covers_fetched": 0,
+        "links_resolved": 0,
+        "pipeline_errors": 0,
         "duration_s": 0.0,
     }
     if feat_scan:
         stats["recordings_pages"] = 0
     status = "ok"
+    new_rgids: list[str] = []
     try:
         if feat_scan:
             if get_setting(db, "feat_scan_enabled") != "true":
                 logger.warning("feat scan requested but feat_scan_enabled is false; nothing to do")
             else:
-                await _level2(db, stats)
+                await _level2(db, stats, new_rgids)
         else:
-            await _level1(db, stats)
+            await _level1(db, stats, new_rgids)
+        # Spec 8.4: enrich every NEW release with cover + links. The pipeline
+        # never raises; per-release failures land in pipeline_errors.
+        await _enrich_new_releases(new_rgids, stats)
     except asyncio.CancelledError:
         # Graceful shutdown mid-run: the run did not finish, persist it as error.
         logger.warning("discovery cancelled mid-run type=%s", scan_type)

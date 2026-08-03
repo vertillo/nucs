@@ -23,8 +23,10 @@ from starlette.types import ASGIApp
 
 from app.api.artists import router as artists_router
 from app.api.auth import router as auth_router
+from app.api.covers import router as covers_router
 from app.api.releases import router as releases_router
 from app.api.scans import router as scans_router
+from app.api.settings import router as settings_router
 from app.config import get_settings
 from app.db import get_engine, get_session_factory
 from app.models import Setting
@@ -37,7 +39,7 @@ from app.security import (
     password_policy_ok,
     resolve_client_ip,
 )
-from app.services import discovery
+from app.services import deezer, discovery, spotify
 from app.services.musicbrainz import close_client
 
 APP_VERSION = "1.0.0"
@@ -256,6 +258,8 @@ async def lifespan(app: FastAPI):
         await cleanup_task
     await discovery.cancel_all()
     await close_client()
+    await deezer.close_client()
+    await spotify.close_client()
     get_engine().dispose()
     logging.getLogger(__name__).info("nucs backend stopped")
 
@@ -282,6 +286,8 @@ def create_app() -> FastAPI:
     app.include_router(scans_router)
     app.include_router(artists_router)
     app.include_router(releases_router)
+    app.include_router(settings_router)
+    app.include_router(covers_router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
