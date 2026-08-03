@@ -127,3 +127,17 @@ class ScanFile(Base):
     path: Mapped[str] = mapped_column(Text, primary_key=True)
     mtime: Mapped[int] = mapped_column(Integer, nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class SeenRecording(Base):
+    """Level-2 dedup cache: recordings already processed for one artist (spec 8.2).
+
+    ``recording_mbid`` is globally unique, so it is the primary key; ``artist_id``
+    records which tracked artist surfaced it first. Rows are never deleted.
+    """
+
+    __tablename__ = "seen_recordings"
+
+    recording_mbid: Mapped[str] = mapped_column(Text, primary_key=True)
+    artist_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_seen: Mapped[str] = mapped_column(Text, nullable=False)

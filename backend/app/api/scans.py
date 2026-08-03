@@ -12,11 +12,13 @@ from app.db import get_db
 from app.deps import require_user
 from app.models import ScanRun
 from app.models import Session as DbSession
-from app.services import library_scan
+from app.security import get_setting
+from app.services import discovery, library_scan
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
 _SCAN_ALREADY_RUNNING = "Scan already in progress"
+_FEAT_SCAN_DISABLED = "Featuring scan is disabled"
 
 
 @router.post("/library", status_code=202)
@@ -32,6 +34,32 @@ async def trigger_library_scan(
     return Response(status_code=202)
 
 
+@router.post("/releases", status_code=202)
+async def trigger_releases_scan(
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+) -> Response:
+    """Start the level-1 release discovery in the background (spec 10)."""
+    started = await discovery.start_releases_scan()
+    if not started:
+        raise HTTPException(status_code=409, detail=_SCAN_ALREADY_RUNNING)
+    return Response(status_code=202)
+
+
+@router.post("/feat", status_code=202)
+async def trigger_feat_scan(
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+) -> Response:
+    """Start the level-2 featuring discovery; 400 when the setting is off (spec 10)."""
+    if get_setting(db, "feat_scan_enabled") != "true":
+        raise HTTPException(status_code=400, detail=_FEAT_SCAN_DISABLED)
+    started = await discovery.start_feat_scan()
+    if not started:
+        raise HTTPException(status_code=409, detail=_SCAN_ALREADY_RUNNING)
+    return Response(status_code=202)
+
+
 @router.get("/status")
 async def scan_status(
     db: Session = Depends(get_db),
@@ -39,7 +67,7 @@ async def scan_status(
 ) -> dict:
     """Running scan (if any) plus the last 10 scan_runs."""
     running = None
-    for scan_type, since in library_scan.running_scans().items():
+    for scan_type, since in {**library_scan.running_scans(), **discovery.running_scans()}.items():
         running = {"type": scan_type, "since": since}
     rows = db.scalars(select(ScanRun).order_by(ScanRun.id.desc()).limit(10)).all()
     last_runs = []

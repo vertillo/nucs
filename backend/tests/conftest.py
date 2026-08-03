@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 import app.api.auth as auth_module
 import app.db as db_module
 import app.security as security_module
+import app.services.discovery as discovery_module
 import app.services.library_scan as library_scan_module
 import app.services.mb_matching as mb_matching_module
 import app.services.musicbrainz as musicbrainz_module
@@ -85,5 +86,6 @@ def _reset_state() -> None:
     security_module.password_change_limiter.reset()
     auth_module._block_logged_at.clear()
     library_scan_module.reset_state()
+    discovery_module.reset_state()
     musicbrainz_module.reset_for_tests()
     get_settings.cache_clear()
