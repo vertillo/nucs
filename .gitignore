@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.coverage
 
 # Node
 node_modules/
@@ -15,6 +16,7 @@ dist/
 # Data
 data/
 *.db
+music/
 
 # OS
 .DS_Store
