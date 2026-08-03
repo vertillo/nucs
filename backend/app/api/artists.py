@@ -7,6 +7,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db, get_session_factory
@@ -15,6 +16,7 @@ from app.models import Artist
 from app.models import Session as DbSession
 from app.schemas import ArtistCreate, ArtistPatch
 from app.services import mb_matching
+from app.services.musicbrainz import MBError
 from app.services.names import is_trivial_artist, normalize_name
 
 router = APIRouter(prefix="/api/v1/artists", tags=["artists"])
@@ -53,7 +55,8 @@ async def list_artists(
     elif ignored == "no":
         query = query.where(Artist.ignored == 0)
     if q:
-        query = query.where(Artist.name.ilike(f"%{q}%"))
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.where(Artist.name.ilike(f"%{escaped}%", escape="\\"))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = db.scalars(query.order_by(Artist.name.asc()).offset((page - 1) * page_size).limit(page_size)).all()
     return {
@@ -92,7 +95,11 @@ async def add_artist(
         raise HTTPException(status_code=400, detail="Artist already exists")
     row = Artist(name=name, normalized_name=normalized, source="manual")
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Artist already exists") from None
     db.refresh(row)
     asyncio.get_running_loop().create_task(_match_in_background(row.id))
     return _artist_item(row)
@@ -124,5 +131,8 @@ async def rematch_artist(
     row = db.get(Artist, artist_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
-    matched = await mb_matching.match_artist(db, row)
+    try:
+        matched = await mb_matching.match_artist(db, row)
+    except MBError as exc:
+        raise HTTPException(status_code=503, detail="MusicBrainz is unavailable") from exc
     return {"matched": matched, "mbid": row.mbid}

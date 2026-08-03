@@ -36,6 +36,7 @@ from app.security import (
     password_policy_ok,
     resolve_client_ip,
 )
+from app.services.musicbrainz import close_client
 
 APP_VERSION = "1.0.0"
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -251,6 +252,7 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     with suppress(asyncio.CancelledError):
         await cleanup_task
+    await close_client()
     get_engine().dispose()
     logging.getLogger(__name__).info("nucs backend stopped")
 

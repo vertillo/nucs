@@ -99,27 +99,46 @@ class MusicBrainzClient:
         """Search artists by name; returns [{mbid, name, score}], best score first."""
         escaped = name.replace('"', '\\"')
         data = await self._get("artist/", {"query": f'artist:"{escaped}"', "limit": limit})
-        return [
-            {"mbid": artist["id"], "name": artist.get("name", ""), "score": artist.get("score", 0)}
-            for artist in data.get("artists", [])
-        ]
+        results = []
+        for artist in data.get("artists", []):
+            mbid = artist.get("id")
+            if mbid:
+                results.append(
+                    {"mbid": mbid, "name": artist.get("name", ""), "score": artist.get("score", 0)}
+                )
+        return results
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx AsyncClient."""
+        await self._http.aclose()
 
 
 _client: MusicBrainzClient | None = None
 _client_email: str | None = None
 
 
-def get_client(contact_email: str | None = None) -> MusicBrainzClient:
+async def get_client(contact_email: str | None = None) -> MusicBrainzClient:
     """Module-level singleton so the AsyncClient (connection pool) is reused.
 
-    Rebuilt only when the contact email changes (rare runtime event); the global
-    rate limiter lives at module level and is always shared.
+    Rebuilt (and the previous client closed) only when the contact email
+    changes; the global rate limiter lives at module level and is always shared.
     """
     global _client, _client_email
     if _client is None or _client_email != contact_email:
+        if _client is not None:
+            await _client.aclose()
         _client = MusicBrainzClient(contact_email)
         _client_email = contact_email
     return _client
+
+
+async def close_client() -> None:
+    """Close the cached client and drop it (application shutdown)."""
+    global _client, _client_email
+    if _client is not None:
+        await _client.aclose()
+    _client = None
+    _client_email = None
 
 
 def reset_for_tests() -> None:

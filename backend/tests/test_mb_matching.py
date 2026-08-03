@@ -190,6 +190,14 @@ async def test_non_retryable_status_raises_mberror_immediately(monkeypatch):
     assert len(transport.requests) == 1
 
 
+async def test_search_artist_skips_entries_without_id():
+    transport = _StubTransport(
+        [(200, {"artists": [{"name": "No Id", "score": 50}, {"id": "mb-1", "name": "OK", "score": 99}]})]
+    )
+    client = MusicBrainzClient(transport=transport)
+    assert await client.search_artist("X") == [{"mbid": "mb-1", "name": "OK", "score": 99}]
+
+
 # --- Soft split ---------------------------------------------------------------
 
 
@@ -335,6 +343,37 @@ async def test_existing_child_gets_mbid_filled_but_keeps_identity(match_db, monk
         assert child.mbid == "mb-aa"
         assert child.source == "tag_artist"
         assert child.name == "AA"
+
+
+async def test_upsert_child_concurrent_duplicate_handled(match_db, monkeypatch):
+    """SELECT-then-INSERT race: no duplicate is created; the caller gets False."""
+    with get_session_factory()() as db:
+        db.add(Artist(name="AA", normalized_name="aa", source="tag_artist"))
+        db.commit()
+        db.expunge_all()
+        real_scalar = db.scalar
+        calls = {"n": 0}
+
+        def _stale_scalar(*args, **kwargs):
+            calls["n"] += 1
+            return None if calls["n"] == 1 else real_scalar(*args, **kwargs)
+
+        monkeypatch.setattr(db, "scalar", _stale_scalar)
+        assert mb_matching._upsert_child(db, "AA", "tag_artist", "mb-aa", 99) is False
+        db.expunge_all()
+        rows = db.scalars(select(Artist)).all()
+        assert len(rows) == 1
+        assert rows[0].name == "AA"
+        assert rows[0].mbid is None
+
+
+async def test_close_client_noop_and_clears_singleton():
+    await musicbrainz.close_client()
+    assert musicbrainz._client is None
+    await musicbrainz.get_client("dev@example.com")
+    assert musicbrainz._client is not None
+    await musicbrainz.close_client()
+    assert musicbrainz._client is None
 
 
 # --- match_all_pending --------------------------------------------------------
@@ -512,6 +551,42 @@ async def test_api_rematch_matches_and_returns_result(client, monkeypatch):
     response = await client.post(f"/api/v1/artists/{artist_id}/rematch", headers=API_HEADERS)
     assert response.status_code == 200
     assert response.json() == {"matched": True, "mbid": "mb-zz"}
+
+
+async def test_api_rematch_503_when_musicbrainz_down(client, monkeypatch):
+    _no_rate_limit(monkeypatch)
+
+    async def _down(self, name, limit=5):
+        raise MBError("musicbrainz down")
+
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _down)
+    with get_session_factory()() as db:
+        row = Artist(name="ZZ Band", normalized_name="zz band", source="tag_artist")
+        db.add(row)
+        db.commit()
+        artist_id = row.id
+    await _login(client)
+
+    response = await client.post(f"/api/v1/artists/{artist_id}/rematch", headers=API_HEADERS)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "MusicBrainz is unavailable"
+
+
+async def test_api_artists_q_escapes_like_wildcards(client):
+    with get_session_factory()() as db:
+        db.add_all(
+            [
+                Artist(name="100% Rap", normalized_name="100 rap", source="tag_artist"),
+                Artist(name="100 X", normalized_name="100 x", source="tag_artist"),
+            ]
+        )
+        db.commit()
+    await _login(client)
+
+    search = (await client.get("/api/v1/artists", params={"q": "100%"})).json()
+    assert search["total"] == 1 and search["items"][0]["name"] == "100% Rap"
+    underscore = (await client.get("/api/v1/artists", params={"q": "100_"})).json()
+    assert underscore["total"] == 0
 
 
 # --- Auto-match after library scan (decision recorded in STATO.md) ------------

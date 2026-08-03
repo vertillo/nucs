@@ -8,8 +8,8 @@
 
 - Fase corrente: **05** → aprire `piano/fasi/fase-05-discovery-release.md` (review con modello **avanzato**)
 - Fasi completate: 00, 01, 02, 03, 04
-- Branch attivo: `fase-05-discovery-release` (fase-04 committata e mergiata su main dopo review — 0 ALTA / 0 MEDIA / 4 BASSA non bloccanti)
-- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto); 4 findings BASSA della review fase 04 (fix minimi non bloccanti, dettagli nella sezione FASE 04)
+- Branch attivo: `fase-05-discovery-release` (fase-04 committata e mergiata su main dopo review — 0 ALTA / 0 MEDIA / 4 BASSA **tutti fixati**)
+- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
 
 ---
@@ -43,16 +43,13 @@
   - E2E reale (uvicorn su 8098 con `DATA_DIR=/tmp/nucs-f04/data`, `MUSIC_LIBRARY_PATH=/tmp/nucs-lib-test`, login admin): `POST /scans/library?full=true` → 202; a fine scan (auto-match con rate limit reale): **13 artisti totali, 11 matched, 2 unmatched** (Pianista Nera id 4 — artista oscuro senza hit ≥90/85; "Artista Sconosciuto" id 10 — banale non filtrato dai tag di prova), ~84.6% di match su libreria mainstream mista. `SELECT name, mbid, mb_match_score FROM artists WHERE mbid IS NOT NULL LIMIT 5` + verifica a mano su https://musicbrainz.org (curl + User-Agent corretto): **Beyoncé** `859d0860-d480-4efd-970c-c05d5f1776b8`, **Daft Punk** `056e4f3e-d505-4dad-8ec1-d04f521cbb56`, **AC/DC** `66c662b6-6e2f-4930-8610-912e24c63ed1`, **Pharrell Williams** `149f91ef-1287-46da-9a8e-87fee02f1471`, **Radiohead** `a74b1b7f-71a5-4011-9441-d0b5e4122711` (quest'ultimo da POST manuale + match in background) → tutti corretti. Nessun padre `ignored=1` nella libreria di prova (i multi-artisti di prova erano già splittati da `;` in fase 03 e il feat era già estratto dal titolo): i casi soft-split sono coperti dagli unit test.
   - API via curl (cookie autenticato): `GET /artists?q=daft` → 1 hit filtrato con shape completa; `PATCH /artists/7 {"ignored":1}` → 200 e riflesso in `GET /artists?ignored=yes`; `POST /artists {"name":"Radiohead"}` → **202** con `source=manual`, mbid valorizzato in background dopo ~6 s; `POST` duplicato → **400** "Artist already exists"; `POST /artists/9999/rematch` → **404** "Not found"; rematch su artista non abbinato → `{"matched":false,"mbid":null}` coerente; senza cookie → 401.
   - **Timing rate limit reale**: `time` su 5 rematch consecutivi di un artista non abbinato → **12.99 s totali** ≥ 4 s (rate limit 1 req/s rispettato, con latenza).
-- Esito review (modello economico, 2026-08-03): **0 ALTA, 0 MEDIA, 4 BASSA — nessun finding bloccante** (checklist sicurezza: B1/B2 ok, rate limit presente su TUTTI i percorsi di rete, match-first/soft-split/upsert/retry/timeout verificati, nessuna chiamata MB bloccante nell'event loop, input API validati). I 4 BASSA (dettagliati in "Problemi noti / debito tecnico" sotto) sono fix minimi non bloccanti; il raccomandato è il catch `IntegrityError` sull'upsert.
-- Problemi noti / debito tecnico:
-  - **BASSA (raccomandato)** — TOCTOU race sull'upsert di `normalized_name` (`mb_matching._upsert_child` e check duplicato di `POST /artists`): SELECT-poi-INSERT; con background task e auto-match concorrenti può scattare `IntegrityError` (unicità) che in `match_all_pending` non è gestito (cattura solo `MBError`) e interromperebbe il batch. Fix: catch `IntegrityError` → re-select/ignora. Raro in single-user.
-  - **BASSA** — `MBError` non gestito su `POST /artists/{id}/rematch` (MB irraggiungibile → dopo i 5 retry, worst case ~90 s, risposta 500 "Internal error"); `search_artist` usa `artist["id"]` (KeyError se risposta malformata, non MBError). Fix: catch `MBError` → 502/503 con detail inglese; `artist.get("id")`.
-  - **BASSA** — singleton `MusicBrainzClient` mai chiuso: al rebuild (cambio email) il vecchio `AsyncClient` resta aperto; nessuna chiusura allo shutdown. Fix: `aclose()` nel rebuild e/o nel shutdown del lifespan.
-  - **BASSA** — `GET /artists?q=` usa `ilike` senza escape: `%`/`_` in input agiscono da wildcard (match più ampio; non injection, parametrizzato). Fix: escape di `%`/`_` prima del LIKE.
-  - Il singleton MusicBrainz ricostruito al cambio di email non chiude esplicitamente il vecchio `AsyncClient` (servirebbe un await; evento raro in produzione — la email si cambia al massimo dalla UI — il GC lo recupera).
-  - Niente cache MusicBrainz (voluto in questa fase: nessuna cache).
-  - Warning deprecazione httpx2 e header `server: uvicorn` già noti (fase 11).
-  - Fase 05 (discovery) riceverà: cursor `artists.last_release_check`, popolamento `releases_count`, filtro `source` su `GET /artists` (annotato sopra).
+- Esito review (modello economico, 2026-08-03): **0 ALTA, 0 MEDIA, 4 BASSA — nessun finding bloccante** (checklist sicurezza: B1/B2 ok, rate limit presente su TUTTI i percorsi di rete, match-first/soft-split/upsert/retry/timeout verificati, nessuna chiamata MB bloccante nell'event loop, input API validati). **I 4 BASSA sono stati fixati subito dopo la review** (commit `fix(artists): resolve phase-04 review findings...`, vedi sotto): catch `IntegrityError` sull'upsert, `MBError` → 503 su rematch, chiusura `AsyncClient` (rebuild + shutdown), escape wildcard LIKE su `q`.
+- Fix dei findings BASSA (post-review, 2026-08-03, commit su main):
+  - **BASSA 1 (upsert race)** — `_upsert_child` ora fluscha con try/except `IntegrityError`: su duplicato concorrente rollback completo e ritorna `False`; `match_artist` abbandona l'artista corrente e l'upsert idempotente viene ritentato alla run successiva (nessun duplicato di `normalized_name`, nessuno stato parziale persistito; il savepoint `begin_nested` di SQLAlchemy 2.0 è stato scartato: lascia la sessione in pending-rollback). `POST /artists` gestisce `IntegrityError` su commit → 400 "Artist already exists".
+  - **BASSA 2 (MBError su rematch)** — `POST /artists/{id}/rematch` cattura `MBError` → **503** `{"detail":"MusicBrainz is unavailable"}`; `search_artist` usa `artist.get("id")` e salta gli hit senza id (mai più KeyError).
+  - **BASSA 3 (chiusura client)** — `get_client` è ora async e chiude (`aclose()`) il vecchio `AsyncClient` al rebuild; nuovo `close_client()` chiamato nello shutdown del lifespan (`main.py`); metodo pubblico `MusicBrainzClient.aclose()`.
+  - **BASSA 4 (wildcard LIKE)** — `q` in `GET /artists` escaperà `\`, `%`, `_` prima dell'`ilike` (con `escape="\\"`): la ricerca è letterale.
+  - Nuovi test di regressione (5): `test_search_artist_skips_entries_without_id`, `test_api_rematch_503_when_musicbrainz_down`, `test_api_artists_q_escapes_like_wildcards`, `test_upsert_child_concurrent_duplicate_handled`, `test_close_client_noop_and_clears_singleton` → totale suite **112 passed**, coverage TOTAL **95%**.
 
 ---
 

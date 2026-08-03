@@ -16,6 +16,7 @@ import logging
 import re
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Artist
@@ -60,20 +61,29 @@ def _best(results: list[dict]) -> dict | None:
     return max(results, key=lambda result: result["score"]) if results else None
 
 
-def _upsert_child(db: Session, name: str, source: str, mbid: str, score: int) -> None:
+def _upsert_child(db: Session, name: str, source: str, mbid: str, score: int) -> bool:
     """Upsert a split part as its own artist row (dedup on normalized_name).
 
     An existing row keeps its identity; only a missing mbid is filled in.
+    Returns False when a concurrent duplicate won the SELECT-then-INSERT race
+    (the session has been rolled back); the caller aborts the current artist
+    and the idempotent upsert is retried on the next run.
     """
     normalized = normalize_name(name)
     if not normalized:
-        return
+        return True
     row = db.scalar(select(Artist).where(Artist.normalized_name == normalized))
     if row is None:
         db.add(Artist(name=name, normalized_name=normalized, source=source, mbid=mbid, mb_match_score=score))
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            return False
     elif row.mbid is None:
         row.mbid = mbid
         row.mb_match_score = score
+    return True
 
 
 async def match_artist(db: Session, artist_row: Artist) -> bool:
@@ -84,7 +94,7 @@ async def match_artist(db: Session, artist_row: Artist) -> bool:
     """
     if artist_row.mbid is not None:
         return True
-    client = get_client(_contact_email(db))
+    client = await get_client(_contact_email(db))
     best = _best(await client.search_artist(artist_row.name, limit=5))
     if best is not None and best["score"] >= MATCH_FULL_SCORE:
         artist_row.mbid = best["mbid"]
@@ -96,7 +106,8 @@ async def match_artist(db: Session, artist_row: Artist) -> bool:
     for part in parts:
         part_best = _best(await client.search_artist(part, limit=5))
         if part_best is not None and part_best["score"] >= MATCH_PART_SCORE:
-            _upsert_child(db, part, artist_row.source, part_best["mbid"], part_best["score"])
+            if not _upsert_child(db, part, artist_row.source, part_best["mbid"], part_best["score"]):
+                return False
             matched_any = True
     if matched_any:
         artist_row.ignored = 1
