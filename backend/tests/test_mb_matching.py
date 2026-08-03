@@ -125,6 +125,45 @@ async def test_client_sends_user_agent_and_fmt_json_on_requests():
     assert request.url.params["fmt"] == "json"
 
 
+async def test_search_release_groups_uses_spec_81_query():
+    transport = _StubTransport([(200, {"release-groups": [], "count": 7})])
+    client = MusicBrainzClient(transport=transport)
+    data = await client.search_release_groups("mb-1", "2024-06-01", limit=100, offset=200)
+    assert data["count"] == 7
+    request = transport.requests[0]
+    assert request.url.path == "/ws/2/release-group/"
+    assert request.url.params["query"] == "arid:mb-1 AND firstreleasedate:[2024-06-01 TO *]"
+    assert request.url.params["limit"] == "100"
+    assert request.url.params["offset"] == "200"
+
+
+async def test_browse_artist_recordings_omits_releases_inc():
+    """The server rejects inc=releases on the recording browse resource."""
+    transport = _StubTransport([(200, {"recordings": [], "recording-count": 0})])
+    client = MusicBrainzClient(transport=transport)
+    await client.browse_artist_recordings("mb-1", limit=100, offset=0)
+    request = transport.requests[0]
+    assert request.url.path == "/ws/2/recording/"
+    assert request.url.params["artist"] == "mb-1"
+    assert "inc" not in request.url.params
+
+
+async def test_get_recording_with_releases_and_get_release_params():
+    transport = _StubTransport(
+        [
+            (200, {"id": "rec-1", "releases": [{"id": "rel-1"}]}),
+            (200, {"id": "rel-1", "release-group": {"id": "rg-1", "primary-type": "Album"}}),
+        ]
+    )
+    client = MusicBrainzClient(transport=transport)
+    recording = await client.get_recording_with_releases("rec-1")
+    assert recording["releases"][0]["id"] == "rel-1"
+    release = await client.get_release("rel-1")
+    assert release["release-group"]["id"] == "rg-1"
+    assert transport.requests[0].url.params["inc"] == "releases"
+    assert transport.requests[1].url.params["inc"] == "release-groups"
+
+
 async def test_client_user_agent_always_present_even_without_email():
     transport = _StubTransport([(200, {"artists": []})])
     client = MusicBrainzClient(contact_email=None, transport=transport)

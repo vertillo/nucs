@@ -23,6 +23,7 @@ from starlette.types import ASGIApp
 
 from app.api.artists import router as artists_router
 from app.api.auth import router as auth_router
+from app.api.releases import router as releases_router
 from app.api.scans import router as scans_router
 from app.config import get_settings
 from app.db import get_engine, get_session_factory
@@ -36,6 +37,7 @@ from app.security import (
     password_policy_ok,
     resolve_client_ip,
 )
+from app.services import discovery
 from app.services.musicbrainz import close_client
 
 APP_VERSION = "1.0.0"
@@ -252,6 +254,7 @@ async def lifespan(app: FastAPI):
     cleanup_task.cancel()
     with suppress(asyncio.CancelledError):
         await cleanup_task
+    await discovery.cancel_all()
     await close_client()
     get_engine().dispose()
     logging.getLogger(__name__).info("nucs backend stopped")
@@ -278,6 +281,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(scans_router)
     app.include_router(artists_router)
+    app.include_router(releases_router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:

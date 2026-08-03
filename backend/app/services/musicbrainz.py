@@ -108,6 +108,39 @@ class MusicBrainzClient:
                 )
         return results
 
+    async def search_release_groups(
+        self, mbid: str, from_date: str, limit: int = 100, offset: int = 0
+    ) -> dict:
+        """Search release groups of one artist, spec 8.1 exact query.
+
+        ``from_date`` must be ISO ``YYYY-MM-DD``. Returns the raw response
+        (``release-groups`` list plus ``count`` for pagination).
+        """
+        query = f"arid:{mbid} AND firstreleasedate:[{from_date} TO *]"
+        return await self._get("release-group/", {"query": query, "limit": limit, "offset": offset})
+
+    async def browse_artist_recordings(self, mbid: str, limit: int = 100, offset: int = 0) -> dict:
+        """Browse the recordings of one artist (spec 8.2).
+
+        Note: the server rejects ``inc=releases`` on this resource (verified
+        against the live API), so the releases of each recording come from
+        ``get_recording_with_releases``. The total is in ``recording-count``.
+        Returns the raw response (``recordings`` list plus count).
+        """
+        return await self._get("recording/", {"artist": mbid, "limit": limit, "offset": offset})
+
+    async def get_recording_with_releases(self, recording_mbid: str) -> dict:
+        """One recording with its releases (spec 8.2; lookup supports inc=releases)."""
+        return await self._get(f"recording/{recording_mbid}", {"inc": "releases"})
+
+    async def get_release(self, release_id: str) -> dict:
+        """One release with its embedded release-group (id, types, first-release-date)."""
+        return await self._get(f"release/{release_id}", {"inc": "release-groups"})
+
+    async def get_release_group(self, rgid: str) -> dict:
+        """Release-group details: artist-credit, primary-type, secondary-types, first-release-date."""
+        return await self._get(f"release-group/{rgid}", {"inc": "artist-credits"})
+
     async def aclose(self) -> None:
         """Close the underlying httpx AsyncClient."""
         await self._http.aclose()
