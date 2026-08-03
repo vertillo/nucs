@@ -8,7 +8,7 @@
 
 - Fase corrente: **04** → aprire `piano/fasi/fase-04-matching-artisti.md`
 - Fasi completate: 00, 01, 02, 03
-- Branch attivo: `fase-03-scan-libreria`
+- Branch attivo: `fase-04-matching-artisti` (fase-03 mergiata su main dopo review)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
 
