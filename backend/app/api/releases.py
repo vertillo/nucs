@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
@@ -14,6 +13,7 @@ from app.deps import require_user
 from app.models import Artist, Release, ReleaseArtist, ReleaseState, utc_now
 from app.models import Session as DbSession
 from app.schemas import ReleaseStatePatch, SeenAllRequest
+from app.services.dates import parse_mb_date
 
 router = APIRouter(prefix="/api/v1/releases", tags=["releases"])
 
@@ -28,12 +28,19 @@ def _escape_like(value: str) -> str:
 
 def _validate_date_param(name: str, value: str) -> str:
     """Accept ISO dates (including partial ``YYYY``/``YYYY-MM``, matching the
-    MB date format used in the feed); raise 422 otherwise."""
-    try:
-        date.fromisoformat(value)
-    except ValueError:
+    MB date format used in the feed); raise 422 otherwise.
+
+    The value is normalized to the zero-padded form stored in the DB, so a
+    non-padded ``2024-5`` filters like ``2024-05`` (string comparison).
+    """
+    parsed = parse_mb_date(value)
+    if parsed is None:
         raise HTTPException(status_code=422, detail=f"Invalid {name} filter") from None
-    return value
+    start, _end = parsed
+    parts = value.strip().split("-")
+    if len(parts) == 1:
+        return value.strip()
+    return f"{start:%Y-%m}" if len(parts) == 2 else start.isoformat()
 
 
 def _parse_types(type_csv: str) -> list[str]:

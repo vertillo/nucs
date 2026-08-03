@@ -183,6 +183,17 @@ async def test_api_releases_validation(client):
     assert long_q == 422
 
 
+async def test_api_releases_normalizes_non_padded_date_filters(client):
+    """BASSA-2 regression: ``from=2024-5`` filters like ``2024-05``, so a
+    zero-padded stored date (2024-05-03) is not wrongly excluded."""
+    _seed()
+    await _login(client)
+    padded = (await client.get("/api/v1/releases", params={"from": "2024-05-01"})).json()["total"]
+    non_padded = (await client.get("/api/v1/releases", params={"from": "2024-5"})).json()["total"]
+    assert padded == non_padded
+    assert non_padded > 0
+
+
 async def test_api_releases_q_escapes_like_wildcards(client):
     _seed()
     await _login(client)

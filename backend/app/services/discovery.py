@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session_factory
 from app.models import Artist, Release, ReleaseArtist, ScanRun, SeenRecording, utc_now
 from app.security import get_setting
+from app.services import scan_locks
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.dates import parse_mb_date, release_in_range
 from app.services.musicbrainz import MBError, get_client
@@ -250,7 +251,7 @@ async def _level1_artist(
             artist.mbid, from_date.isoformat(), limit=_PAGE_SIZE, offset=offset
         )
         groups = data.get("release-groups") or []
-        count = data.get("count") or 0
+        count = data.get("count")
         for release_group in groups:
             seen = await _process_release_group(
                 db, artist, release_group, discovery_from, allowed_types, stats
@@ -258,7 +259,7 @@ async def _level1_artist(
             if seen and (latest_seen is None or seen > latest_seen):
                 latest_seen = seen
         offset += _PAGE_SIZE
-        if not groups or offset >= count:
+        if not groups or (count is not None and offset >= count):
             break
     artist.last_release_check = latest_seen
 
@@ -319,7 +320,9 @@ async def _level2_artist(
             try:
                 stats["api_calls"] += 1
                 details = await client.get_recording_with_releases(recording_mbid)
-                for release in details.get("releases") or []:
+                releases = details.get("releases") or []
+                accepted_any = False
+                for release in releases:
                     release_id = release.get("id")
                     if not release_id:
                         continue
@@ -328,7 +331,7 @@ async def _level2_artist(
                     release_group = release_data.get("release-group")
                     if not release_group or not release_group.get("id"):
                         continue
-                    await _process_release_group(
+                    if await _process_release_group(
                         db,
                         artist,
                         release_group,
@@ -336,11 +339,18 @@ async def _level2_artist(
                         allowed_types,
                         stats,
                         role=ROLE_FEATURED,
-                    )
+                    ):
+                        accepted_any = True
             except MBError:
                 logger.warning("level-2: release fetch failed for recording %s", recording_mbid)
                 continue
-            _mark_recording_seen(db, artist.id, recording_mbid)
+            # Mark the recording seen only when it cannot yield new releases
+            # anymore (no releases at all, or at least one accepted). A
+            # recording whose releases were all skipped (future date, no date,
+            # type excluded) is re-examined next run, so a release becomes
+            # visible once MB completes its date (review finding MEDIA 1).
+            if not releases or accepted_any:
+                _mark_recording_seen(db, artist.id, recording_mbid)
         offset += _PAGE_SIZE
         if not recordings or (count is not None and offset >= count):
             break
@@ -426,38 +436,27 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
     return stats
 
 
-_running: dict[str, str] = {}
-_locks: dict[str, asyncio.Lock] = {}
 _tasks: set[asyncio.Task] = set()
 
 
 def running_scans() -> dict[str, str]:
-    """Snapshot of in-progress discovery scans: type -> started_at (spec 10)."""
-    return dict(_running)
+    """Snapshot of the in-progress scan: type -> started_at (spec 10)."""
+    return scan_locks.running_scans()
 
 
 def reset_state() -> None:
-    """Clear locks and the running snapshot (test isolation)."""
-    _locks.clear()
-    _running.clear()
+    """Clear the shared scan lock, the running snapshot and task registry (test isolation)."""
+    scan_locks.reset_state()
     _tasks.clear()
 
 
-def _get_lock(scan_type: str) -> asyncio.Lock:
-    lock = _locks.get(scan_type)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[scan_type] = lock
-    return lock
-
-
 async def start_releases_scan() -> bool:
-    """Start the level-1 discovery in the background; False when already running."""
+    """Start the level-1 discovery in the background; False when any scan is running."""
     return await _start_scan(SCAN_TYPE_RELEASES)
 
 
 async def start_feat_scan() -> bool:
-    """Start the level-2 discovery in the background; False when already running."""
+    """Start the level-2 discovery in the background; False when any scan is running."""
     return await _start_scan(SCAN_TYPE_FEAT)
 
 
@@ -475,31 +474,24 @@ async def cancel_all() -> None:
     for task in tasks:
         with suppress(asyncio.CancelledError):
             await task
-    for scan_type in list(_running):
-        lock = _locks.get(scan_type)
-        if lock is not None and lock.locked():
-            lock.release()
-        _running.pop(scan_type, None)
+    for scan_type in list(scan_locks.running_scans()):
+        scan_locks.finish(scan_type)
 
 
 async def _start_scan(scan_type: str) -> bool:
-    lock = _get_lock(scan_type)
-    if lock.locked():
+    if not await scan_locks.try_start(scan_type):
         return False
-    await lock.acquire()
-    _running[scan_type] = utc_now()
     try:
-        task = asyncio.get_running_loop().create_task(_run_discovery_task(scan_type, lock))
+        task = asyncio.get_running_loop().create_task(_run_discovery_task(scan_type))
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
     except Exception:
-        _running.pop(scan_type, None)
-        lock.release()
+        scan_locks.finish(scan_type)
         raise
     return True
 
 
-async def _run_discovery_task(scan_type: str, lock: asyncio.Lock) -> None:
+async def _run_discovery_task(scan_type: str) -> None:
     """Background worker: fresh session, lock released even on failure."""
     try:
         with get_session_factory()() as db:
@@ -508,5 +500,4 @@ async def _run_discovery_task(scan_type: str, lock: asyncio.Lock) -> None:
     except Exception:
         logger.exception("discovery task failed")
     finally:
-        _running.pop(scan_type, None)
-        lock.release()
+        scan_locks.finish(scan_type)

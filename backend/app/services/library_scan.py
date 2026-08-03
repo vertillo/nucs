@@ -26,7 +26,7 @@ from sqlalchemy import delete, func, select
 from app.config import get_settings
 from app.db import get_session_factory
 from app.models import Artist, ScanFile, ScanRun, utc_now
-from app.services import mb_matching
+from app.services import mb_matching, scan_locks
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.names import extract_feat_from_title, is_trivial_artist, normalize_name
 
@@ -282,46 +282,29 @@ def scan_library_sync(full: bool = False) -> dict:
     return stats
 
 
-_running: dict[str, str] = {}
-_locks: dict[str, asyncio.Lock] = {}
-
-
 def running_scans() -> dict[str, str]:
     """Snapshot of in-progress scans: scan type -> started_at (spec 10)."""
-    return dict(_running)
+    return scan_locks.running_scans()
 
 
 def reset_state() -> None:
-    """Clear locks and the running snapshot (test isolation)."""
-    _locks.clear()
-    _running.clear()
-
-
-def _get_lock(scan_type: str) -> asyncio.Lock:
-    lock = _locks.get(scan_type)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[scan_type] = lock
-    return lock
+    """Clear the shared scan lock and running snapshot (test isolation)."""
+    scan_locks.reset_state()
 
 
 async def start_library_scan(full: bool = False) -> bool:
     """Start a background library scan; return False if one is already running (spec 10)."""
-    lock = _get_lock(SCAN_TYPE_LIBRARY)
-    if lock.locked():
+    if not await scan_locks.try_start(SCAN_TYPE_LIBRARY):
         return False
-    await lock.acquire()
-    _running[SCAN_TYPE_LIBRARY] = utc_now()
     try:
-        asyncio.get_running_loop().create_task(_run_scan_task(full, lock))
+        asyncio.get_running_loop().create_task(_run_scan_task(full))
     except Exception:
-        _running.pop(SCAN_TYPE_LIBRARY, None)
-        lock.release()
+        scan_locks.finish(SCAN_TYPE_LIBRARY)
         raise
     return True
 
 
-async def _run_scan_task(full: bool, lock: asyncio.Lock) -> None:
+async def _run_scan_task(full: bool) -> None:
     try:
         stats = await asyncio.to_thread(scan_library_sync, full)
         match_stats = await _match_pending_after_scan()
@@ -329,8 +312,7 @@ async def _run_scan_task(full: bool, lock: asyncio.Lock) -> None:
     except Exception:
         logger.exception("library scan task failed")
     finally:
-        _running.pop(SCAN_TYPE_LIBRARY, None)
-        lock.release()
+        scan_locks.finish(SCAN_TYPE_LIBRARY)
 
 
 async def _match_pending_after_scan() -> dict:

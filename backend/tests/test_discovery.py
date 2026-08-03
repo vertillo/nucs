@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import select
 
 import app.services.discovery as discovery
+import app.services.library_scan as library_scan_module
 import app.services.musicbrainz as musicbrainz
 from app.db import get_session_factory
 from app.main import run_migrations, seed_settings_if_empty
@@ -107,7 +108,7 @@ class _FakeClient:
         page_index = offset // limit
         pages = self.search_pages.get(mbid, [])
         groups = pages[page_index] if page_index < len(pages) else []
-        return {"release-groups": groups, "count": self.search_counts.get(mbid, 0)}
+        return {"release-groups": groups, "count": self.search_counts.get(mbid)}
 
     async def browse_artist_recordings(self, mbid, limit=100, offset=0):
         self.browse_calls.append((mbid, limit, offset))
@@ -115,7 +116,7 @@ class _FakeClient:
         page_index = offset // limit
         pages = self.browse_pages.get(mbid, [])
         recordings = pages[page_index] if page_index < len(pages) else []
-        return {"recordings": recordings, "recording-count": self.browse_counts.get(mbid, 0)}
+        return {"recordings": recordings, "recording-count": self.browse_counts.get(mbid)}
 
     async def get_recording_with_releases(self, recording_mbid):
         self.recording_lookups.append(recording_mbid)
@@ -274,6 +275,23 @@ async def test_level1_paginates_all_results(disc_db, monkeypatch):
     ]
     with get_session_factory()() as db:
         assert len(db.scalars(select(Release)).all()) == 150
+
+
+async def test_level1_paginates_without_count_field(disc_db, monkeypatch):
+    """Missing ``count`` in the search response must not stop after page one."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    page_one = [
+        _rg(f"rg-p0-{i}", f"Album {i}", "Album", "2024-06-01", _credit(("Mio", ""))) for i in range(100)
+    ]
+    fake.search_pages["mb-mio"] = [page_one, []]  # count is never set -> None
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["api_calls"] == 2  # keeps paging until the empty page
+    assert stats["releases_new"] == 100
 
 
 async def test_level1_cursor_moves_from_after_first_run(disc_db, monkeypatch):
@@ -516,6 +534,68 @@ async def test_level2_recording_not_marked_seen_when_release_fetch_fails(disc_db
         assert db.get(SeenRecording, "rec-fail") is None  # retried next run
 
 
+async def test_level2_future_dated_release_not_marked_seen_then_picked_up(disc_db, monkeypatch):
+    """MEDIA-1 regression: a recording whose only release is future-dated is
+    NOT marked seen, so the release is picked up once it becomes current."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-future"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-future"] = _recording_detail("rec-future", ["rel-f"])
+    fake.release_details["rel-f"] = _release_detail(
+        "rel-f", _rg("rg-f", "Album Futuro", "Album", "2999-01-01", _credit(("Altro", "")))
+    )
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 0  # out of range, skipped
+    with get_session_factory()() as db:
+        assert db.get(SeenRecording, "rec-future") is None  # will be re-examined
+
+    # MB completes the date: same run next week now finds the release.
+    fake.release_details["rel-f"] = _release_detail(
+        "rel-f", _rg("rg-f", "Album Futuro", "Album", "2024-07-01", _credit(("Altro", "")))
+    )
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.rgid == "rg-f"))
+        assert row is not None and row.first_release_date == "2024-07-01"
+        assert db.get(SeenRecording, "rec-future") is not None
+
+
+async def test_level2_undated_release_not_marked_seen(disc_db, monkeypatch):
+    """MEDIA-1 regression: undated release groups are re-examined, so the
+    release appears once MusicBrainz adds the date."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-nd"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-nd"] = _recording_detail("rec-nd", ["rel-nd"])
+    fake.release_details["rel-nd"] = _release_detail(
+        "rel-nd",
+        {
+            "id": "rg-nd",
+            "title": "Senza Data",
+            "primary-type": "Album",
+            "secondary-types": [],
+            "artist-credit": _credit(("Altro", "")),
+        },
+    )
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["skipped_no_date"] == 1
+    with get_session_factory()() as db:
+        assert db.get(SeenRecording, "rec-nd") is None
+
+
 async def test_run_discovery_records_error_status_on_fatal_exception(disc_db, monkeypatch):
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
@@ -636,6 +716,30 @@ async def test_cancel_all_persists_error_run_and_releases_locks(disc_db, monkeyp
         assert run.status == "error"
     # lock released: a new scan can start immediately
     assert await discovery.start_releases_scan() is True
+    fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+
+
+async def test_global_scan_lock_serializes_all_scan_types(disc_db, monkeypatch):
+    """MEDIA-2 regression: any scan type refuses to start while another scan
+    (library, releases or feat) is in progress — SQLite allows one writer."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    fake.gate = asyncio.Event()
+    _seed_artists(("Mio", "mb-mio"))
+
+    assert await discovery.start_releases_scan() is True
+    assert await discovery.start_feat_scan() is False
+    assert await library_scan_module.start_library_scan() is False
+    assert discovery.running_scans() == {"releases": discovery.running_scans()["releases"]}
+
+    fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert await discovery.start_feat_scan() is True
     fake.gate.set()
     deadline = asyncio.get_running_loop().time() + 5.0
     while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:

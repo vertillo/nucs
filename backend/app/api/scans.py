@@ -13,7 +13,7 @@ from app.deps import require_user
 from app.models import ScanRun
 from app.models import Session as DbSession
 from app.security import get_setting
-from app.services import discovery, library_scan
+from app.services import discovery, library_scan, scan_locks
 
 router = APIRouter(prefix="/api/v1/scans", tags=["scans"])
 
@@ -67,7 +67,7 @@ async def scan_status(
 ) -> dict:
     """Running scan (if any) plus the last 10 scan_runs."""
     running = None
-    for scan_type, since in {**library_scan.running_scans(), **discovery.running_scans()}.items():
+    for scan_type, since in scan_locks.running_scans().items():
         running = {"type": scan_type, "since": since}
     rows = db.scalars(select(ScanRun).order_by(ScanRun.id.desc()).limit(10)).all()
     last_runs = []
