@@ -53,6 +53,11 @@ Variabili d'ambiente:
 | `ADMIN_USER` | `admin` | credenziali admin |
 | `ADMIN_PASS` | `password-lunga-12` | **il backend deve avere QUESTO utente** |
 
+> **Importante**: il backend E2E va avviato con `NOTIFY_URLS=` (vuoto) se esiste un
+> `backend/.env` di sviluppo con un URL Apprise reale: le env esplicite hanno
+> precedenza sul file `.env` e il seed al primo avvio deve restare pulito
+> (altrimenti i check "senza URL" di fase 09 falliscono e partono notifiche reali).
+
 ## Struttura
 
 - `harness.js` — core: launch Chrome headless, `check()` PASS/FAIL, login UI,

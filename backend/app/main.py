@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 from collections.abc import Iterable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Network, IPv6Network
 from pathlib import Path
@@ -23,6 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+from app import scheduler as scheduler_module
 from app.api.artists import router as artists_router
 from app.api.auth import router as auth_router
 from app.api.covers import router as covers_router
@@ -33,7 +33,6 @@ from app.config import get_settings
 from app.db import get_engine, get_session_factory
 from app.models import Setting
 from app.security import (
-    cleanup_expired_sessions,
     create_admin_user,
     get_setting,
     is_trusted_peer,
@@ -55,7 +54,6 @@ _CSP = (
 )
 _HSTS = "max-age=31536000; includeSubDomains"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-_SESSION_CLEANUP_INTERVAL_SECONDS = 3600.0
 
 _BOOT_ADMIN_HELP = (
     "no admin user configured: set ADMIN_USERNAME and ADMIN_PASSWORD for the first boot "
@@ -249,34 +247,18 @@ def ensure_admin_exists() -> None:
             sys.exit(1)
 
 
-async def _session_cleanup_loop() -> None:
-    """Hourly removal of expired sessions (spec 5.2); the scan scheduler lands in phase 10."""
-    logger = logging.getLogger(__name__)
-    while True:
-        await asyncio.sleep(_SESSION_CLEANUP_INTERVAL_SECONDS)
-        try:
-            with get_session_factory()() as db:
-                removed = cleanup_expired_sessions(db)
-            if removed:
-                logger.info("removed %d expired sessions", removed)
-        except Exception:
-            logger.exception("session cleanup failed")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     run_migrations()
     seed_settings_if_empty()
     ensure_admin_exists()
-    cleanup_task = asyncio.create_task(_session_cleanup_loop())
+    scheduler_module.start_scheduler()
     logging.getLogger(__name__).info(
         "nucs backend started version=%s data_dir=%s", APP_VERSION, settings.data_dir
     )
     yield
-    cleanup_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await cleanup_task
+    scheduler_module.shutdown_scheduler()
     await discovery.cancel_all()
     await close_client()
     await deezer.close_client()

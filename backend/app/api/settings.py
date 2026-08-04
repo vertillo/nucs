@@ -15,10 +15,12 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app import scheduler as scheduler_module
 from app.db import get_db
 from app.deps import get_client_ip, require_user
 from app.models import Session as DbSession
 from app.security import get_setting, set_setting
+from app.services import notify as notify_service
 from app.services import spotify
 from app.services.audit import EVENT_SETTINGS_CHANGE, log_event
 
@@ -200,4 +202,26 @@ async def update_settings(
     db.commit()
     if _SECRET_KEYS.intersection(normalized):
         spotify.invalidate_token()
+    if scheduler_module.SCHEDULE_KEYS.intersection(normalized):
+        scheduler_module.refresh_jobs(db)
     return _settings_body(db)
+
+
+@router.post("/notify-test")
+async def notify_test(
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+) -> dict:
+    """Send a test Apprise notification (spec 10).
+
+    Apprise is never invoked when notifications are disabled (spec 10); with
+    no URL configured the request fails with a clear message too.
+    """
+    if get_setting(db, "notify_enabled") != "true":
+        raise HTTPException(status_code=400, detail="Notifications are disabled")
+    if not get_setting(db, "notify_urls"):
+        raise HTTPException(status_code=400, detail="No notification URLs configured")
+    ok, error = await notify_service.send_notification("nucs", "Test notification")
+    if not ok:
+        raise HTTPException(status_code=400, detail=error)
+    return {"sent": True}

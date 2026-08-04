@@ -6,11 +6,59 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **09b** → aprire `piano/fasi/fase-09b-notifiche-env.md` (fase intermedia: default notifiche attive + seed NOTIFY_URLS da env al primo avvio; la 10 la segue)
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b (fase 13 = checklist manuale, da eseguire dopo la 12)
-- Branch attivo: `fase-09b-notifiche-env` (fase-09 mergiata su main con `9934af0`)
-- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto); **endpoint `POST /settings/notify-test` ASSENTE dal backend** (è in §10 ma non è mai stato implementato — appartiene alla fase 10 con Apprise; il bottone UI mostra un messaggio chiaro client-side senza URL, ma la chiamata vera risponde 404 finché la fase 10 non lo aggiunge, vedi FASE 09)
+- Fase corrente: **10** → aprire `piano/fasi/fase-10-scheduler-notifiche.md`
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10 (fase 13 = checklist manuale, da eseguire dopo la 12)
+- Branch attivo: `fase-10-scheduler-notifiche` (fase-09b mergiata su main con `7f527bb`)
+- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11); **il `backend/.env` di sviluppo con URL Apprise reale va neutralizzato nei backend E2E con `NOTIFY_URLS=`** (documentato in `e2e/README.md`; il gap notify-test è chiuso — endpoint implementato in fase 10)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## FASE 10 — Scheduler, backup DB, notifiche Apprise — 2026-08-04
+- Branch: fase-10-scheduler-notifiche
+- Cosa è stato fatto:
+  - **Dipendenze** (`requirements.txt`): `apscheduler==3.11.3` (AsyncIOScheduler, spec 2) e `apprise==1.12.0` (multi-provider, spec 1.2).
+  - **`backend/app/scheduler.py`** (nuovo): singleton `AsyncIOScheduler(timezone=settings.TZ)` avviato nel lifespan (dopo migrazioni/seed) e spento con `shutdown(wait=False)` all'uscita (idempotente, gestisce `SchedulerNotRunningError`). `populate_jobs(scheduler, db)` ricostruisce i job da settings (idempotente: rimuove i job esistenti prima di aggiungere — **mai duplicati**); `refresh_jobs(db)` chiamato dal PUT /settings quando il payload tocca `SCHEDULE_KEYS` (`scan_library_time`, `scan_releases_time`, `feat_scan_weekday`, `feat_scan_enabled`). Job (tutti `coalesce=True, max_instances=1, misfire_grace_time=3600`):
+    - `library_scan` daily da `scan_library_time` → `library_scan.start_library_scan` (include auto-match fase 04)
+    - `releases_scan` daily da `scan_releases_time` → discovery livello 1
+    - `feat_scan` weekly (weekday da `feat_scan_weekday`, alla stessa ora di `scan_releases_time`) **solo se `feat_scan_enabled`**
+    - `backup_db` daily **02:30** (fisso) → `backup.backup_now` in `to_thread`
+    - `cleanup_sessions` hourly → `security.cleanup_expired_sessions` in `to_thread` (**sostituisce il vecchio loop asyncio di main.py, rimosso** — niente doppia esecuzione)
+    - I job riusano gli STESSI lock degli scan manuali (`scan_locks`): se occupato → log INFO `"skipped, already running"`, mai doppia esecuzione.
+  - **`backend/app/services/backup.py`** (nuovo): `backup_now(db_path, backup_dir={DATA_DIR}/backups)` con la **API di backup online di sqlite3** (sorgente aperta `mode=ro`, safe su WAL in uso) → `app-YYYYMMDD-HHMMSS.db`; **retention 7** (`_cleanup_old`, solo file `app-<data>-<ora>.db`, i più vecchi cancellati); log path+dimensione. CLI `python -m app.cli backup-now`.
+  - **`backend/app/services/notify.py`** (nuovo): `send_notification(title, body)` async → legge settings (`notify_enabled`, `notify_urls`), **Apprise MAI invocato se disabilitato o senza URL** (ritorna `(False, "Notifications are disabled")` / `"No notification URLs configured"`), URL splittati su `[\n,]` con strip (lista anche mista tgram://+ntfy://), invio sync in `to_thread`, non lancia mai (difensivo). `maybe_notify_new_releases(new_rgids)` — **hook aggregato** (§8.4.3) chiamato a fine `run_discovery` (solo se `releases_new` rilevati via rgid): 1 sola notifica `"nucs: {n} new releases"` con le prime 5 righe `"Artist – Title (type, date)"` + `"…and {k} more"`.
+  - **Endpoint `POST /api/v1/settings/notify-test`** (nuovo, `require_user`): disabilitato → 400 `"Notifications are disabled"`; senza URL → 400 `"No notification URLs configured"`; altrimenti invio → `{"sent": true}` o 400 con l'errore inglese. **Colma il gap segnalato in fase 09** (endpoint mancante).
+  - **`main.py`**: lifespan avvia/arresta lo scheduler; rimosso `_session_cleanup_loop` e i relativi import.
+  - **`cli.py`**: comando `backup-now`.
+- Decisioni prese (e perché):
+  - **Orari di default** (documentati qui come richiesto): scan libreria `03:00`, scan release `04:00` (spec §4), backup `02:30` (fisso da prompt), feat scan weekly alla stessa ora dello scan release, cleanup sessioni ogni ora.
+  - **Misfire**: `misfire_grace_time=3600` — un job che non è partito all'orario esatto (es. app in stop o evento loop occupato) viene comunque eseguito entro 1h; oltre viene perso (loggato da APScheduler). `coalesce=True`: se più run sono in ritardo ne parte una sola. `max_instances=1`: mai due istanze dello stesso job.
+  - **Backup via API sqlite3 backup** (non copia a caldo): coerente con WAL — richiesto dalla review.
+  - **Reschedule solo sulle chiavi di scheduling** (`SCHEDULE_KEYS`): un PUT di altre sezioni non tocca i job.
+  - **Scheduler nei test**: fixture autouse `_no_scheduler` — `start_scheduler` diventa no-op e viene installato un `AsyncIOScheduler` **mai avviato** come singleton (i job NON possono partire durante pytest; `refresh_jobs` resta ispezionabile). Il test del reschedule PUT lo usa per ispezionare i trigger.
+  - **Fixture `_no_real_notifications`**: `send_notification` no-op in tutti i test (come mb_matching); test_notify ri-abilita la funzione reale esplicitamente (`REAL_SEND_NOTIFICATION`, stesso pattern di `REAL_MATCH_ALL_PENDING`).
+  - **Hermeticità dei test dall'ambiente reale**: `app_env` ora forza `NOTIFY_URLS=""` e rimuove `NOTIFY_ENABLED` — il `backend/.env` di sviluppo (con token reali) non deve mai filtrare nei test (bug trovato in verifica: i test seedavano l'URL reale dell'utente).
+- Test (nuovi): `test_backup.py` (6: copia apribile+integro, dir default, DB aperto, retention 7 su 9 file, file estranei ignorati), `test_notify.py` (11: disabled→nessuna chiamata, senza URL→errore chiaro, enabled→apprise chiamato con TUTTI gli URL, URL invalido, provider failure, aggregata 1 sola notifica 5+1 righe con ordine per data desc, skip se disabled/senza URL, mai eccezioni), `test_scheduler.py` (8: 5 job con trigger corretti, feat solo se enabled con weekday, reschedule via PUT senza duplicati, skip con lock occupato, wiring al launcher, SCHEDULE_KEYS), `test_settings_api.py` (+4 notify-test: disabled 400, senza URL 400, successo, failure riportata). Suite: **267 passed** (238 → 267), ruff check+format OK.
+- Esito verifica (reale, backend su :8099 con DB fresco, credenziali e URL Apprise dal `backend/.env`):
+  - Scheduler: log `"scheduler started with 5 jobs"`; PUT `scan_releases_time` a +2 min → `"scheduler jobs refreshed: 5 jobs"` → **run releases partito alle 20:59:00 UTC** esatto, status ok; **riavvio → 5 job, nessun duplicato**.
+  - Backup CLI: `app-20260804-225947.db` (102400 byte), `PRAGMA integrity_check` → ok.
+  - Notifiche: **POST notify-test → 200 `{"sent": true}` con URL reale (notifica Telegram inviata — conferma umana richiesta all'utente)**; con `notify_enabled=false` → 400 `"Notifications are disabled"`.
+  - Seed env da `.env` reale confermato (`"settings seeded from env: notify_urls"`, `notify_urls` len 64, mai stampata).
+  - **Regressione `e2e:09` → 43/43 PASS** — dopo il fix del leak del `.env` (vedi sotto).
+- Problemi noti / debito tecnico:
+  - **Leak del `.env` di sviluppo nei backend E2E** (bug trovato in verifica): con `backend/.env` presente, il backend di test seedava l'URL reale → il check "notify-test senza URL" falliva e partiva una notifica reale. Fix operativo: avviare i backend E2E con `NOTIFY_URLS=` esplicita (le env vincono sul dotenv); documentato in `e2e/README.md`.
+  - Il job `feat_scan` usa l'ora di `scan_releases_time` (interpretazione, il prompt non specificava l'ora del job weekly) — registrato qui.
+  - Restano: warning httpx2, header `server: uvicorn` (fase 11).
+- Istruzioni avvio dev (fase 10):
+  ```bash
+  # backend: scheduler attivo al boot (5 job), notifiche dal backend/.env se presente
+  DATA_DIR=/tmp/nucs-f10 DEV_INSECURE_COOKIES=true ADMIN_USERNAME=admin \
+    ADMIN_PASSWORD='password-lunga-12' .venv/bin/uvicorn app.main:app --port 8080
+  # backup manuale
+  python -m app.cli backup-now
+  # test (hermetici: l'env reale è neutralizzato dalle fixture)
+  .venv/bin/python -m pytest -q
+  ```
 
 ---
 
