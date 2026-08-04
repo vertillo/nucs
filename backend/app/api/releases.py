@@ -163,10 +163,12 @@ async def get_release(
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
 ) -> dict:
-    """Release detail; side-effect seen=true, seen_at=now (spec 10).
+    """Release detail with the spec-10 seen side-effect.
 
-    The side effect is intentional and documented in piano/STATO.md: any view
-    marks the release as seen (accepted for a single-user app).
+    Viewing marks a release as seen (seen=1, seen_at=now) only when it is not
+    already explicitly unseen: a state row with seen=0 (set via POST state) is
+    respected, otherwise the toggle in the detail UI could never keep a release
+    unseen. Already-seen releases only refresh seen_at.
     """
     row = db.get(Release, release_id)
     if row is None:
@@ -175,8 +177,7 @@ async def get_release(
     if state is None:
         state = ReleaseState(release_id=release_id, seen=1, seen_at=utc_now())
         db.add(state)
-    else:
-        state.seen = 1
+    elif state.seen:
         state.seen_at = utc_now()
     db.commit()
     return {

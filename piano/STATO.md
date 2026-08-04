@@ -38,7 +38,36 @@
 - Esito verifica (E2E automatico `npm run e2e:08`, backend :8094 con seed reale 87 release):
   - **29/29 PASS**: feed card+cover da /api/v1/covers (26/30 con cover), badge e date ISO, pallino "new" su tutte le unseen; chip Singles → 30 card tutte SINGLE (API 69); toggle unseen → card == min(total,30) e pallino su ogni card; search "daft" → 3 card (debounce), stringa inesistente → empty state; **Load more → 60 card senza duplicati**; dettaglio: H1, 4 bottoni con `rel=noopener` e domini §9 esatti, cover locale; favorite → aria-pressed=true **persiste dopo reload**; back → pallino sparito; hide → release assente dal feed; mark-all (confirm) → unseen-only empty; mobile 375px → grid 2 colonne e nessuno scroll orizzontale; **zero errori console (esclusi 401 intenzionali), zero violazioni CSP, zero immagini da domini esterni**.
   - Regressioni: `e2e:07` → **21/21**, `e2e:06` → **23/23** (sullo stesso backend), pytest 231, ruff OK.
-- Esito review (modello economico): **da eseguire** (fase 08 richiede review prima del merge su main).
+- Esito review (modello economico): **eseguita (2026-08-04) — 1 MEDIA, 2 BASSA** (vedi sotto).
+  Check: nessun hotlink esterno (F2: img solo da /api/v1/covers, verificato anche via `state.imageHosts`
+  nell'E2E), `target=_blank` sempre con `rel="noopener noreferrer"` (LinkButtons), date parziali
+  mostrate come sono (§11.3), paginazione senza duplicati (id unici verificati E2E + disabled su
+  Load more durante fetch), **race seen-side-effect vs cache react-query → MEDIA trovata e fixata**,
+  accessibilità minima (focus-visible ring ovunque, aria-pressed/role=switch/aria-label, alt sensati,
+  empty state con link, dot con aria-label), nessun dato inventato oltre §10 (tipi allineati alle
+  risposte reali; unico campo aggiunto = `rgid` nel list item, documentato), stringhe UI tutte in
+  inglese. Checklist sicurezza: B5 ✅ (nessun dangerouslySetInnerHTML, URL esterni solo dal server),
+  F2 ✅.
+- **Fix dei findings (post-review, 2026-08-04)** — commit `fix(frontend): phase-08 review findings...`:
+  - **MEDIA 1 (toggle Seen non funzionante in direzione off)** — il GET del dettaglio ha il
+    side-effect `seen=true` (§10): dopo un un-see esplicito (`POST state seen:false`), il refetch
+    dell'invalidate (e ogni re-view) ribaltava `seen` a 1 → la release non poteva restare non vista
+    (verificato empiricamente: unsee poi GET → seen=1). Fix in `api/releases.py::get_release`: il
+    side-effect marca seen **solo se la release non è già esplicitamente non-vista** (riga stato
+    assente → seen=1 come prima; seen=1 → refresh di `seen_at`; seen=0 → rispettata). **Deviazione
+    da §10 registrata**: "side-effect seen=true" vale per le release mai viste/esplicitamente viste;
+    l'un-see esplicito viene rispettato (necessario per il toggle §11.2.3). Regression test
+    `test_api_release_detail_respects_explicit_unsee` + test esistente `..._sets_seen` invariato
+    (auto-mark su release senza stato). Suite: **232 passed**.
+  - **BASSA 1 (`coverBroken` stantio tra release diverse)** — `ReleaseDetail.tsx`: lo stato
+    `coverBroken` non si resettava navigando da `/releases/1` a `/releases/2` (stessa istanza del
+    componente): una cover rotta nella prima nascondeva la cover della seconda. Fix: `useEffect`
+    che resetta lo stato al cambio di `id`.
+  - **BASSA 2 (seenAll senza onError, ACCETTATO)** — `useSeenAll` senza `onError`: un fallimento
+    di rete del seen-all è silenzioso (stesso pattern del BASSA 3 fase 07, accettato per app
+    single-user; fase 13 copre offline/retry).
+  - Re-verifica post-fix: pytest **232 passed**, ruff OK, `tsc --noEmit` + build OK, API reale:
+    un-see poi GET → `seen=0` (prima `seen=1`).
 - Problemi noti / debito tecnico:
   - Il seed E2E con `discovery_from_date=2024-01-01` richiede rete MusicBrainz e ~3-5 min (87 release + cover): documentato in `e2e/README.md` e nel file di fase.
   - `text-black` su accent (spec-mandato, sopra).

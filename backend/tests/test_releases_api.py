@@ -223,6 +223,22 @@ async def test_api_release_detail_sets_seen(client):
     assert seed["ids"][1] not in [item["id"] for item in not_seen["items"]]
 
 
+async def test_api_release_detail_respects_explicit_unsee(client):
+    """Viewing must not flip an explicit un-see (detail toggle regression)."""
+    seed = _seed()
+    await _login(client)
+    release_id = seed["ids"][1]
+
+    unset = await client.post(
+        f"/api/v1/releases/{release_id}/state", json={"seen": False}, headers=API_HEADERS
+    )
+    assert unset.json()["seen"] == 0
+
+    viewed = (await client.get(f"/api/v1/releases/{release_id}")).json()
+    assert viewed["seen"] == 0, "GET must respect the explicit un-see"
+    assert viewed["seen_at"] is None
+
+
 async def test_api_release_detail_404(client):
     await _login(client)
     response = await client.get("/api/v1/releases/424242")

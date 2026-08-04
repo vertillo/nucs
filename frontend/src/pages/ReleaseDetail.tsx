@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { ApiError } from '../api/client'
@@ -71,6 +71,9 @@ export default function ReleaseDetail() {
   const setState = useSetReleaseState(release?.id)
 
   const [coverBroken, setCoverBroken] = useState(false)
+  useEffect(() => {
+    setCoverBroken(false)
+  }, [id])
 
   if (isPending) {
     return (
