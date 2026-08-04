@@ -6,9 +6,9 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **08** → `piano/fasi/fase-08-ui-release.md` (implementata e verificata, da mergiare su main dopo review)
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07 (fase 13 = checklist manuale, da eseguire dopo la 12)
-- Branch attivo: `fase-08-ui-release`
+- Fase corrente: **09** → aprire `piano/fasi/fase-09-ui-artisti-impostazioni.md`
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08 (fase 13 = checklist manuale, da eseguire dopo la 12)
+- Branch attivo: `fase-09-ui-artisti-impostazioni` (fase-08 mergiata su main con `806a544`)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
 
