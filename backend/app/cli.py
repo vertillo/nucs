@@ -1,5 +1,5 @@
 """Management CLI: ``python -m app.cli create-admin`` / ``scan-library`` /
-``backfill-links`` (spec 5.1, 6, 8.4)."""
+``backfill-links`` / ``backup-now`` (spec 5.1, 6, 8.4, 1.2)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import argparse
 import getpass
 import sys
 
+from app.config import get_settings
 from app.db import get_session_factory
 from app.main import run_migrations
 from app.security import MIN_PASSWORD_LENGTH, create_admin_user, password_policy_ok
-from app.services import discovery, library_scan
+from app.services import backup, discovery, library_scan
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument(
         "--limit", type=int, default=200, help="Maximum number of releases to process (default 200)"
     )
+    sub.add_parser("backup-now", help="Create an online backup of the database (retention 7)")
     return parser
 
 
@@ -38,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         return _scan_library(args.full)
     if args.command == "backfill-links":
         return _backfill_links(args.limit)
+    if args.command == "backup-now":
+        return _backup_now()
     return 2  # pragma: no cover - argparse enforces a valid command
 
 
@@ -87,6 +91,17 @@ def _backfill_links(limit: int) -> int:
         f"covers_fetched={stats['covers_fetched']} links_resolved={stats['links_resolved']} "
         f"errors={stats['pipeline_errors']}"
     )
+    return 0
+
+
+def _backup_now() -> int:
+    try:
+        run_migrations()
+        dest = backup.backup_now(get_settings().db_path)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(f"Backup written: {dest} ({dest.stat().st_size} bytes)")
     return 0
 
 

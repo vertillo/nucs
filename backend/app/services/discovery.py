@@ -32,6 +32,7 @@ from app.db import get_session_factory
 from app.models import Artist, Release, ReleaseArtist, ScanRun, SeenRecording, utc_now
 from app.security import get_setting
 from app.services import deezer, scan_locks, spotify
+from app.services import notify as notify_service
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.covers import fetch_cover
 from app.services.dates import parse_mb_date, release_in_range
@@ -534,6 +535,9 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         # Spec 8.4: enrich every NEW release with cover + links. The pipeline
         # never raises; per-release failures land in pipeline_errors.
         await _enrich_new_releases(new_rgids, stats)
+        # Spec 8.4.3: one aggregate notification per run, never one per release.
+        if new_rgids:
+            await notify_service.maybe_notify_new_releases(new_rgids)
     except asyncio.CancelledError:
         # Graceful shutdown mid-run: the run did not finish, persist it as error.
         logger.warning("discovery cancelled mid-run type=%s", scan_type)

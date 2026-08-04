@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.db import get_session_factory
 from app.models import AuditLog, Setting
+from app.security import set_setting
 
 API_HEADERS = {"X-Requested-With": "XMLHttpRequest", "Origin": "https://testserver"}
 ADMIN_USERNAME = "admin"
@@ -231,6 +232,47 @@ async def test_settings_get_shows_env_seeded_notify_urls(make_client):
         body = response.json()
         assert body["notify_urls"] == "tgram://tok/chat"
         assert body["notify_enabled"] == "true"
+
+
+async def test_notify_test_disabled_returns_400(make_client, monkeypatch):
+    """Phase 10: Apprise is never invoked when notifications are disabled."""
+    async with make_client() as client:
+        with get_session_factory()() as db:
+            set_setting(db, "notify_enabled", "false")
+            db.commit()
+        await _login(client)
+        response = await client.post("/api/v1/settings/notify-test", headers=API_HEADERS)
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Notifications are disabled"
+
+
+async def test_notify_test_without_urls_returns_400(client):
+    await _login(client)
+    response = await client.post("/api/v1/settings/notify-test", headers=API_HEADERS)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "No notification URLs configured"
+
+
+async def test_notify_test_success(client):
+    await _login(client)
+    await client.put("/api/v1/settings", json={"notify_urls": "tgram://tok/chat"}, headers=API_HEADERS)
+    response = await client.post("/api/v1/settings/notify-test", headers=API_HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {"sent": True}
+
+
+async def test_notify_test_reports_send_failure(client, monkeypatch):
+    import app.services.notify as notify_module
+
+    async def _fail(title, body):
+        return (False, "Notification failed (provider error)")
+
+    monkeypatch.setattr(notify_module, "send_notification", _fail)
+    await _login(client)
+    await client.put("/api/v1/settings", json={"notify_urls": "tgram://tok/chat"}, headers=API_HEADERS)
+    response = await client.post("/api/v1/settings/notify-test", headers=API_HEADERS)
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Notification failed (provider error)"
 
 
 async def test_settings_put_audits_keys_but_never_values(client):
