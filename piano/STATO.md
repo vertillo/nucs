@@ -6,11 +6,43 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **08** → aprire `piano/fasi/fase-08-ui-release.md`
+- Fase corrente: **08** → `piano/fasi/fase-08-ui-release.md` (implementata e verificata, da mergiare su main dopo review)
 - Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07 (fase 13 = checklist manuale, da eseguire dopo la 12)
-- Branch attivo: `fase-08-ui-release` (fase-07 mergiata su main con `2a44b8e`)
+- Branch attivo: `fase-08-ui-release`
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## FASE 08 — UI: feed release + pagina dettaglio — 2026-08-04
+- Branch: fase-08-ui-release
+- Cosa è stato fatto:
+  - **`frontend/src/api/releases.ts`** (nuovo): tipi TS allineati a §10 (`ReleaseListItem` con `rgid` ora presente anche in lista, `ReleaseDetail` con i 4 link, `MatchedArtist`, `ReleasesResponse`) e hook react-query: `useReleases(filters)` (infinite query: pagina successiva se `page*page_size < total`), `useRelease(id)` (404 → ApiError), `useSetReleaseState(id)` (**ottimistico** con `onMutate` set del dato + rollback su errore + invalidate `['release', id]` e `['releases']`), `useSeenAll`. Filtri mappati: type CSV escluso 'all', seen=no se unseenOnly, q.
+  - **`frontend/src/components/ReleaseCard.tsx`** (§11.2.2): card = Link a `/releases/{id}`; copertina quadrata `aspect-square` da `/api/v1/covers/{rgid}` (`loading="lazy"`, `onError` → **placeholder surface2 con icona nota SVG**; placeholder diretto se `cover_path` null); titolo `line-clamp-2`; riga artisti con **i tuoi artisti (role primary/featured) evidenziati in accent font-medium** dentro `primary_artist` (parti non-tracked in textDim) + suffisso ` (feat. {nomi})` solo per i featured NON già presenti nella phrase (evita "X feat. Y (feat. Y)"); data ISO come da server (parziali incluse); badge tipo pill surface2 (Album/Single/EP/Other); **pallino accent top-right se !seen** (`aria-label="New"`); hover scale+shadow (dark `shadow-black/40`), `focus-visible:ring-2 ring-accent`.
+  - **`frontend/src/components/LinkButtons.tsx`** (§11.2.3): 4 pill — Spotify `bg-accent text-black` (AA, come prescritto), YouTube Music `bg-yt text-light-bg`, Deezer `bg-deezer text-light-bg`, "Search on Google" `bg-surface2 border border-border`; icona SVG inline ciascuna; `target="_blank" rel="noopener noreferrer"`; campo null → `<span aria-disabled>` opacity-50 (niente link).
+  - **`frontend/src/pages/Feed.tsx`** (§11.2.2): H1 "New releases"; chip [All|Albums|Singles|EPs] (attivo `bg-accent text-black`, `aria-pressed`); switch "Unseen only" (`role="switch" aria-checked`, `aria-label`); search placeholder "Search…" **debounce 300ms**; "Mark all as seen" (`window.confirm` → `POST seen-all` → invalidate); grid `grid-cols-2 sm:3 md:4 lg:5 xl:6 gap-4`; "Load more" se `hasNextPage` + "N of total" a fine pagine; stati: skeleton ×12 `animate-pulse`, errore + "Retry", empty state con icona + "No new releases" + "Try running a scan from Settings" + link.
+  - **`frontend/src/pages/ReleaseDetail.tsx`** (§11.2.3): "← Back to feed"; grid `md:grid-cols-[384px,1fr]`; copertina grande `max-w-[384px] rounded-xl` (o placeholder + `alt={title}`); H1; riga meta: data + badge tipo + secondary_types; blocco "Your artists" con ruolo tradotto (**Main artist / Featuring / Contributor**) in accent; LinkButtons; toggle **Seen** (aria-pressed) / **Favorite** (cuore SVG filled, aria-pressed) / **Hide↔Restore** — tutti `useSetReleaseState` ottimistico; badge "Hidden" se hidden; **404 → "Release not found" + back to feed**; errore generico → Retry; skeleton dedicato.
+  - **Backend (cambio minimo, vedi sotto)**: `rgid` aggiunto al list item di `GET /releases` (+ test aggiornato).
+  - **`e2e/scenarios/fase-08.js`** (nuovo, come da fase-08 aggiornata): harness con **seed esteso** — oltre a `h.seed` ora `PUT /settings {discovery_from_date:'2024-01-01'}` così il seed produce **87 release reali** (paginazione esercitabile); helper nuovi in harness: `apiPut`, `apiJson`, `clickByText`, `ariaPressedByText`, `setSearch` (React-controlled). Script `e2e:08` in package.json.
+- Decisioni prese (e perché):
+  - **`text-black` su `bg-accent`** (bottoni Spotify/chip/stati attivi): prescritto da §11.2.3 per contrasto AA su #1DB954 (il nero non è un token §11.1 ma è esplicitamente richiesto dalla spec per questo caso — annotato per la review).
+  - **Suffisso feat. deduplicato**: " (feat. {nomi})" aggiunto solo per i matched featured NON già contenuti in `primary_artist` (la phrase MB li include già nei casi "X feat. Y"; aggiungerli sempre produrrebbe doppioni).
+  - **Cover senza `rgid`**: il list item non esponeva `rgid` (solo il dettaglio) → la card feed NON poteva costruire `/api/v1/covers/{rgid}` (requisito §11.2.2). Trattato come **bug evidente del backend** (incoerenza interna alla spec: feed richiede copertina, endpoint copertine è per-rgid): aggiunto `"rgid": row.rgid` al list item, test aggiornato (`set(item)` + `item["rgid"] == "rg-2"`). Documentato qui come richiesto dal vincolo "dato mancante → FERMATI e scrivilo in STATO.md".
+  - **Stati con `0|1`** nei tipi TS (il backend li serializza come int): coerenti con `_state_filters`; verità convertita con `!!x`.
+  - **Skeleton su cambio filtri**: niente `keepPreviousData` → al cambio chip/search il feed mostra skeleton (niente dati stantii); l'infinite query riparte pulita da pagina 1.
+- Ambiguità riscontrate (interpretazione scelta):
+  - §11.2.2 "riga artisti ... in accent" vs `primary_artist` (phrase unica del server): resi in accent **solo i nomi dei tuoi artisti matched** presenti nella phrase (parti restanti in textDim) — l'highlight della riga intera non era possibile senza spezzare la phrase; il resto della phrase resta leggibile in textDim.
+  - "Mark all as seen" con `window.confirm` (spec §11.2.2 dice "conferma window.confirm"): ok; lo scenario E2E auto-accept il dialog.
+- Deviazioni dalle specifiche (approvate da chi): il cambio backend `rgid` nel list item (sopra) — unico e minimo, con test.
+- Test: backend — suite completa **231 passed** (aggiornato `test_releases_api.py` per `rgid`), ruff OK. Frontend — `tsc --noEmit` e `npm run build` puliti; grep hex in src → 0.
+- Esito verifica (E2E automatico `npm run e2e:08`, backend :8094 con seed reale 87 release):
+  - **29/29 PASS**: feed card+cover da /api/v1/covers (26/30 con cover), badge e date ISO, pallino "new" su tutte le unseen; chip Singles → 30 card tutte SINGLE (API 69); toggle unseen → card == min(total,30) e pallino su ogni card; search "daft" → 3 card (debounce), stringa inesistente → empty state; **Load more → 60 card senza duplicati**; dettaglio: H1, 4 bottoni con `rel=noopener` e domini §9 esatti, cover locale; favorite → aria-pressed=true **persiste dopo reload**; back → pallino sparito; hide → release assente dal feed; mark-all (confirm) → unseen-only empty; mobile 375px → grid 2 colonne e nessuno scroll orizzontale; **zero errori console (esclusi 401 intenzionali), zero violazioni CSP, zero immagini da domini esterni**.
+  - Regressioni: `e2e:07` → **21/21**, `e2e:06` → **23/23** (sullo stesso backend), pytest 231, ruff OK.
+- Esito review (modello economico): **da eseguire** (fase 08 richiede review prima del merge su main).
+- Problemi noti / debito tecnico:
+  - Il seed E2E con `discovery_from_date=2024-01-01` richiede rete MusicBrainz e ~3-5 min (87 release + cover): documentato in `e2e/README.md` e nel file di fase.
+  - `text-black` su accent (spec-mandato, sopra).
+  - Warning httpx2 e `server: uvicorn` noti (fix fase 11).
 
 ---
 

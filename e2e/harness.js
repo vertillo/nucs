@@ -97,6 +97,36 @@ async function apiPost(page, path, body = {}) {
   )
 }
 
+/** Authenticated PUT from the page context. */
+async function apiPut(page, path, body = {}) {
+  return page.evaluate(
+    async ({ path: p, body: b }) => {
+      const r = await fetch(p, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify(b),
+      })
+      let data = null
+      try {
+        data = await r.json()
+      } catch {
+        /* 204 */
+      }
+      return { status: r.status, body: data }
+    },
+    { path, body },
+  )
+}
+
+/** Authenticated JSON GET from the page context. */
+async function apiJson(page, path) {
+  return page.evaluate(async (p) => {
+    const r = await fetch(p, { credentials: 'same-origin' })
+    return { status: r.status, body: await r.json() }
+  }, path)
+}
+
 /** Poll /scans/status until nothing is running (used by --seed). */
 async function waitForScanIdle(page, timeoutMs = 300000) {
   const deadline = Date.now() + timeoutMs
@@ -138,6 +168,8 @@ module.exports = {
   finish,
   uiLogin,
   apiPost,
+  apiPut,
+  apiJson,
   waitForScanIdle,
   seed,
   realErrors,

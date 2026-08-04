@@ -143,6 +143,7 @@ async def list_releases(
     items = [
         {
             "id": row.id,
+            "rgid": row.rgid,
             "title": row.title,
             "primary_artist": row.primary_artist,
             "type": row.type,
