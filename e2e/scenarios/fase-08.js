@@ -191,6 +191,32 @@ async function main() {
     }
     h.check('detail cover from local cache (/api/v1/covers)', detail.cover)
 
+    // Click on the first external link -> opens a new tab with a sensible destination
+    const newTab = browser.waitForTarget((t) => t.url().startsWith('http') && t !== page.target(), { timeout: 15000 })
+    await page.evaluate(() => {
+      document.querySelector('a[rel="noopener noreferrer"]').click()
+    })
+    let opened = null
+    try {
+      opened = await newTab
+    } catch {
+      /* target never appeared */
+    }
+    if (opened) {
+      const url = opened.url()
+      h.check(
+        'click on external link opens a new tab (sensible destination)',
+        url.startsWith('https://open.spotify.com/') ||
+          url.startsWith('https://music.youtube.com/') ||
+          url.startsWith('https://www.deezer.com/') ||
+          url.startsWith('https://www.google.com/'),
+        url.slice(0, 90),
+      )
+      await opened.page().then((p) => p.close()).catch(() => {})
+    } else {
+      h.check('click on external link opens a new tab (sensible destination)', false, 'no target created')
+    }
+
     // Favorite: toggle -> pressed; reload -> still pressed
     await clickByText(page, 'Favorite')
     await h.wait(1000)
