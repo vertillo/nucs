@@ -6,7 +6,8 @@
   "scripts": {
     "e2e:06": "node scenarios/fase-06.js",
     "e2e:07": "node scenarios/fase-07.js",
-    "e2e:08": "node scenarios/fase-08.js"
+    "e2e:08": "node scenarios/fase-08.js",
+    "e2e:09": "node scenarios/fase-09.js"
   },
   "devDependencies": {
     "puppeteer": "25.4.0"

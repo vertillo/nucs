@@ -24,7 +24,7 @@ import app.services.mb_matching as mb_matching
 import app.services.musicbrainz as musicbrainz
 from app.db import get_session_factory
 from app.main import run_migrations
-from app.models import Artist
+from app.models import Artist, Release, ReleaseArtist
 from app.services.musicbrainz import MBError, MusicBrainzClient, build_user_agent, reset_for_tests
 from app.services.names import normalize_name
 
@@ -484,7 +484,24 @@ async def test_api_artists_list_filters_and_pagination(client):
                     mb_match_score=95,
                 ),
                 Artist(name="Radiohead", normalized_name="radiohead", source="manual", ignored=0),
+                Release(
+                    rgid="rg-count-1",
+                    title="Test Album",
+                    primary_artist="Beyonce",
+                    type="album",
+                    discovered_at="2026-01-01T00:00:00",
+                ),
             ]
+        )
+        db.flush()
+        beyonce = db.scalar(select(Artist).where(Artist.normalized_name == "beyonce"))
+        release = db.scalar(select(Release).where(Release.rgid == "rg-count-1"))
+        db.add(
+            ReleaseArtist(
+                release_id=release.id,
+                artist_id=beyonce.id,
+                role="primary",
+            )
         )
         db.commit()
     await _login(client)
@@ -497,6 +514,8 @@ async def test_api_artists_list_filters_and_pagination(client):
     item = body["items"][0]
     assert set(item) == {"id", "name", "source", "mbid", "mb_match_score", "ignored", "releases_count"}
     assert item["releases_count"] == 0
+    counts = {artist["name"]: artist["releases_count"] for artist in body["items"]}
+    assert counts == {"AC/DC": 0, "Beyonce": 1, "Radiohead": 0}
 
     ignored = (await client.get("/api/v1/artists", params={"ignored": "yes"})).json()
     assert ignored["total"] == 1 and ignored["items"][0]["name"] == "AC/DC"

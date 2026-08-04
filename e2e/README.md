@@ -41,6 +41,8 @@ ma con dati arricchiti da fase 06 (release con link + cover).
 cd e2e
 npm run e2e:06   # fase 06: link esterni §9 + endpoint /covers (API, no browser)
 npm run e2e:07   # fase 07: login, tema, navbar, logout, redirect, CSP (browser)
+npm run e2e:08   # fase 08: feed release + dettaglio (browser, seed lungo)
+npm run e2e:09   # fase 09: artisti + impostazioni (browser, seed lungo)
 ```
 
 Variabili d'ambiente:

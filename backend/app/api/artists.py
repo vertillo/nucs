@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db, get_session_factory
 from app.deps import require_user
-from app.models import Artist
+from app.models import Artist, ReleaseArtist
 from app.models import Session as DbSession
 from app.schemas import ArtistCreate, ArtistPatch
 from app.services import mb_matching
@@ -27,7 +27,19 @@ MAX_PAGE_SIZE = 100
 _DEFAULT_PAGE_SIZE = 30
 
 
-def _artist_item(row: Artist) -> dict:
+def _releases_counts(db: Session, artist_ids: list[int]) -> dict[int, int]:
+    """Number of releases per artist, one grouped query (no N+1)."""
+    if not artist_ids:
+        return {}
+    rows = db.execute(
+        select(ReleaseArtist.artist_id, func.count(ReleaseArtist.release_id))
+        .where(ReleaseArtist.artist_id.in_(artist_ids))
+        .group_by(ReleaseArtist.artist_id)
+    ).all()
+    return dict(rows)
+
+
+def _artist_item(row: Artist, releases_count: int = 0) -> dict:
     return {
         "id": row.id,
         "name": row.name,
@@ -35,7 +47,7 @@ def _artist_item(row: Artist) -> dict:
         "mbid": row.mbid,
         "mb_match_score": row.mb_match_score,
         "ignored": row.ignored,
-        "releases_count": 0,  # populated in phase 05
+        "releases_count": releases_count,
     }
 
 
@@ -59,8 +71,9 @@ async def list_artists(
         query = query.where(Artist.name.ilike(f"%{escaped}%", escape="\\"))
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     rows = db.scalars(query.order_by(Artist.name.asc()).offset((page - 1) * page_size).limit(page_size)).all()
+    counts = _releases_counts(db, [row.id for row in rows])
     return {
-        "items": [_artist_item(row) for row in rows],
+        "items": [_artist_item(row, counts.get(row.id, 0)) for row in rows],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -102,7 +115,7 @@ async def add_artist(
         raise HTTPException(status_code=400, detail="Artist already exists") from None
     db.refresh(row)
     asyncio.get_running_loop().create_task(_match_in_background(row.id))
-    return _artist_item(row)
+    return _artist_item(row, _releases_counts(db, [row.id]).get(row.id, 0))
 
 
 @router.patch("/{artist_id}")
@@ -118,7 +131,7 @@ async def update_artist(
         raise HTTPException(status_code=404, detail="Not found")
     row.ignored = payload.ignored
     db.commit()
-    return _artist_item(row)
+    return _artist_item(row, _releases_counts(db, [row.id]).get(row.id, 0))
 
 
 @router.post("/{artist_id}/rematch")
