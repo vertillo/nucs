@@ -49,14 +49,21 @@
   - **Dev-mode**: uvicorn :8080 + `npm run dev` → `/` da :5173 ok; proxy `/api/health` → JSON; **login da :5173 → 204** e `/me` → 200 (senza changeOrigin, vedi decisioni).
   - Verifica visiva browser (bg #0F0F0F, card #181818, bottone #1DB954, toggle tema persistente al reload): **non eseguibile in questo ambiente** (no browser) — da confermare manualmente in fase 08/12; le classi corrispondono ai token verificati via build CSS (10.9 kB con le utilities generate).
 - Esito review (modello economico): **da eseguire** (fase 07 richiede review economico prima del merge su main).
+- **Fix post-verifica browser (2026-08-04, trovati dal testing manuale dell'utente)** — commit `fix(frontend): theme toggle...`:
+  - **BUG toggle tema (non tornava scuro)**: `Navbar` calcolava il tema successivo dal prop `theme` (la settings server, sempre `dark`) invece che dal tema effettivo → il secondo click ri-applicava `light`. Fix: stato locale `useState(() => getStoredTheme() ?? theme)` + `useEffect` di sync quando cambia il prop server; l'icona riflette il tema reale.
+  - **Persistenza del tema al reload**: §11.1 vuole il toggle "persistito in settings (via API)". Aggiunto `saveTheme` mutation → `PUT /api/v1/settings {theme}` (endpoint esistente fase 06) + `invalidateQueries(['me'])`; la sincronizzazione server-wins di RequireAuth ora resta coerente (al reload il server restituisce il tema scelto dall'utente, non più `dark` fisso). Il toggle funziona in entrambe le direzioni e persiste al reload.
+  - **Favicon 404** (`GET /favicon.ico` in console): aggiunto `<link rel="icon" href="data:," />` in index.html (nessuna dipendenza, CSP-safe).
+  - **Nota dev importantissima (non è un bug)**: su `http://` il cookie di sessione `Secure` viene salvato ma **mai rinviato** dal browser → login "invisibilmente rotto" (204 + cookie scartato → `/me` 401 → bounce su /login). In dev locale serve `DEV_INSECURE_COOKIES=true` (§5.2, flag previsto apposta). Aggiornati i comandi dev sotto.
+  - **Verifica browser reale (puppeteer + Chrome headless in cartella temporanea, fuori dal repo — zero dipendenze aggiunte)**: **21/21 PASS** — login page dark (#0F0F0F verificato su computed style), "Invalid credentials" inline rosso #E5484D senza redirect, login corretto → `/` con navbar completa, toggle sole→chiaro→scuro in entrambe le direzioni (bg #FFFFFF / #0F0F0F), tema chiaro E scuro persistenti dopo reload, logout → /login, `/` senza sessione → redirect /login, **zero violazioni CSP**, zero errori script, zero richieste fallite (favicon risolta). I soli 401 in console sono i flussi intenzionali (password errata, `/me` post-logout).
 - Problemi noti / debito tecnico:
   - Niente mockup (assenti); il toggle tema non persiste ancora lato server (fase 09: PUT /settings + sincronizzazione già predisposta).
   - `server: uvicorn` visibile in dev (fix fase 11) e warning httpx2 noti da fasi precedenti.
   - `.gitkeep` in frontend/src/{pages,components,api} restano (inerti, ora con file reali accanto).
 - Istruzioni avvio dev (fase 07):
   ```bash
-  # backend (da backend/)
-  .venv/bin/uvicorn app.main:app --reload        # http://127.0.0.1:8080/api/health
+  # backend (da backend/) — DEV_INSECURE_COOKIES=true è OBBLIGATORIO su http:// locale
+  DATA_DIR=/tmp/nucs-d7b DEV_INSECURE_COOKIES=true ADMIN_USERNAME=admin \
+    ADMIN_PASSWORD='password-lunga-12' .venv/bin/uvicorn app.main:app --reload --port 8080
   # frontend (da frontend/, dopo npm ci)
   npm run dev                                     # http://localhost:5173 (proxy /api → :8080)
   # build statica servita dal backend: FRONTEND_DIST=../frontend/dist + npm run build

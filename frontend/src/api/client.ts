@@ -57,6 +57,10 @@ export function post(path: string, body: unknown): Promise<void> {
   return apiFetch<void>(path, { method: 'POST', body: JSON.stringify(body) })
 }
 
+export function put(path: string, body: unknown): Promise<void> {
+  return apiFetch<void>(path, { method: 'PUT', body: JSON.stringify(body) })
+}
+
 export function get<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'GET' })
 }

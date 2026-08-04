@@ -1,8 +1,9 @@
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { NavLink, useNavigate } from 'react-router-dom'
 
-import { post } from '../api/client'
-import { applyTheme, type Theme } from '../theme'
+import { post, put } from '../api/client'
+import { applyTheme, getStoredTheme, type Theme } from '../theme'
 
 interface NavbarProps {
   username: string
@@ -74,6 +75,7 @@ function navLinkClass({ isActive }: { isActive: boolean }): string {
 export default function Navbar({ username, theme }: NavbarProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [current, setCurrent] = useState<Theme>(() => getStoredTheme() ?? theme)
 
   const logout = useMutation({
     mutationFn: () => post('/api/v1/auth/logout', {}),
@@ -83,9 +85,22 @@ export default function Navbar({ username, theme }: NavbarProps) {
     },
   })
 
+  const saveTheme = useMutation({
+    mutationFn: (next: Theme) => put('/api/v1/settings', { theme: next }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['me'] })
+    },
+  })
+
+  useEffect(() => {
+    setCurrent(theme)
+  }, [theme])
+
   function toggleTheme() {
-    const next: Theme = theme === 'dark' ? 'light' : 'dark'
+    const next: Theme = current === 'dark' ? 'light' : 'dark'
     applyTheme(next)
+    setCurrent(next)
+    saveTheme.mutate(next)
   }
 
   return (
@@ -113,7 +128,7 @@ export default function Navbar({ username, theme }: NavbarProps) {
             aria-label="Toggle theme"
             className="rounded-full p-2 text-light-textDim transition-colors hover:text-light-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-textDim dark:hover:text-dark-text"
           >
-            {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+            {current === 'dark' ? <SunIcon /> : <MoonIcon />}
           </button>
           <span className="hidden max-w-[10rem] truncate text-sm text-light-textDim md:inline dark:text-dark-textDim">
             {username}
