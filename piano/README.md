@@ -68,6 +68,7 @@ Queste regole sono già incluse nei prompt, ma le ripeti se il modello le ignora
 | 07 | Frontend base: Vite/React/Tailwind, tema, login, layout | Economico | Economico |
 | 08 | UI feed release + pagina dettaglio | Economico | Economico |
 | 09 | UI artisti + pagina impostazioni | Economico | Economico |
+| 09b | Notifiche: default attivo + seed da env (NOTIFY_URLS) | Economico | Economico |
 | 10 | Scheduler, backup DB, notifiche opzionali (Apprise) | Economico | Economico |
 | 11 | Docker finale, compose, Cloudflare Tunnel, Tailscale | Economico | **Avanzato** |
 | 12 | Hardening, audit sicurezza, QA finale, guida deploy | Economico | **Avanzato** |
