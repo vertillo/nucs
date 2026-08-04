@@ -72,7 +72,9 @@ _DEFAULT_SETTINGS: dict[str, str] = {
     "feat_scan_enabled": "true",
     "feat_scan_weekday": "sun",
     "theme": "dark",
-    "notify_enabled": "false",
+    # Deviation from spec 4 (default "false"), recorded in piano/STATO.md:
+    # notifications are on by default but never send without URLs (no-op).
+    "notify_enabled": "true",
     "notify_urls": "",
     "spotify_client_id": "",
     "spotify_client_secret": "",
@@ -197,17 +199,34 @@ def run_migrations() -> None:
 
 
 def seed_settings_if_empty() -> None:
-    """Insert default settings keys when the settings table is empty."""
+    """Insert default settings keys when the settings table is empty.
+
+    Environment overrides (NOTIFY_URLS / NOTIFY_ENABLED) apply ONLY here, on a
+    truly fresh database — the same "first boot" semantics as ADMIN_* (spec
+    5.1). Once the table exists the DB/UI is the source of truth. URL values
+    are never logged (they may contain tokens, checklist C4).
+    """
     with get_session_factory()() as session:
         exists = session.scalar(select(Setting.key).limit(1))
         if exists is not None:
             return
         today = datetime.now(UTC).date()
         defaults = _DEFAULT_SETTINGS | {"discovery_from_date": (today - timedelta(days=30)).isoformat()}
+        settings = get_settings()
+        seeded_from_env: list[str] = []
+        if settings.notify_urls:
+            defaults["notify_urls"] = settings.notify_urls
+            seeded_from_env.append("notify_urls")
+        if settings.notify_enabled is not None:
+            defaults["notify_enabled"] = "true" if settings.notify_enabled else "false"
+            seeded_from_env.append("notify_enabled")
         for key, value in defaults.items():
             session.add(Setting(key=key, value=value))
         session.commit()
-        logging.getLogger(__name__).info("seeded %d default settings", len(defaults))
+        logger = logging.getLogger(__name__)
+        logger.info("seeded %d default settings", len(defaults))
+        if seeded_from_env:
+            logger.info("settings seeded from env: %s", ",".join(seeded_from_env))
 
 
 def ensure_admin_exists() -> None:

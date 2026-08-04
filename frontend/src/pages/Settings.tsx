@@ -329,7 +329,8 @@ export default function Settings() {
   }
 
   function sendTestNotification() {
-    if (!notify.enabled || notify.urls.trim() === '') {
+    // Notifications are on by default (phase 09b): the test only needs URLs.
+    if (notify.urls.trim() === '') {
       show('Add at least one Apprise URL first.', 'error')
       return
     }

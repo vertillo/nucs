@@ -7,10 +7,44 @@
 ## Riepilogo rapido
 
 - Fase corrente: **09b** → aprire `piano/fasi/fase-09b-notifiche-env.md` (fase intermedia: default notifiche attive + seed NOTIFY_URLS da env al primo avvio; la 10 la segue)
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09 (fase 13 = checklist manuale, da eseguire dopo la 12)
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b (fase 13 = checklist manuale, da eseguire dopo la 12)
 - Branch attivo: `fase-09b-notifiche-env` (fase-09 mergiata su main con `9934af0`)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto); **endpoint `POST /settings/notify-test` ASSENTE dal backend** (è in §10 ma non è mai stato implementato — appartiene alla fase 10 con Apprise; il bottone UI mostra un messaggio chiaro client-side senza URL, ma la chiamata vera risponde 404 finché la fase 10 non lo aggiunge, vedi FASE 09)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## FASE 09b — Notifiche: default attivo e seed da env — 2026-08-04
+- Branch: fase-09b-notifiche-env
+- Cosa è stato fatto:
+  - **`backend/app/config.py`**: nuove settings `notify_urls: str = ""` (env `NOTIFY_URLS`, URL Apprise opzionali, anche misti tgram://+ntfy://) e `notify_enabled: bool | None = None` (env `NOTIFY_ENABLED`; `None` = env assente → non sovrascrive il default).
+  - **`backend/app/main.py`**: `_DEFAULT_SETTINGS["notify_enabled"]` da `"false"` a `"true"` (**deviazione da §4, registrata sotto**); `seed_settings_if_empty()` applica gli override da env **solo quando la tabella settings è vuota** (stessa semantica primo-avvio di ADMIN_* di §5.1): NOTIFY_URLS non vuota → seed `notify_urls`; NOTIFY_ENABLED esplicitamente impostata → seed quel valore. Log INFO con i **soli nomi delle chiavi** (mai i valori: possono contenere token Telegram, checklist C4). Nessuna validazione bloccante al boot.
+  - **`backend/app/api/settings.py` (rilassamento necessario, registrato sotto)**: il check cross-field "notify_enabled senza URL → 422" ora scatta **solo se la richiesta abilita esplicitamente** le notifiche (`notify_enabled` presente nel PUT). Con il default true, altrimenti QUALSIASI salvataggio di altre sezioni fallirebbe su installazione nuova senza URL.
+  - **`frontend/src/pages/Settings.tsx`**: guard di `sendTestNotification` basato solo sugli URL (`if (notify.urls.trim() === '')`) — con il default true lo switch non blocca più il messaggio "Add at least one Apprise URL first.".
+  - **`.env.example`**: aggiunte `NOTIFY_URLS=` e `NOTIFY_ENABLED=` con commento (opzionali; seed solo al primo avvio; supportano più URL anche misti).
+  - **Test**: `test_db.py` — default true senza URL, seed da env su DB fresco (multi-URL), `NOTIFY_ENABLED=false`, env ignorato su tabella già popolata (riavvio); `test_settings_api.py` — assert aggiornato a `notify_enabled=="true"`, nuovo test "salvataggi di altre sezioni passano con default attivo". Suite: **237 passed** (232 → 237).
+- Decisioni prese (e perché):
+  - **Default notify_enabled=true (deviazione da §4, approvata dall'utente)**: notifiche attive di default ma disattivabili dalla UI; "attive senza URL" = **no-op silenzioso** (nessun invio, nessun warning bloccante); l'errore appare solo se salvi la sezione Notifications con switch ON e textarea vuota (come prima). L'invio reale resta gated da `notify_urls` non vuota.
+  - **Semantica env primo-avvio (§5.1)**: NOTIFY_URLS/NOTIFY_ENABLED valgono SOLO su DB vuoto (tabella settings senza chiavi); dopo un save UI (o qualsiasi boot successivo) il DB vince. Così ricreando il container con volume nuovo le notifiche funzionano subito, e la UI resta sovrana. Nessun override live (renderebbe ambigui GET/PUT /settings).
+  - **Supporto Telegram + ntfy**: nessuna struttura dedicata — Apprise gestisce entrambi via scheme (`tgram://`, `ntfy://`) e `notify_urls` è una lista CSV che accetta più URL anche misti (già dalla fase 06; la UI li accetta una riga ciascuno).
+  - **Rilassamento del check cross-field (conseguenza necessaria, registrato)**: il vincolo della fase diceva "nessuna modifica ai validatori", ma con il default true il vecchio check (che leggeva lo stato CURRENT del DB) avrebbe fatto fallire QUALSIASI PUT di altre sezioni su installazione nuova senza URL — regressione bloccante per la UI di fase 09. Rilassamento minimo e semantico: il 422 scatta solo quando la richiesta abilita esplicitamente le notifiche senza URL (comportamento richiesto dall'utente: "è necessario l'url/token per tenerle attive"). Test di regressione dedicato.
+- Deviazioni dalle specifiche (approvate da chi): (1) default `notify_enabled` true invece di false (§4) — approvato dall'utente; (2) `.env.example` esteso oltre la lista esatta di §12.3 con 2 chiavi opzionali; (3) check cross-field di `PUT /settings` rilassato come sopra.
+- Esito verifica (boot reali via uvicorn + curl, come da file di fase):
+  - DB fresco + `NOTIFY_URLS="tgram://tok/chat"` → login → GET /settings → `notify_urls` valorizzato e `notify_enabled` "true" **senza toccare la UI** ✓.
+  - Stesso DB con env diverse (`tgram://OTHER/chat`, NOTIFY_ENABLED=false) → GET /settings restituisce i valori precedenti (env ignorato, seed non rieseguito) ✓.
+  - DB fresco senza env → `notify_enabled` "true", `notify_urls` "" ✓.
+  - DB fresco con `NOTIFY_ENABLED=false` → seed "false" ✓.
+  - `grep -i tgram` sui log dei 4 boot → **0** (mai loggati i valori) ✓.
+  - `pytest` **237 passed**, ruff check + format OK; frontend `tsc --noEmit` + build OK.
+  - **`e2e:09` → 43/43 PASS** (prima esecuzione con il nuovo default true: check "notify-test senza URL → messaggio chiaro" e tutti i save delle sezioni verdi).
+- Problemi noti / debito tecnico: nessuno nuovo; restano i noti (notify-test endpoint fase 10, aria-disabled, httpx2/uvicorn header).
+- Istruzioni avvio dev (fase 09b):
+  ```bash
+  # backend con notifiche pre-configurate al primo avvio (DB vuoto)
+  NOTIFY_URLS="tgram://<token>/<chat_id>" DATA_DIR=/tmp/nucs-f09b \
+    DEV_INSECURE_COOKIES=true ADMIN_USERNAME=admin ADMIN_PASSWORD='password-lunga-12' \
+    .venv/bin/uvicorn app.main:app --port 8080
+  ```
 
 ---
 
