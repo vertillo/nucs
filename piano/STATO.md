@@ -8,7 +8,7 @@
 
 - Fase corrente: **08** → aprire `piano/fasi/fase-08-ui-release.md`
 - Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07 (fase 13 = checklist manuale, da eseguire dopo la 12)
-- Branch attivo: `fase-07-frontend-base` (fase-07 implementata e verificata, da mergiare su main dopo review)
+- Branch attivo: `fase-08-ui-release` (fase-07 mergiata su main con `2a44b8e`)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
 
