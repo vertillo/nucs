@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     dev_insecure_cookies: bool = False
     trusted_proxy_cidrs: str = "172.16.0.0/12,10.0.0.0/8"
+    frontend_dist: str = "../frontend/dist"
 
     @field_validator("covers_dir", mode="before")
     @classmethod
