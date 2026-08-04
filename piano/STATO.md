@@ -6,9 +6,9 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **09b** → aprire `piano/fasi/fase-09b-notifiche-env.md` (fase intermedia: default notifiche attive + seed NOTIFY_URLS da env al primo avvio; la 10 la segue)
+- Fase corrente: **10** → aprire `piano/fasi/fase-10-scheduler-notifiche.md`
 - Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b (fase 13 = checklist manuale, da eseguire dopo la 12)
-- Branch attivo: `fase-09b-notifiche-env` (fase-09 mergiata su main con `9934af0`)
+- Branch attivo: `fase-10-scheduler-notifiche` (fase-09b mergiata su main con `7f527bb`)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto); **endpoint `POST /settings/notify-test` ASSENTE dal backend** (è in §10 ma non è mai stato implementato — appartiene alla fase 10 con Apprise; il bottone UI mostra un messaggio chiaro client-side senza URL, ma la chiamata vera risponde 404 finché la fase 10 non lo aggiunge, vedi FASE 09)
 - Idee emerse ma rimandate (v2): nessuna
 
