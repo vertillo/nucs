@@ -15,7 +15,9 @@ con i bottoni Spotify / YouTube Music / Deezer / Google (§11.2.3). Copertine da
 
 ## 2. Prerequisiti
 
-- Fase 07 mergiata. Backend con dati reali (release + cover dalle fasi 05-06) per il test manuale.
+- Fase 07 mergiata. Backend con dati reali (release + cover dalle fasi 05-06) per il test E2E.
+- **Test E2E**: `cd e2e && npm ci` (puppeteer + Chrome headless, prima volta) — vedi `e2e/README.md`.
+  Gli scenari si aggiungono in `e2e/scenarios/fase-08.js` (questa fase ne crea il file, vedi verifica).
 
 ## 3. PROMPT DI IMPLEMENTAZIONE (copia-incolla)
 
@@ -80,17 +82,21 @@ Report + output build + aggiornamento piano/STATO.md (fase 08).
 ```text
 Verifica la fase 08 di nucs. Tabella PASS/FAIL con evidenza:
 1. `cd frontend && npm ci && npx tsc --noEmit && npm run build` → exit 0.
-2. Con backend avviato (dati reali fasi 05-06), nel browser:
+2. Crea `e2e/scenarios/fase-08.js` usando l'harness (`e2e/harness.js`, helper `h.seed(page)` per
+   popolare dati reali: scan libreria + discovery) e poi esegui `cd e2e && npm run e2e:08`
+   (backend avviato con `DEV_INSECURE_COOKIES=true` e `FRONTEND_DIST=../frontend/dist`).
+   Tabella PASS/FAIL con almeno:
    - / → grid di card con copertine reali (da /api/v1/covers), badge tipo, date in formato ISO.
    - Release non vista ha il pallino accent; click card → dettaglio; torna al feed → pallino sparito (seen).
    - Chip "Singles" → solo single; toggle "Unseen only" coerente; ricerca "que" filtra (debounce ok).
    - "Load more" carica la pagina successiva senza duplicati (conta card vs total).
-   - "Mark all as seen" → conferma → feed "Unseen only" diventa empty state corretto.
-   - Dettaglio: 4 bottoni presenti; click su ciascuno → nuova tab (noopener) verso destinazione sensata
-     (Spotify/YTM/Deezer → release o ricerca coerente; Google → ricerca con artista+titolo).
-   - Toggle Favorite → cuore pieno, persistito dopo reload; Hide → scompare dal feed (hidden default no).
-   - Mobile (devtools 375px): grid 2 colonne, navbar compatta usabile.
-   - Console: zero errori, zero warning CSP; Network: nessuna immagine caricata da domini esterni.
+   - "Mark all as seen" (dialog auto-accept) → feed "Unseen only" diventa empty state corretto.
+   - Dettaglio: 4 bottoni presenti con `rel="noopener noreferrer"`; click → nuova tab verso
+     destinazione sensata (verifica href/dominio per ciascuno: Spotify/YTM/Deezer/Google).
+   - Toggle Favorite → cuore pieno, persistito dopo reload; Hide → scompare dal feed.
+   - Mobile (viewport 375px): grid 2 colonne, navbar compatta usabile.
+   - Console: zero errori (esclusi 401 intenzionali), zero violazioni CSP; Network: nessuna
+     immagine caricata da domini esterni (helper `state.imageHosts`).
 3. `grep -rn "http" frontend/src --include=*.tsx | grep -v "localhost" | grep -viE "spotify|deezer|youtube|google"` → nessun URL esterno inatteso.
 Se FAIL: correggi e riesegui TUTTO.
 ```
@@ -109,8 +115,8 @@ Fai la review della fase 08 di nucs.
 
 ## 6. Criteri di completamento
 
-- [ ] Feed completo e filtri funzionanti nel browser su dati reali.
-- [ ] Dettaglio con 4 bottoni verificati a mano.
+- [ ] Feed completo e filtri funzionanti su dati reali (E2E automatico `e2e:08`).
+- [ ] Dettaglio con 4 bottoni verificati (E2E: href/dominio/noopener + tab).
 - [ ] Zero errori console/CSP; nessuna immagine esterna.
 - [ ] Review pulita o findings risolti; STATO.md aggiornato.
 - [ ] Commit e push: `feat(frontend): releases feed and detail page with external links`.

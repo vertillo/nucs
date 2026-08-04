@@ -1,0 +1,13 @@
+{
+  "name": "nucs-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Automated browser/API verification for nucs phases (puppeteer + headless Chrome)",
+  "scripts": {
+    "e2e:06": "node scenarios/fase-06.js",
+    "e2e:07": "node scenarios/fase-07.js"
+  },
+  "devDependencies": {
+    "puppeteer": "25.4.0"
+  }
+}

@@ -71,8 +71,10 @@ Queste regole sono già incluse nei prompt, ma le ripeti se il modello le ignora
 | 10 | Scheduler, backup DB, notifiche opzionali (Apprise) | Economico | Economico |
 | 11 | Docker finale, compose, Cloudflare Tunnel, Tailscale | Economico | **Avanzato** |
 | 12 | Hardening, audit sicurezza, QA finale, guida deploy | Economico | **Avanzato** |
+| 13 | Verifica manuale completa (checklist happy path + azioni avversarie) | **UMANO** | **Avanzato** |
 
 > Le fasi vanno eseguite **in ordine**. 07 può iniziare in parallelo a 05/06 solo se sei esperto: sconsigliato.
+> Le fasi 07-12 usano l'harness E2E automatico in `e2e/` (puppeteer + Chrome headless) al posto dei check manuali nel browser: `cd e2e && npm ci` (una volta, vedi `e2e/README.md`). La fase 13 è la checklist manuale complementare (azione avversarie incluse) eseguita dall'operatore.
 
 ## 6. Prerequisiti da preparare TU (umano) prima di iniziare
 

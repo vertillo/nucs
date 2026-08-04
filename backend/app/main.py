@@ -15,8 +15,10 @@ from urllib.parse import urlsplit
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 from starlette.types import ASGIApp
@@ -296,6 +298,30 @@ def create_app() -> FastAPI:
     @app.get("/robots.txt", include_in_schema=False)
     async def robots_txt() -> PlainTextResponse:
         return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+    # SPA static serving (spec 3/11): the built frontend is mounted at "/" AFTER the
+    # /api routers so they keep precedence; any missing file is answered with the
+    # SPA shell, while unknown /api paths keep returning JSON 404s.
+    dist_dir = Path(settings.frontend_dist)
+    if not dist_dir.is_absolute():
+        dist_dir = (_BACKEND_DIR / dist_dir).resolve()
+    else:
+        dist_dir = dist_dir.resolve()
+
+    if dist_dir.is_dir():
+        app.mount("/", StaticFiles(directory=dist_dir, html=True), name="static")
+        logging.getLogger(__name__).info("serving frontend from %s", dist_dir)
+    else:
+        logging.getLogger(__name__).warning("frontend dist not found at %s; / not served", dist_dir)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def spa_or_json_not_found(request: Request, exc: StarletteHTTPException) -> Response:
+        api_path = request.url.path == "/api" or request.url.path.startswith("/api/")
+        if exc.status_code == 404 and request.method == "GET" and not api_path:
+            index_file = dist_dir / "index.html"
+            if index_file.is_file():
+                return HTMLResponse(index_file.read_bytes())
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:

@@ -93,8 +93,12 @@ Verifica la fase 11 di nucs SUL MINI PC. Tabella PASS/FAIL con evidenza:
    (`docker compose ps`, `docker compose logs app --tail=50` senza errori).
 3. `docker compose config` → NESSUNA sezione ports pubblicata; app solo expose 8080 su nucs-net.
 4. Dall'host: `curl localhost:8080/api/health` → deve FALLIRE (connection refused) = nessuna porta esposta. ✅ atteso.
-5. Cloudflare: https://<subdomain>.<dominio> → pagina login; login → feed; DevTools → HTTPS valido;
-   header risposta contiene i security header; /api/health risponde.
+5. Cloudflare: https://<subdomain>.<dominio> → pagina login; login → feed; HTTPS valido;
+   header risposta contiene i security header; /api/health risponde. **Automatizzabile**:
+   `cd e2e && npm ci` (puppeteer, vedi `e2e/README.md`) e `BASE=https://<subdomain>.<dominio>
+   npm run e2e:11` (scenario login+theme+logout+security headers su URL https; si crea in
+   questa fase estendendo l'harness). L'infrastruttura reale (tunnel attivo) resta da preparare
+   a mano, ma i controlli browser sono scriptati.
 6. Tailscale: da un device nel tailnet → https://nucs.<tailnet>.ts.net → login ok.
    (Se serve.json fallisce: leggi `docker compose logs tailscale`, correggi la sintassi con la doc
    ufficiale tailscale serve config, aggiorna serve.json e STATO.md, riprova.)

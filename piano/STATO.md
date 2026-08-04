@@ -6,11 +6,127 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **07** → aprire `piano/fasi/fase-07-frontend-base.md` (implementazione con modello economico)
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06
-- Branch attivo: `fase-06-link-e-cover` (fase-06 implementata e verificata, da mergiare su main dopo review)
+- Fase corrente: **08** → aprire `piano/fasi/fase-08-ui-release.md`
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07 (fase 13 = checklist manuale, da eseguire dopo la 12)
+- Branch attivo: `fase-07-frontend-base` (fase-07 implementata e verificata, da mergiare su main dopo review)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## STRUMENTAZIONE E2E AUTOMATICA + FASE 13 (2026-08-04, fuori fase 07)
+
+- **Harness `e2e/`** (nuovo, committato): puppeteer 25.4.0 pinnato in `e2e/package.json`
+  (package-lock committato), `e2e/harness.js` (launch Chrome headless, `check()` PASS/FAIL,
+  login UI, POST autenticati con X-Requested-With, poll scan, raccoglitori
+  console/CSP/network/immagini-esterne, screenshot su FAIL in `e2e/artifacts/` gitignored),
+  `e2e/scenarios/fase-06.js` (link §9 + /covers, solo API via node fetch) e
+  `e2e/scenarios/fase-07.js` (login/tema/logout/redirect/CSP). `.gitignore` aggiornato.
+  Documentazione in `e2e/README.md`.
+- **Deviazione da §3 e da "niente altre dipendenze" (annotata)**: la struttura repo §3 non
+  prevede `e2e/` e il vincolo "niente altre dipendenze" vale per `frontend/package.json`
+  (che resta pulito). Puppeteer è tooling di verifica separato, installato solo in `e2e/`.
+- **Esiti eseguiti (backend con dati/seed reali)**:
+  - `npm run e2e:07` (backend :8091, FRONTEND_DIST, DEV_INSECURE_COOKIES=true, DB fresco) →
+    **21/21 PASS**: login dark #0F0F0F, "Invalid credentials" inline rosso, redirect / + navbar,
+    toggle tema entrambe le direzioni, persistenza light E dark dopo reload, logout, redirect
+    senza sessione, zero errori console/CSP/page/network (favicon risolta).
+  - `npm run e2e:06` (backend :8092, DB seedato via API: library scan su /tmp/nucs-lib-test +
+    discovery con `discovery_from_date=2026-04-01` → 13 release, 13 con 4 link, 11 con cover) →
+    **23/23 PASS**: dettaglio con 4 link, dominio §9 esatto, **probe live reali** su
+    Spotify/YTM/Deezer/Google tutti 200 (anche l'URL diretto Deezer `album/1020773921`),
+    /covers rgid→200, path traversal→404, uuid inesistente→404, senza sessione→401.
+- **Fase 13 creata**: `piano/fasi/fase-13-verifica-manuale-completa.md` — checklist manuale
+  esaustiva (10 aree A-J, ~90 passi) con happy path E **azioni non convenzionali/avversarie**
+  (input limite, doppio click, due tab, cookie manipolati, throttle, offline, adversarial API
+  curl, concorrenza, a11y, post-deploy), template dei finding (severità ALTA/MEDIA/BASSA +
+  evidenza) e regole di chiusura (zero ALTA/MEDIA aperti senza decisione). Da eseguire
+  dall'operatore dopo la fase 12 (o prima come sanity check). Aggiunta all'indice in
+  `piano/README.md`.
+- **File di fase 07-12 aggiornati**: prerequisiti E2E (`cd e2e && npm ci`, Node ≥ 20, Chrome
+  headless al primo run) e prompt di verifica ora riferiti agli scenari automatici
+  (`npm run e2e:07` / `e2e:08` / `e2e:09` / `e2e:11` / `e2e:12`); la fase 08/09/11/12 creano
+  i propri file di scenario estendendo l'harness (l'UI non esiste ancora → gli scenari nascono
+  con la fase); fase 10: tutto automatico tranne la ricezione Apprise su dispositivo esterno
+  (umana); fase 12: `piano/verifica-e2e.md` generato dal runner, umani dichiarati = stats 24h,
+  README su macchina pulita, ricezione Apprise.
+
+---
+
+## FASE 07 — Frontend base: Vite/React/Tailwind, tema, login, layout — 2026-08-04
+- Branch: fase-07-frontend-base
+- Cosa è stato fatto:
+  - **Scaffolding manuale** `frontend/` (nessun create-vite interattivo): `package.json` con versioni ESATTE — react 18.3.1, react-dom 18.3.1, react-router-dom 6.30.4, @tanstack/react-query 5.101.4, vite 6.4.3, @vitejs/plugin-react 5.2.0, typescript 5.9.3, tailwindcss 3.4.19, postcss 8.5.25, autoprefixer 10.5.4 — + `@types/react` 18.3.31 e `@types/react-dom` 18.3.7 (solo dev, vedi decisioni). `package-lock.json` generato e da committare. Nessuna altra dipendenza. Scripts: dev/build (`tsc --noEmit && vite build`)/preview.
+  - `tailwind.config.js`: `darkMode:'class'`, content `./src/**/*.{ts,tsx}` + `index.html`, `theme.extend.colors` = **tokens §11.1 esatti** (accent #1DB954, accentHover #1ED760, accentActive #169C46, danger #E5484D, yt #FF0000, deezer #A238FF, dark./light. {bg,surface,surface2,border,text,textDim}), borderRadius ereditato, fontFamily stack §11.1. `postcss.config.js` (tailwindcss + autoprefixer).
+  - `src/theme.ts`: `getStoredTheme()`/`getInitialTheme()` (localStorage `nucs-theme`, default `dark`) e `applyTheme(t)` (toggle classe `dark` su `documentElement` + localStorage). Chiamata **subito in `main.tsx`** a livello modulo (anti-flash, CSP-safe: niente inline script) e poi sincronizzata in `RequireAuth`: `theme` da `/auth/me` **vince** se diverso da locale e aggiorna localStorage (come da prompt).
+  - `src/api/client.ts`: `apiFetch<T>` wrapper — base `''` same-origin, `credentials:'same-origin'`, header `Content-Type: application/json` + `X-Requested-With: XMLHttpRequest` (spec §5.4); su **401 → `window.location.assign('/login')`**; 204 → undefined; parse JSON sicuro (corpo non-JSON → null); `ApiError{status}` con `detail` dal body quando stringa; helper `get`/`post`.
+  - `src/App.tsx`: router — `/login` pubblica; `RequireAuth` (GET `/api/v1/auth/me` via react-query, loading → **spinner centrato** `animate-spin` accent, errore → `<Navigate to="/login">`) + `Navbar`; rotte protette `/` (Feed), `/releases/:id` (ReleaseDetail), `/artists`, `/settings`; wildcard → `/`. Stub = H1 inglese + "Under construction" (nessuna logica feed/dettaglio/impostazioni, fasi 08-09).
+  - `src/pages/Login.tsx` (§11.2.1): centrata, emoji 🎵 + "nucs", card `surface` `rounded-2xl` con ombra dark `shadow-black/40`, input Username/Password (label, `autocomplete="username"/"current-password"`, focus `ring-2 ring-accent`), bottone pill accent "Log in" (hover accentHover, active accentActive), errore inline `text-danger`: 401 → **"Invalid credentials"**, altri errori → **"Something went wrong. Try again."**; su 204 → `invalidateQueries(['me'])` + navigate `/`. Nessun hack password manager.
+  - `src/components/Navbar.tsx`: logo testuale "nucs", `NavLink` Feed/Artists/Settings con stato attivo `text-accent`, **toggle tema con icone sole/luna SVG inline** (`aria-label="Toggle theme"`), bottone "Log out" (POST logout → `queryClient.clear()` + `/login`). **Mobile <640px: navbar compatta — icone SVG inline al posto del testo nascosto con `hidden sm:inline`**; nessuna emoji (vincolo "niente emoji oltre 🎵 login").
+  - **Integrazione backend**: `backend/app/config.py` nuova setting `frontend_dist` (env `FRONTEND_DIST`, default `"../frontend/dist"`); `backend/app/main.py` — dopo i router `/api` e `/api/health`: risolve FRONTEND_DIST (relativo rispetto a `backend/`), se è una directory `app.mount("/", StaticFiles(html=True))` (log INFO/WARNING); nuovo `exception_handler(StarletteHTTPException)` che fa da **SPA fallback**: GET non-`/api` con 404 → `index.html` (200), tutto il resto (inclusi tutti i 404/403/401/429 sotto `/api`) → JSON `{"detail": ...}` con **headers preservati** (Retry-After incluso — prima versione li perdeva, trovato dai test 429). `/api/health` non toccato.
+  - `vite.config.ts`: plugin react, `server.proxy '/api' → http://127.0.0.1:8080` (**senza changeOrigin**, vedi decisioni), `build.outDir 'dist'`. `tsconfig.json` strict + `types: ["vite/client"]`, `index.html` senza inline script (CSP `script-src 'self'`).
+- Versioni dipendenze introdotte: tutte pinnate `==` (lista sopra); Node locale v22.23.1 (il Dockerfile userà node:20-alpine in fase 11 — vite 6.4.3 supporta `^18||^20||>=22`, typescript 5.9.3 e le altre funzionano su Node 20).
+- Decisioni prese (e perché):
+  - **`@types/react`/`@types/react-dom` aggiunti**: `npx tsc --noEmit` senza fallire richiede i tipi (modulo 'react' senza dichiarazioni); sono package **solo dev di tipi**, parte standard del template Vite react-ts; nessuna dipendenza runtime aggiunta. Pinnati 18.3.31/18.3.7 (allineati a React 18).
+  - **Login NON usa il wrapper con redirect su 401**: una 401 sulla POST login deve mostrare "Invalid credentials" inline, non fare reload/redirect; `Login.tsx` fa una fetch raw con gli stessi header §5.4 (X-Requested-With + Content-Type) e gestisce 204/401/altro esplicitamente.
+  - **Header `X-Requested-With`/`Content-Type` inviati anche sulle GET** dal wrapper: innocuo (il backend li esige solo sulle mutazioni) e mantiene il wrapper unico.
+  - **Proxy senza `changeOrigin`**: con changeOrigin vite riscriveva `Host` a `127.0.0.1:8080` lasciando `Origin: localhost:5173` → il CSRF check backend (§5.4) rispondeva 403 al login in dev (verificato live). Senza changeOrigin Host e Origin combaciano e il cookie `nucs_session` (senza Domain) viene assegnato dal browser a `localhost` (i cookie ignorano la porta) → login da :5173 funziona.
+  - **Navbar mobile con icone SVG inline** (home/artists/settings come path stroke) invece di emoji: vincolo "niente emoji oltre 🎵 login" (il mockup non esiste, vedi sotto).
+  - **FRONTEND_DIST relativo a `backend/`**: default `../frontend/dist` → `/repo/frontend/dist`; path assoluti (es. `/app/static` del Dockerfile fase 11) usati come sono.
+  - **Tema: vince il server** (settings.theme da `/auth/me`) se diverso dal locale, e aggiorna localStorage (prompt task 3); il toggle navbar aggiorna solo il locale finché la PUT /settings arriverà in fase 09.
+  - **Typescript 5.9.3** (linea 5.x stabile; la 7.0.2 "latest" è la nuova toolchain, non ancora adottata per evitare sorprese con il template).
+- Ambiguità riscontrate (interpretazione scelta):
+  - **Mockup in `piano/mockup/` non esistono** (solo `piano/mockup-opendesign.md` senza output generati): riferimento visivo = specifica §11 (layout/voci indicati nel prompt e riprodotti).
+  - `data.theme` da `/auth/me` arriva come `'dark'|'light'` (settings `theme` stringa): tipato in `Me` e allineato a `Theme` di theme.ts.
+  - 404 non-`/api` senza dist presente (dev senza build): ritorna JSON 404 invece di HTML (accettabile, il dev server Vite copre il caso normale).
+- Deviazioni dalle specifiche (approvate da chi): **@types dev-dependencies** (sopra, necessarie al typecheck §13; nessuna dipendenza runtime extra).
+- Test: frontend — `npx tsc --noEmit` pulito e `npm run build` ok (ripetuti da `npm ci` fresco, lock committato); `grep -rn "#[0-9a-fA-F]\{3,8\}"` su src/index.html/vite.config.ts/package.json → **zero risultati** (hex solo in tailwind.config.js, 18 token). Backend — **231 passed** (nessuna regressione dalla modifica a main.py; 3 test 429 falliti alla prima versione dell'exception handler perché perdeva `Retry-After`, fixato), ruff check + format OK.
+- Esito verifica (comandi eseguiti e risultato):
+  - `cd frontend && npm ci && npx tsc --noEmit && npm run build` → exit 0; `dist/` con index.html + assets (js 219 kB / gzip 69.6 kB, css 10.9 kB).
+  - Backend integrato (`DATA_DIR=/tmp/nucs-d7 FRONTEND_DIST=../frontend/dist ADMIN_USERNAME=admin ADMIN_PASSWORD=test-password-lunga-1 uvicorn :18099`): `/` → HTML con `<div id="root">`; `/qualcosa/di/spa` → stesso index.html (fallback SPA); `/api/health` → `{"status":"ok","version":"1.0.0"}`; `/api/v1/auth/me` senza cookie → **401**; asset `/assets/index-*.js` → 200 `text/javascript`; header `Content-Security-Policy` presente su `/`; `/api/v1/nessuna` → 404 JSON (non index.html); asset inesistente → fallback SPA (nessun 404 rotto).
+  - **Flusso login E2E (curl)**: POST login con X-Requested-With+Origin → **204 + Set-Cookie nucs_session (HttpOnly, Secure, SameSite=Lax, Max-Age)**; login senza X-Requested-With → **403**; `/me` con cookie → `{"username":"admin","theme":"dark"}`; logout → 204; `/me` dopo logout → 401.
+  - **Dev-mode**: uvicorn :8080 + `npm run dev` → `/` da :5173 ok; proxy `/api/health` → JSON; **login da :5173 → 204** e `/me` → 200 (senza changeOrigin, vedi decisioni).
+  - Verifica visiva browser (bg #0F0F0F, card #181818, bottone #1DB954, toggle tema persistente al reload): **non eseguibile in questo ambiente** (no browser) — da confermare manualmente in fase 08/12; le classi corrispondono ai token verificati via build CSS (10.9 kB con le utilities generate).
+- Esito review (modello economico): **eseguita (2026-08-04) — 0 ALTA, 0 MEDIA, 3 BASSA** (vedi sotto).
+  Check: X-Requested-With su tutte le mutazioni (apiFetch + fetch raw login), 401 handling senza
+  loop di redirect (assign una tantum + Navigate; nessuna query attiva su /login), catch-all SPA
+  che non inghiotte /api (JSON 404 sotto /api, /api/health ok, verificato anche `/apix` dopo fix),
+  zero `dangerouslySetInnerHTML`, zero hex fuori token, anti-flash a livello modulo in main.tsx
+  (prima del render, CSP-safe), package-lock committati (frontend + e2e), `npm ls` senza
+  dipendenze extra, versioni pinnate (incl. @types 18.x). Checklist sicurezza: B5/B6/B7/C1/C2/E1/E2/F1 ✅
+  (nota C1: la password default di `e2e/` è un fixture di test documentato, mai usato in runtime).
+- **Fix dei findings BASSA (post-review, 2026-08-04)** — commit `fix(frontend): phase-07 review findings`:
+  - **BASSA 1 (colore fuori token)** — `pages/Login.tsx`: bottone login `text-white` → `text-light-bg`
+    (stesso #FFFFFF ma token §11.1); unico colore named non-token della fase.
+  - **BASSA 2 (edge fallback SPA)** — `main.py`: `path.startswith("/api")` troppo largo (un path
+    tipo `/apix` riceveva JSON 404 invece del fallback SPA) → ora `path == "/api" or path.startswith("/api/")`;
+    verificato: `/apix` → index.html, `/api` e `/api/nessuna` → JSON 404.
+  - **BASSA 3 (mutation senza onError, ACCETTATO con motivazione)** — `Navbar.tsx`: `logout`/`saveTheme`
+    senza `onError` → un fallimento di rete del logout riabilita solo il bottone (nessun messaggio) e una
+    PUT theme fallita lascia il tema locale attivo finché il server non vince al reload. Non corretto:
+    comportamento accettabile e documentato per app single-user; nessun unhandled rejection (react-query
+    assorbe l'errore); la fase 13 ha la voce manuale dedicata (offline/retry).
+  - Re-verifica post-fix: pytest **231 passed**, ruff OK, `tsc --noEmit` + build OK, `e2e:07` **21/21 PASS**,
+    curl su `/`, `/qualcosa/di/spa`, `/api/health`, `/api`, `/apix` coerenti.
+- **Fix post-verifica browser (2026-08-04, trovati dal testing manuale dell'utente)** — commit `fix(frontend): theme toggle...`:
+  - **BUG toggle tema (non tornava scuro)**: `Navbar` calcolava il tema successivo dal prop `theme` (la settings server, sempre `dark`) invece che dal tema effettivo → il secondo click ri-applicava `light`. Fix: stato locale `useState(() => getStoredTheme() ?? theme)` + `useEffect` di sync quando cambia il prop server; l'icona riflette il tema reale.
+  - **Persistenza del tema al reload**: §11.1 vuole il toggle "persistito in settings (via API)". Aggiunto `saveTheme` mutation → `PUT /api/v1/settings {theme}` (endpoint esistente fase 06) + `invalidateQueries(['me'])`; la sincronizzazione server-wins di RequireAuth ora resta coerente (al reload il server restituisce il tema scelto dall'utente, non più `dark` fisso). Il toggle funziona in entrambe le direzioni e persiste al reload.
+  - **Favicon 404** (`GET /favicon.ico` in console): aggiunto `<link rel="icon" href="data:," />` in index.html (nessuna dipendenza, CSP-safe).
+  - **Nota dev importantissima (non è un bug)**: su `http://` il cookie di sessione `Secure` viene salvato ma **mai rinviato** dal browser → login "invisibilmente rotto" (204 + cookie scartato → `/me` 401 → bounce su /login). In dev locale serve `DEV_INSECURE_COOKIES=true` (§5.2, flag previsto apposta). Aggiornati i comandi dev sotto.
+  - **Verifica browser reale (puppeteer + Chrome headless in cartella temporanea, fuori dal repo — zero dipendenze aggiunte)**: **21/21 PASS** — login page dark (#0F0F0F verificato su computed style), "Invalid credentials" inline rosso #E5484D senza redirect, login corretto → `/` con navbar completa, toggle sole→chiaro→scuro in entrambe le direzioni (bg #FFFFFF / #0F0F0F), tema chiaro E scuro persistenti dopo reload, logout → /login, `/` senza sessione → redirect /login, **zero violazioni CSP**, zero errori script, zero richieste fallite (favicon risolta). I soli 401 in console sono i flussi intenzionali (password errata, `/me` post-logout).
+- Problemi noti / debito tecnico:
+  - Niente mockup (assenti); il toggle tema non persiste ancora lato server (fase 09: PUT /settings + sincronizzazione già predisposta).
+  - `server: uvicorn` visibile in dev (fix fase 11) e warning httpx2 noti da fasi precedenti.
+  - `.gitkeep` in frontend/src/{pages,components,api} restano (inerti, ora con file reali accanto).
+- Istruzioni avvio dev (fase 07):
+  ```bash
+  # backend (da backend/) — DEV_INSECURE_COOKIES=true è OBBLIGATORIO su http:// locale
+  DATA_DIR=/tmp/nucs-d7b DEV_INSECURE_COOKIES=true ADMIN_USERNAME=admin \
+    ADMIN_PASSWORD='password-lunga-12' .venv/bin/uvicorn app.main:app --reload --port 8080
+  # frontend (da frontend/, dopo npm ci)
+  npm run dev                                     # http://localhost:5173 (proxy /api → :8080)
+  # build statica servita dal backend: FRONTEND_DIST=../frontend/dist + npm run build
+  ```
 
 ---
 
