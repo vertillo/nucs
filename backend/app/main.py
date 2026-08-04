@@ -316,7 +316,8 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def spa_or_json_not_found(request: Request, exc: StarletteHTTPException) -> Response:
-        if exc.status_code == 404 and request.method == "GET" and not request.url.path.startswith("/api"):
+        api_path = request.url.path == "/api" or request.url.path.startswith("/api/")
+        if exc.status_code == 404 and request.method == "GET" and not api_path:
             index_file = dist_dir / "index.html"
             if index_file.is_file():
                 return HTMLResponse(index_file.read_bytes())

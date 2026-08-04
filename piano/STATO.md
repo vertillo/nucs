@@ -87,7 +87,27 @@
   - **Flusso login E2E (curl)**: POST login con X-Requested-With+Origin → **204 + Set-Cookie nucs_session (HttpOnly, Secure, SameSite=Lax, Max-Age)**; login senza X-Requested-With → **403**; `/me` con cookie → `{"username":"admin","theme":"dark"}`; logout → 204; `/me` dopo logout → 401.
   - **Dev-mode**: uvicorn :8080 + `npm run dev` → `/` da :5173 ok; proxy `/api/health` → JSON; **login da :5173 → 204** e `/me` → 200 (senza changeOrigin, vedi decisioni).
   - Verifica visiva browser (bg #0F0F0F, card #181818, bottone #1DB954, toggle tema persistente al reload): **non eseguibile in questo ambiente** (no browser) — da confermare manualmente in fase 08/12; le classi corrispondono ai token verificati via build CSS (10.9 kB con le utilities generate).
-- Esito review (modello economico): **da eseguire** (fase 07 richiede review economico prima del merge su main).
+- Esito review (modello economico): **eseguita (2026-08-04) — 0 ALTA, 0 MEDIA, 3 BASSA** (vedi sotto).
+  Check: X-Requested-With su tutte le mutazioni (apiFetch + fetch raw login), 401 handling senza
+  loop di redirect (assign una tantum + Navigate; nessuna query attiva su /login), catch-all SPA
+  che non inghiotte /api (JSON 404 sotto /api, /api/health ok, verificato anche `/apix` dopo fix),
+  zero `dangerouslySetInnerHTML`, zero hex fuori token, anti-flash a livello modulo in main.tsx
+  (prima del render, CSP-safe), package-lock committati (frontend + e2e), `npm ls` senza
+  dipendenze extra, versioni pinnate (incl. @types 18.x). Checklist sicurezza: B5/B6/B7/C1/C2/E1/E2/F1 ✅
+  (nota C1: la password default di `e2e/` è un fixture di test documentato, mai usato in runtime).
+- **Fix dei findings BASSA (post-review, 2026-08-04)** — commit `fix(frontend): phase-07 review findings`:
+  - **BASSA 1 (colore fuori token)** — `pages/Login.tsx`: bottone login `text-white` → `text-light-bg`
+    (stesso #FFFFFF ma token §11.1); unico colore named non-token della fase.
+  - **BASSA 2 (edge fallback SPA)** — `main.py`: `path.startswith("/api")` troppo largo (un path
+    tipo `/apix` riceveva JSON 404 invece del fallback SPA) → ora `path == "/api" or path.startswith("/api/")`;
+    verificato: `/apix` → index.html, `/api` e `/api/nessuna` → JSON 404.
+  - **BASSA 3 (mutation senza onError, ACCETTATO con motivazione)** — `Navbar.tsx`: `logout`/`saveTheme`
+    senza `onError` → un fallimento di rete del logout riabilita solo il bottone (nessun messaggio) e una
+    PUT theme fallita lascia il tema locale attivo finché il server non vince al reload. Non corretto:
+    comportamento accettabile e documentato per app single-user; nessun unhandled rejection (react-query
+    assorbe l'errore); la fase 13 ha la voce manuale dedicata (offline/retry).
+  - Re-verifica post-fix: pytest **231 passed**, ruff OK, `tsc --noEmit` + build OK, `e2e:07` **21/21 PASS**,
+    curl su `/`, `/qualcosa/di/spa`, `/api/health`, `/api`, `/apix` coerenti.
 - **Fix post-verifica browser (2026-08-04, trovati dal testing manuale dell'utente)** — commit `fix(frontend): theme toggle...`:
   - **BUG toggle tema (non tornava scuro)**: `Navbar` calcolava il tema successivo dal prop `theme` (la settings server, sempre `dark`) invece che dal tema effettivo → il secondo click ri-applicava `light`. Fix: stato locale `useState(() => getStoredTheme() ?? theme)` + `useEffect` di sync quando cambia il prop server; l'icona riflette il tema reale.
   - **Persistenza del tema al reload**: §11.1 vuole il toggle "persistito in settings (via API)". Aggiunto `saveTheme` mutation → `PUT /api/v1/settings {theme}` (endpoint esistente fase 06) + `invalidateQueries(['me'])`; la sincronizzazione server-wins di RequireAuth ora resta coerente (al reload il server restituisce il tema scelto dall'utente, non più `dark` fisso). Il toggle funziona in entrambe le direzioni e persiste al reload.
