@@ -2,7 +2,7 @@
 
 - **Implementazione**: modello economico
 - **Review**: modello economico
-- **Dipende da**: fase 09
+- **Dipende da**: fase 09b
 - **Branch**: `git checkout -b fase-10-scheduler-notifiche`
 
 ---
@@ -15,7 +15,9 @@ notifica Apprise aggregata quando vengono scoperte nuove release.
 
 ## 2. Prerequisiti
 
-- Fase 09 mergiata. (Opzionale) URL Apprise reale per il test.
+- Fase 09b mergiata. (Opzionale) URL Apprise reale per il test: da fase 09b può essere
+  fornito al **primo avvio** del backend di test con `NOTIFY_URLS` (vedi `.env.example`),
+  senza reinserimenti manuali via UI (il seed env vale solo su DB vuoto, §5.1).
 
 ## 3. PROMPT DI IMPLEMENTAZIONE (copia-incolla)
 
@@ -91,8 +93,10 @@ Verifica la fase 10 di nucs. Tabella PASS/FAIL con evidenza:
 4. Lock: durante uno scan manuale avviato da API, fai scattare l'orario schedulato → nei log appare
    "skipped, already running".
 5. Notifiche: PUT settings notify_enabled=false → POST notify-test → 400. Con URL Apprise REALE
-   (se fornito dall'utente): enabled + URL → POST notify-test → 200 e notifica ricevuta sul dispositivo
+   (se fornito dall'utente — da fase 09b puoi avviare il backend con `NOTIFY_URLS=...` su DB
+   fresco e saltare la UI): enabled + URL → POST notify-test → 200 e notifica ricevuta sul dispositivo
    (riporta screenshot/descrizione). Poi lancia POST /scans/releases su DB con novità → 1 sola notifica aggregata.
+   Nota: con notify_enabled=true di default (fase 09b), senza URL il notify-test risponde con un errore chiaro.
 6. Restart app → nessun job duplicato nei log di avvio (elenca i job registrati).
 Nota E2E: tutti i check di questa fase sono già automatici via API/curl/log (niente browser);
 l'UNICO passo che richiede un umano è la **ricezione della notifica Apprise su un dispositivo

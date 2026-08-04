@@ -42,7 +42,8 @@ async def test_settings_get_returns_non_secret_keys_and_flags(client):
     assert body["scan_releases_time"] == "04:00"
     assert body["feat_scan_enabled"] == "true"
     assert body["feat_scan_weekday"] == "sun"
-    assert body["notify_enabled"] == "false"
+    # Phase 09b deviation (spec 4 default "false"): notifications on by default.
+    assert body["notify_enabled"] == "true"
     assert body["notify_urls"] == ""
     assert body["release_types"] == "album,single,ep"
     assert "mb_contact_email" in body
@@ -181,12 +182,23 @@ async def test_settings_put_too_many_keys_rejected(client):
 
 
 async def test_settings_put_notify_enabled_requires_urls(client):
+    """Explicitly enabling notifications without URLs is still rejected."""
     await _login(client)
     response = await client.put(
         "/api/v1/settings", json={"notify_enabled": True, "notify_urls": ""}, headers=API_HEADERS
     )
     assert response.status_code == 422
     assert "notify_urls" in response.json()["detail"]
+
+
+async def test_settings_put_unrelated_sections_pass_when_notifications_default_on(client):
+    """Phase 09b: the default enabled-without-URLs state is a valid no-op, so
+    saving any other section must not trip the notify cross-field check."""
+    await _login(client)
+    response = await client.put("/api/v1/settings", json={"theme": "light"}, headers=API_HEADERS)
+    assert response.status_code == 200
+    assert response.json()["theme"] == "light"
+    assert response.json()["notify_enabled"] == "true"
 
 
 async def test_settings_put_notify_enabled_requires_valid_url_scheme(client):
@@ -208,6 +220,17 @@ async def test_settings_put_notify_urls_without_enabled_is_fine(client):
     )
     assert response.status_code == 200
     assert response.json()["notify_urls"] == "tgram://123:abc"
+
+
+async def test_settings_get_shows_env_seeded_notify_urls(make_client):
+    """Phase 09b: NOTIFY_URLS is seeded on first boot and visible via the API."""
+    async with make_client(env={"NOTIFY_URLS": "tgram://tok/chat"}) as client:
+        await _login(client)
+        response = await client.get("/api/v1/settings")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["notify_urls"] == "tgram://tok/chat"
+        assert body["notify_enabled"] == "true"
 
 
 async def test_settings_put_audits_keys_but_never_values(client):

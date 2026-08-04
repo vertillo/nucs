@@ -183,9 +183,13 @@ async def update_settings(
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown setting(s): {', '.join(sorted(unknown))}")
     normalized = {key: _VALIDATORS[key](key, value) for key, value in payload.items()}
-    notify_enabled = normalized.get("notify_enabled", _current(db, "notify_enabled"))
-    notify_urls = normalized.get("notify_urls", _current(db, "notify_urls"))
-    if notify_enabled == "true" and not notify_urls:
+    # Phase 09b: notifications default to enabled (spec 4 deviation) and the
+    # "enabled without URLs" state is a valid no-op. The cross-field check
+    # therefore applies ONLY when this request explicitly enables
+    # notifications, so unrelated section saves never fail on a fresh install.
+    explicit_enable = normalized.get("notify_enabled") == "true"
+    urls_now = normalized.get("notify_urls", _current(db, "notify_urls"))
+    if explicit_enable and not urls_now:
         raise HTTPException(
             status_code=422,
             detail="Invalid value for notify_urls: must not be empty when notifications are enabled",

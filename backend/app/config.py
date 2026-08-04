@@ -20,6 +20,15 @@ class Settings(BaseSettings):
 
     admin_username: str = "admin"
     admin_password: str = Field(default="", description="Initial password, read on first boot only.")
+    notify_urls: str = Field(
+        default="",
+        description="Optional Apprise URLs (tgram://, ntfy://...); seeded on first boot only.",
+    )
+    notify_enabled: bool | None = Field(
+        default=None,
+        description="Optional NOTIFY_ENABLED override for the first boot; None = env absent, "
+        "keep the default.",
+    )
     data_dir: str = "./data"
     covers_dir: str = ""
     music_library_path: str = "./music"
