@@ -94,6 +94,10 @@ Verifica la fase 10 di nucs. Tabella PASS/FAIL con evidenza:
    (se fornito dall'utente): enabled + URL → POST notify-test → 200 e notifica ricevuta sul dispositivo
    (riporta screenshot/descrizione). Poi lancia POST /scans/releases su DB con novità → 1 sola notifica aggregata.
 6. Restart app → nessun job duplicato nei log di avvio (elenca i job registrati).
+Nota E2E: tutti i check di questa fase sono già automatici via API/curl/log (niente browser);
+l'UNICO passo che richiede un umano è la **ricezione della notifica Apprise su un dispositivo
+esterno** (punto 5, solo se l'utente fornisce un URL reale) — in quel caso riporta
+screenshot/descrizione. Per la checklist manuale completa (incluse azioni avversarie) vedi fase 13.
 Se FAIL: correggi e riesegui TUTTO.
 ```
 

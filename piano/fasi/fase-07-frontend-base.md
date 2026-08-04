@@ -16,7 +16,10 @@ riempite nelle fasi 08-09 (ora: stub con titolo). Build integrata: il backend se
 ## 2. Prerequisiti
 
 - Fasi backend completate fino alla 06.
-- Node 20 installato per lo sviluppo.
+- Node 20+ installato per lo sviluppo (`node --version`).
+- **Test E2E browser** (sostituiscono i check manuali): `cd e2e && npm ci` una volta
+  (installa puppeteer + Chrome headless, ~150-300 MB al primo run). Nessuna dipendenza
+  aggiunta a `frontend/package.json`. Dettagli in `e2e/README.md`.
 
 ## 3. PROMPT DI IMPLEMENTAZIONE (copia-incolla)
 
@@ -83,12 +86,13 @@ Verifica la fase 07 di nucs. Tabella PASS/FAIL con evidenza:
    - `curl -s localhost:18099/qualcosa/di/spa` → stesso index.html (fallback).
    - `curl -s localhost:18099/api/health` → JSON health (non index.html!).
    - `curl -si localhost:18099/api/v1/auth/me` → 401 JSON.
-3. Browser (manuale, riporta ciò che vedi):
-   - http://localhost:18099/login → pagina login dark, stile coerente con §11.1 (sfondo #0F0F0F, card #181818, bottone #1DB954).
-   - Login con credenziali errate → messaggio "Invalid credentials" inline.
-   - Login corretto → redirect a / con navbar (Feed/Artists/Settings, toggle tema, Log out).
-   - Toggle tema → sfondo chiaro; RELOAD pagina → tema persistito.
-   - Log out → torna a /login; andare su / senza sessione → redirect /login.
+3. Browser (AUTOMATICO, niente check manuali): build + backend avviato
+   (`DATA_DIR=/tmp/nucs-d7 FRONTEND_DIST=../frontend/dist DEV_INSECURE_COOKIES=true
+   ADMIN_USERNAME=admin ADMIN_PASSWORD='password-lunga-12' uvicorn app.main:app --port 8080`)
+   poi `cd e2e && npm run e2e:07` → tabella PASS/FAIL (atteso 21/21): login page dark
+   (#0F0F0F), "Invalid credentials" inline, login corretto → / con navbar (Feed/Artists/Settings,
+   toggle tema, Log out), toggle tema in entrambe le direzioni, persistenza tema dopo reload,
+   logout → /login, / senza sessione → redirect /login, zero errori console/CSP/network.
 4. Dev-mode: uvicorn :8080 + `npm run dev` → proxy /api funziona (login da :5173).
 5. `grep -rn "#[0-9a-fA-F]\{3,6\}" frontend/src` → nessun hex fuori dai token (deve essere vuoto).
 6. CSP: `curl -si localhost:18099/ | grep -i content-security` → header presente e la pagina
@@ -111,7 +115,7 @@ Fai la review della fase 07 di nucs.
 ## 6. Criteri di completamento
 
 - [ ] Build + tsc puliti; app servita dal backend con fallback SPA funzionante.
-- [ ] Login/logout/tema verificati nel browser (dark default, persistenza, luce ok).
+- [ ] Login/logout/tema verificati con `e2e:07` (dark default, persistenza, luce ok) — 21/21 PASS.
 - [ ] CSP senza errori console; nessun colore fuori token.
 - [ ] Review pulita o findings risolti; STATO.md aggiornato.
 - [ ] Commit e push: `feat(frontend): base SPA with theme, login, protected layout`.

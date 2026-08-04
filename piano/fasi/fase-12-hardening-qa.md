@@ -44,9 +44,13 @@ COMPITI
    - CSP senza 'unsafe-eval'; style 'unsafe-inline' giustificato (Tailwind non ne ha bisogno a runtime:
      se la build non usa inline style, RIMUOVI 'unsafe-inline' da style-src — testa nel browser);
    - log di avvio non contengono valori env sensibili.
-4. Test E2E manuale guidato: produci piano/verifica-e2e.md con la checklist §14 espansa in passi
-   numerati eseguibili (comandi + risultato atteso), e ESEGUI ciascun passo segnando ✅/❌.
-   I 10 punti §14 devono risultare TUTTI ✅ (o il progetto non è finito).
+4. Test E2E: `cd e2e && npm ci` (puppeteer, vedi `e2e/README.md`) e `npm run e2e:12` —
+   genera `piano/verifica-e2e.md` con l'output del runner (tabella PASS/FAIL per ogni punto
+   §14 automatizzabile: 2 brute-force 429, 3-4 seed+feed+dettaglio, 6 tema persistente,
+   9 backup, 10 persistenza dati). I punti §14 che restano **umani** (dichiarati nel file):
+   ricezione notifica Apprise su dispositivo, `docker stats` dopo 24h, README validato da
+   installazione pulita su seconda macchina. I 10 punti §14 devono risultare TUTTI ✅
+   (o il progetto non è finito). Per la checklist manuale completa (azioni avversarie) vedi fase 13.
 5. README.md finale (italiano, struttura: Cos'è / Screenshot testuale o ASCII / Requisiti /
    Installazione passo-passo (docker, .env tabella variabili, compose up con profili) /
    Cloudflare Tunnel (link deploy/cloudflared.md) / Tailscale (link deploy/tailscale.md) /
@@ -72,7 +76,7 @@ Verifica finale della fase 12 / del progetto nucs:
 2. `pip-audit -r backend/requirements.txt` e `npm audit --production --prefix frontend` → riporta tabella
    findings residui con giustificazione scritta (devono essere già in STATO.md).
 3. Esegui piano/verifica-e2e.md COMPLETO sul mini PC in produzione (profili cloudflare+tailscale attivi):
-   ogni passo ✅ con evidenza (output/screenshot descritto).
+   ogni passo ✅ con evidenza (output E2E `e2e:12` + output/screenshot per i passi umani).
 4. Attacco simulato: script con 12 login sbagliati da curl → osserva 429 entro i parametri §5.3 e
    verifica che l'audit log li registri senza leak. Poi login corretto dopo attesa blocco → funziona.
 5. `docker stats --no-stream` dopo 24h di funzionamento (se possibile) → memoria stabile < 400MB (no leak evidenti).

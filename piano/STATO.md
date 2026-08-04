@@ -7,10 +7,49 @@
 ## Riepilogo rapido
 
 - Fase corrente: **08** → aprire `piano/fasi/fase-08-ui-release.md`
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07 (fase 13 = checklist manuale, da eseguire dopo la 12)
 - Branch attivo: `fase-07-frontend-base` (fase-07 implementata e verificata, da mergiare su main dopo review)
-- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto); verifica visiva browser (tema/persistenza) da confermare manualmente
+- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11, vedi sotto)
 - Idee emerse ma rimandate (v2): nessuna
+
+---
+
+## STRUMENTAZIONE E2E AUTOMATICA + FASE 13 (2026-08-04, fuori fase 07)
+
+- **Harness `e2e/`** (nuovo, committato): puppeteer 25.4.0 pinnato in `e2e/package.json`
+  (package-lock committato), `e2e/harness.js` (launch Chrome headless, `check()` PASS/FAIL,
+  login UI, POST autenticati con X-Requested-With, poll scan, raccoglitori
+  console/CSP/network/immagini-esterne, screenshot su FAIL in `e2e/artifacts/` gitignored),
+  `e2e/scenarios/fase-06.js` (link §9 + /covers, solo API via node fetch) e
+  `e2e/scenarios/fase-07.js` (login/tema/logout/redirect/CSP). `.gitignore` aggiornato.
+  Documentazione in `e2e/README.md`.
+- **Deviazione da §3 e da "niente altre dipendenze" (annotata)**: la struttura repo §3 non
+  prevede `e2e/` e il vincolo "niente altre dipendenze" vale per `frontend/package.json`
+  (che resta pulito). Puppeteer è tooling di verifica separato, installato solo in `e2e/`.
+- **Esiti eseguiti (backend con dati/seed reali)**:
+  - `npm run e2e:07` (backend :8091, FRONTEND_DIST, DEV_INSECURE_COOKIES=true, DB fresco) →
+    **21/21 PASS**: login dark #0F0F0F, "Invalid credentials" inline rosso, redirect / + navbar,
+    toggle tema entrambe le direzioni, persistenza light E dark dopo reload, logout, redirect
+    senza sessione, zero errori console/CSP/page/network (favicon risolta).
+  - `npm run e2e:06` (backend :8092, DB seedato via API: library scan su /tmp/nucs-lib-test +
+    discovery con `discovery_from_date=2026-04-01` → 13 release, 13 con 4 link, 11 con cover) →
+    **23/23 PASS**: dettaglio con 4 link, dominio §9 esatto, **probe live reali** su
+    Spotify/YTM/Deezer/Google tutti 200 (anche l'URL diretto Deezer `album/1020773921`),
+    /covers rgid→200, path traversal→404, uuid inesistente→404, senza sessione→401.
+- **Fase 13 creata**: `piano/fasi/fase-13-verifica-manuale-completa.md` — checklist manuale
+  esaustiva (10 aree A-J, ~90 passi) con happy path E **azioni non convenzionali/avversarie**
+  (input limite, doppio click, due tab, cookie manipolati, throttle, offline, adversarial API
+  curl, concorrenza, a11y, post-deploy), template dei finding (severità ALTA/MEDIA/BASSA +
+  evidenza) e regole di chiusura (zero ALTA/MEDIA aperti senza decisione). Da eseguire
+  dall'operatore dopo la fase 12 (o prima come sanity check). Aggiunta all'indice in
+  `piano/README.md`.
+- **File di fase 07-12 aggiornati**: prerequisiti E2E (`cd e2e && npm ci`, Node ≥ 20, Chrome
+  headless al primo run) e prompt di verifica ora riferiti agli scenari automatici
+  (`npm run e2e:07` / `e2e:08` / `e2e:09` / `e2e:11` / `e2e:12`); la fase 08/09/11/12 creano
+  i propri file di scenario estendendo l'harness (l'UI non esiste ancora → gli scenari nascono
+  con la fase); fase 10: tutto automatico tranne la ricezione Apprise su dispositivo esterno
+  (umana); fase 12: `piano/verifica-e2e.md` generato dal runner, umani dichiarati = stats 24h,
+  README su macchina pulita, ricezione Apprise.
 
 ---
 

@@ -16,6 +16,8 @@ integrazione Spotify, tema, cambio password, sessioni attive, info.
 ## 2. Prerequisiti
 
 - Fase 08 mergiata. Endpoint `/artists/*`, `/settings`, `/scans/*`, `/auth/*` già funzionanti.
+- **Test E2E**: `cd e2e && npm ci` (puppeteer + Chrome headless, prima volta) — vedi `e2e/README.md`.
+  Gli scenari si aggiungono in `e2e/scenarios/fase-09.js` (questa fase ne crea il file, vedi verifica).
 
 ## 3. PROMPT DI IMPLEMENTAZIONE (copia-incolla)
 
@@ -84,23 +86,24 @@ Report + output build + aggiornamento piano/STATO.md (fase 09).
 ```text
 Verifica la fase 09 di nucs. Tabella PASS/FAIL con evidenza:
 1. `cd frontend && npm ci && npx tsc --noEmit && npm run build` → exit 0.
-2. Browser con backend avviato:
+2. Crea `e2e/scenarios/fase-09.js` (harness `e2e/harness.js`, seed con `h.seed(page)`) e poi
+   esegui `cd e2e && npm run e2e:09` (backend avviato con `DEV_INSECURE_COOKIES=true`,
+   `FRONTEND_DIST=../frontend/dist`, `MUSIC_LIBRARY_PATH` con dati). Tabella PASS/FAIL con almeno:
    - /artists: lista popolata; search filtra; toggle Ignore → artista passa a "Ignored" (select filtro);
      "Retry" su un unmatched → feedback; "+ Add artist" con nome nuovo → appare in lista
-     (match in background: ricarica dopo 5s per vedere l'esito); aggiunta duplicata → errore inline.
+     (match in background: attesa per vedere l'esito); aggiunta duplicata → errore inline.
    - /settings "Discovery": cambia data → Save → reload → data persistita; deseleziona tutti i tipi → errore inline.
    - "Scans": click "Scan library now" → bottone disabilitato + spinner; tabella "Recent scans"
      si aggiorna a fine run (polling); secondo click durante run → "Scan already in progress".
-   - "Notifications": senza URL → test fallisce con messaggio chiaro; (se hai un URL Apprise reale: configura
-     e verifica la ricezione).
+   - "Notifications": senza URL → test fallisce con messaggio chiaro.
    - "Integrations": scrivi secret finto → Save → reload → campo mostra placeholder, NON il valore
-     (verifica anche in DevTools Network che GET /settings non lo contiene).
+     (assert anche nel body di GET /settings: il secret non c'è).
    - "Appearance": radio Light → tema cambia subito e persiste dopo logout/login.
    - "Security": cambio password con nuova <12 char → errore; con attuale errata → errore; corretto →
-     messaggio "Password updated"; apri seconda sessione in altro browser/incognito, poi "Revoke other sessions" →
-     l'altra sessione riceve 401 al refresh.
-   - Mobile 375px: tutto usabile senza scroll orizzontale.
-3. Console pulita; nessuna chiamata a endpoint inesistenti (404 in Network).
+     messaggio "Password updated"; **seconda sessione** in contesto incognito
+     (`browser.createBrowserContext()`) poi "Revoke other sessions" → l'altra sessione riceve 401 al refresh.
+   - Mobile (viewport 375px): tutto usabile senza scroll orizzontale.
+   - Console pulita (esclusi 401 intenzionali); nessuna chiamata a endpoint inesistenti (404 in Network).
 Se FAIL: correggi e riesegui TUTTO.
 ```
 
@@ -118,7 +121,7 @@ Fai la review della fase 09 di nucs.
 
 ## 6. Criteri di completamento
 
-- [ ] Entrambe le pagine complete e verificate nel browser (incluse persistenze e revoca sessioni).
+- [ ] Entrambe le pagine complete e verificate con E2E automatico (`e2e:09`, incluse persistenze e revoca sessioni).
 - [ ] Review pulita o findings risolti; STATO.md aggiornato.
 - [ ] Commit e push: `feat(frontend): artists management and settings pages`.
 
