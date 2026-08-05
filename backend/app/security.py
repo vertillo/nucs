@@ -84,6 +84,24 @@ def hash_session_value(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def set_session_cookie(response, value: str, secure: bool) -> None:
+    """Set the nucs_session cookie on a response (spec 5.2).
+
+    Used by the login endpoint and by the rolling-renewal middleware: the same
+    opaque value is re-issued with a fresh Max-Age so the browser keeps it
+    past the original 7-day deadline (audit finding, phase 12).
+    """
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        value,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        path="/",
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+    )
+
+
 def create_session(db: Session, ip: str | None, user_agent: str | None) -> str:
     """Create a session row and return the opaque value meant for the browser only."""
     value = secrets.token_urlsafe(32)
@@ -103,13 +121,23 @@ def create_session(db: Session, ip: str | None, user_agent: str | None) -> str:
 
 
 def verify_session(db: Session, value: str) -> DbSession | None:
-    """Return the session row when valid; renew expiry when < 3 days remain (rolling, spec 5.2)."""
+    """Return the session row when valid; renew expiry when < 3 days remain (rolling, spec 5.2).
+
+    The renewal is server-side only: the caller (``deps.require_user``) marks the
+    request so the response middleware re-issues the cookie with a fresh Max-Age,
+    otherwise the browser would still drop the cookie at its original 7-day
+    deadline despite the extended server-side expiry (audit finding, phase 12).
+    """
     row = db.get(DbSession, hash_session_value(value))
     if row is None:
         return None
     now = _utc_now()
     try:
         expires_at = datetime.fromisoformat(row.expires_at)
+        if expires_at.tzinfo is None:
+            # Timestamps are stored with a UTC offset; a naive value (corrupt
+            # or legacy row) is treated as UTC instead of crashing (500).
+            expires_at = expires_at.replace(tzinfo=UTC)
     except ValueError:
         db.delete(row)
         db.commit()
@@ -121,6 +149,7 @@ def verify_session(db: Session, value: str) -> DbSession | None:
     if expires_at - now < SESSION_ROLLING_THRESHOLD:
         row.expires_at = (now + SESSION_TTL).isoformat()
         db.commit()
+        row._rolling_renewed = True  # noqa: SLF001 - runtime flag read by require_user
     return row
 
 

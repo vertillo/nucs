@@ -91,3 +91,52 @@
 - Verifiche dinamiche eseguite in fase 12: timing login (A4), brute-force reale (A5/B7),
   cookie Secure (A3), CSP in browser (B6), log puliti (C4), audit log (F3), E2E 33/33.
 - Dettaglio completo: `piano/verifica-e2e.md` · `piano/STATO.md` (fase 12).
+
+---
+
+## ESITO AUDIT FINALE PRE-RILASCIO (2026-08-05, modello avanzato)
+
+Rilettura integrale di `piano/` + `git ls-files` + verifica live. Esito per punto
+(evidenza `file:riga`):
+
+| Punto | Esito | Evidenza `file:riga` |
+|---|---|---|
+| A1 argon2id | ✅ | `security.py:33` `PasswordHasher()` (argon2id, t=3, m=64MiB, p=4); `security.py:44-54`; test `test_security.py` |
+| A2 token opaco | ✅ | `security.py:89` `secrets.token_urlsafe(32)`; `security.py:82-84` sha256 hex; DB solo `id_hash` (verificato live) |
+| A3 cookie flags | ✅ | `auth.py:60-69` httponly+secure(no-dev)+samesite=lax, nessun domain; verificato live: `HttpOnly; Max-Age=604800; Path=/; SameSite=lax; Secure` |
+| A4 timing costante | ✅ | `auth.py:84-91` stesso 401; `security.py:37` DUMMY_HASH; misurato live: esistente 37ms vs inesistente 37ms |
+| A5 rate limit | ✅ | `security.py:154-234` (5/300s/IP, 10→900s, Retry-After); verificato live 5×401→6°429 + Retry-After 300; login corretto durante blocco → 429 |
+| A6 revoche | ✅ | `auth.py:106-116`, `auth.py:154-158`; `e2e:09` incognito revoca |
+| A7 scadenza+cleanup | ✅ | `security.py:105-124`, job orario `scheduler.py:133-141` |
+| A8 401 su API | ✅ | `deps.py:14-24`; verificato live: `/api/v1/releases` senza sessione → 401 |
+| B1 validazione input | ✅ | `schemas.py` (login/password/artist/state/seen-all), `settings.py:59-146` (date/time/weekday/bool/email/url), `releases.py:29-50` (date/type), caps lunghezza |
+| B2 ORM parametrizzato | ✅ | SQLAlchemy ovunque; `releases.py:126` `select()`; `artists.py:71` ilike con escape; nessuna f-string SQL nei path utente |
+| B3 path traversal | ✅ | `covers.py:31` `RGID_RE` strict; `covers.py:33` path solo da rgid validato; libreria `:ro`; verificato `..%2F..` → 404 |
+| B4 no secret in output | ✅ | `settings.py:153-158` segreti esclusi + `*_set`; `auth.py:166-175` sessions solo `id_hash[:8]`; handler 500 generico `main.py:327-330` |
+| B5 React XSS | ✅ | grep `dangerouslySetInnerHTML`/`innerHTML`/`eval(` → 0; `LinkButtons.tsx:110-111` `rel="noopener noreferrer"`; URL esterni solo dal server (`links.py` con `quote`) |
+| B6 header di sicurezza | ✅ | `main.py:83-107` CSP `style-src 'self'` (no unsafe-inline/eval), nosniff, DENY, Referrer-Policy, Permissions-Policy, X-Robots-Tag; verificato live + E2E zero violazioni |
+| B7 CSRF | ✅ | `main.py:133-147` `OriginCheckMiddleware`; verificato live: POST senza X-Requested-With → 403; test `test_auth.py` |
+| C1 segreti committati | ✅ | `git ls-files \| grep -iE "\.env$|secret|token"` → 0; `.env.example` placeholder; `.dockerignore` `**/.env` |
+| C2 `.env.example` | ✅ | 26 righe, tutti placeholder/vuoti |
+| C3 GET /settings | ✅ | `settings.py:155-158` + `_SECRET_KEYS`; test e verifiche live |
+| C4 log senza segreti | ✅ | `audit.py:24-42` redazione ricorsiva; `settings.py:201` solo nomi chiave; `notify.py:34-43` errori generici; grep log boot → 0 match |
+| D1 porte | ✅ | `docker-compose.yml` solo `expose: 8080`; `ports:` solo in `docker-compose.dev.yml:14` (127.0.0.1, vietato prod); `docker compose config` → nessuna porta |
+| D2 non-root/readonly | ✅ | `Dockerfile:41-45` user app uid 1000, no-create-home, HOME=/tmp; `docker-compose.yml:33-42` read_only+tmpfs+cap_drop ALL+no-new-privileges; `:ro` sul mount musica |
+| D3 limiti | ✅ | `docker-compose.yml:36-38` 768m/1.5cpu/512 pids; cloudflared 128m; tailscale 256m |
+| D4 pin immagini | ✅ | `Dockerfile:8,16` node:20-alpine, python:3.12-slim; `docker-compose.yml:57` cloudflared 2025.6.1; `:78` tailscale v1.84.0 |
+| D5 XFF fidato | ✅ | `security.py:238-294` CIDR; `main.py:161-166`; uvicorn `--proxy-headers`; HSTS solo XFP https da peer fidato `main.py:110-116` |
+| D6 500 generico | ✅ | `main.py:327-330`; test |
+| E1 pin+lock | ✅ | `requirements.txt`/`requirements-dev.txt` `==`; `frontend/package.json` esatte + lock committati; `e2e/` lock committato |
+| E2 no dip extra | ✅ | stack §2 rispettato; `httpx2` dev-only annotato; puppeteer tooling separato |
+| E3 audit dipendenze | ✅ | `pip-audit` → 0; `npm audit` → 2 moderate non applicabili (giustificate in STATO.md); `e2e` audit → 0 |
+| F1 noindex | ✅ | `main.py:101` + `main.py:299-301` robots.txt; `frontend/index.html:6` meta robots |
+| F2 cover locali | ✅ | `covers.py` pipeline locale; endpoint auth `covers.py:25-36`; CSP `img-src 'self'`; E2E: solo host locali |
+| F3 audit log | ✅ | `audit.py`; verificato live (login_fail/blocked/ok senza leak) |
+| F4 libreria mai scritta | ✅ | `library_scan.py` solo lettura (MutagenFile read); grep write/open-write → 0; mount `:ro` |
+
+**Discrepanze STATO.md vs codice rilevate (2, entrambe non bloccanti):**
+1. **BASSA — rolling renewal del cookie non reimpostato** (originalmente): `security.py:121-122` rinnovava `expires_at` nel DB, ma `auth.py` non reimpostava mai il cookie. **✅ RISOLTO in fase 12 post-audit**: `set_session_cookie` condiviso (`security.py`), flag `_rolling_renewed` su `verify_session`, `SessionRollingMiddleware` (`main.py`) che re-issua il cookie (Max-Age fresco) quando la sessione viene rinnovata; nessun Set-Cookie per sessioni fresche (no write amplification). Test: `test_rolling_renewal_reissues_cookie_on_response`, `test_no_cookie_reissue_when_session_fresh`; verificato live.
+2. **BASSA — `SeenAllRequest` senza `extra="forbid"`**: `schemas.py:39` (a differenza di `ReleaseStatePatch` a `schemas.py:29`). **✅ RISOLTO**: aggiunto `extra="forbid"`; test `test_api_seen_all_rejects_unknown_fields` (422).
+3. **Nuovo finding emerso durante il fix (BASSA → risolto) — crash 500 su timestamp naive**: `verify_session` confrontava un `expires_at` senza timezone (riga corrotta/legacy nel DB) con un datetime aware → `TypeError` → 500 (violava D6 e il claim di fase 02 "verify_session guarda fromisoformat"). **✅ RISOLTO**: timestamp naive trattati come UTC (`security.py`); test `test_verify_session_naive_timestamp_treated_as_utc_not_crash`; verificato live (200 + rolling con naive, 401 senza crash su naive scaduto).
+
+**Coerenza generale**: nessuna discrepanza ALTA/MEDIA tra dichiarato e codice; tutti i claims verificati live (274 test, E2E 33/33, access-log filtrato, CSP, timing, 429, audit, porte, header).

@@ -309,3 +309,14 @@ async def test_api_seen_all_marks_only_non_hidden_in_range(client):
 
     bad_range = await client.post("/api/v1/releases/seen-all", json={"from": "nope"}, headers=API_HEADERS)
     assert bad_range.status_code == 422
+
+
+async def test_api_seen_all_rejects_unknown_fields(client):
+    """Unknown fields in the seen-all body must be rejected (audit finding,
+    phase 12: SeenAllRequest now uses extra='forbid' like ReleaseStatePatch)."""
+    _seed()
+    await _login(client)
+    response = await client.post(
+        "/api/v1/releases/seen-all", json={"from": "2024-06-01", "evil": True}, headers=API_HEADERS
+    )
+    assert response.status_code == 422

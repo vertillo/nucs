@@ -33,12 +33,14 @@ from app.config import get_settings
 from app.db import get_engine, get_session_factory
 from app.models import Setting
 from app.security import (
+    SESSION_COOKIE_NAME,
     create_admin_user,
     get_setting,
     is_trusted_peer,
     parse_trusted_networks,
     password_policy_ok,
     resolve_client_ip,
+    set_session_cookie,
 )
 from app.services import deezer, discovery, spotify
 from app.services.musicbrainz import close_client
@@ -145,6 +147,28 @@ class OriginCheckMiddleware(BaseHTTPMiddleware):
             if not source_host or source_host != _strip_default_port(request.headers.get("host", "").lower()):
                 return forbidden
         return await call_next(request)
+
+
+class SessionRollingMiddleware(BaseHTTPMiddleware):
+    """Re-issue the session cookie with a fresh Max-Age after a rolling renewal.
+
+    ``verify_session`` extends the server-side ``expires_at`` when fewer than 3
+    days remain (spec 5.2); without this middleware the browser would still drop
+    the cookie at the original 7-day Max-Age, silently logging the user out
+    (audit finding, phase 12).
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        response = await call_next(request)
+        if getattr(request.state, "session_rolling_renewed", False):
+            value = request.cookies.get(SESSION_COOKIE_NAME)
+            if value:
+                set_session_cookie(
+                    response,
+                    value,
+                    secure=not get_settings().dev_insecure_cookies,
+                )
+        return response
 
 
 class ClientIPMiddleware(BaseHTTPMiddleware):
@@ -290,6 +314,7 @@ def create_app() -> FastAPI:
         ClientIPMiddleware,
         trusted_networks=parse_trusted_networks(settings.trusted_proxy_cidrs),
     )
+    app.add_middleware(SessionRollingMiddleware)
     app.add_middleware(OriginCheckMiddleware)
     app.add_middleware(
         SecurityHeadersMiddleware,

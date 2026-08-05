@@ -489,3 +489,51 @@ def test_health_still_public_with_lifespan(app_env):
         response = test_client.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "version": "1.0.0"}
+
+
+# --- rolling renewal re-issues the cookie (audit finding, phase 12) ----------
+
+
+async def test_rolling_renewal_reissues_cookie_on_response(make_client, app_env):
+    """Spec 5.2 rolling: when the server extends expires_at, the response must
+    re-issue the session cookie with a fresh Max-Age, otherwise the browser
+    would drop it at the original 7-day deadline."""
+    from datetime import UTC, datetime, timedelta
+
+    async with make_client() as client:
+        login = await _login(client)
+        assert login.status_code == 204
+        cookie = login.cookies.get("nucs_session")
+        assert cookie
+
+        # Force the session to expire in < 3 days (rolling threshold).
+        with get_session_factory()() as db:
+            row = db.get(DbSession, security.hash_session_value(cookie))
+            row.expires_at = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+            db.commit()
+
+        response = await client.get(ME_URL, headers={"Cookie": f"nucs_session={cookie}"})
+        assert response.status_code == 200
+        set_cookie = response.headers.get("set-cookie") or ""
+        assert "nucs_session=" in set_cookie
+        assert "Max-Age=604800" in set_cookie
+        assert "HttpOnly" in set_cookie
+        assert "SameSite=lax" in set_cookie
+
+        # The server-side expiry was extended again.
+        with get_session_factory()() as db:
+            digest = security.hash_session_value(cookie)
+            renewed = datetime.fromisoformat(db.get(DbSession, digest).expires_at)
+        assert renewed > datetime.now(UTC) + timedelta(days=6)
+
+
+async def test_no_cookie_reissue_when_session_fresh(make_client):
+    """A fresh session (no rolling renewal) must NOT get a Set-Cookie header:
+    re-issuing on every request would be needless write amplification."""
+    async with make_client() as client:
+        login = await _login(client)
+        cookie = login.cookies.get("nucs_session")
+        response = await client.get(ME_URL, headers={"Cookie": f"nucs_session={cookie}"})
+        assert response.status_code == 200
+        set_cookie = response.headers.get("set-cookie") or ""
+        assert "nucs_session=" not in set_cookie

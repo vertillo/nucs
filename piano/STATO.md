@@ -64,6 +64,11 @@
   - `react-router` 6.x con 2 advisory moderate non applicabili (SPA senza SSR, link interni) — **pianificato**: upgrade v7 in v1.1.
   - Punti §14 umani (non automatizzabili su questa macchina): ricezione notifica Apprise su dispositivo, `docker stats` dopo 24h, README da installazione pulita su seconda macchina, tunnel Cloudflare reale — tutti in `piano/verifica-e2e.md` e fase 14.
   - `serve.json` Tailscale da validare al primo avvio (fase 14, già registrato in fase 11).
+- **Fix post-audit (2026-08-05, dopo la review avanzata pre-rilascio)** — commit dedicato:
+  - **BASSA 1 (rolling renewal del cookie) RISOLTO**: il server rinnovava `expires_at` nel DB ma il cookie (Max-Age 604800 fisso) non veniva mai reimpostato → la sessione moriva comunque a 7 giorni dal login. Fix: `security.set_session_cookie` condiviso, flag `_rolling_renewed` in `verify_session` (`security.py`), `SessionRollingMiddleware` in `main.py` che re-issua il cookie con Max-Age fresco solo quando la sessione è rinnovata (sessioni fresche → nessun Set-Cookie). Verificato live (3 casi) + 2 test.
+  - **BASSA 2 (SeenAllRequest senza extra="forbid") RISOLTO**: `extra="forbid"` aggiunto (`schemas.py`), allineato a `ReleaseStatePatch`; +1 test (422 su campi sconosciuti).
+  - **BASSA 3 (nuova, trovata durante il fix — crash 500 su timestamp naive) RISOLTO**: `verify_session` confrontava un `expires_at` senza timezone (riga corrotta/legacy) con un datetime aware → `TypeError` → 500. Ora i timestamp naive sono trattati come UTC (`security.py`); +1 test; verificato live (naive valido → rolling ok, naive scaduto → 401 senza crash). Questo chiude anche una lacuna del fix di fase 02 (che copriva solo `ValueError`).
+  - Suite post-fix: **274 passed** (270 → 274), ruff OK, `tsc`+build OK, **`e2e:12` → 33/33 PASS** (rieseguito completo). Checklist aggiornata: 26/26 ✅, **0 findings aperti**.
 - Istruzioni (per la verifica locale):
   ```bash
   cd backend && .venv/bin/python -m pytest -q && .venv/bin/ruff check .

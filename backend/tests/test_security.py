@@ -107,6 +107,22 @@ def test_verify_session_corrupt_timestamp_treated_as_invalid(migrated):
         assert db.scalars(select(DbSession)).all() == []
 
 
+def test_verify_session_naive_timestamp_treated_as_utc_not_crash(migrated):
+    """A naive (timezone-less) expires_at must be read as UTC, never raising
+    (audit finding, phase 12: naive vs aware comparison raised TypeError -> 500)."""
+    with get_session_factory()() as db:
+        value = create_session(db, None, None)
+        row = verify_session(db, value)
+        row.expires_at = (datetime.now(UTC) + timedelta(days=1)).replace(tzinfo=None).isoformat()
+        db.commit()
+
+        assert verify_session(db, value) is not None  # still valid, parsed as UTC
+
+        row.expires_at = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+        db.commit()
+        assert verify_session(db, value) is None  # expired, dropped, no crash
+
+
 def test_verify_session_rolling_renewal(migrated):
     with get_session_factory()() as db:
         value = create_session(db, None, None)

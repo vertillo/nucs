@@ -21,6 +21,9 @@ async def require_user(request: Request, db: Session = Depends(get_db)) -> DbSes
         raise HTTPException(status_code=401, detail="Not authenticated")
     session.last_seen_at = utc_now()
     db.commit()
+    # Rolling renewal (spec 5.2): signal the response middleware to re-issue the
+    # cookie with a fresh Max-Age when the server-side expiry was extended.
+    request.state.session_rolling_renewed = bool(getattr(session, "_rolling_renewed", False))
     return session
 
 
