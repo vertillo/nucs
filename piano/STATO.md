@@ -6,9 +6,15 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **11** → aprire `piano/fasi/fase-11-docker-rete.md` (**review con modello avanzato**; richiede mini PC con Docker + account Cloudflare con dominio + account Tailscale)
+- Fase corrente: **11** → aprire `piano/fasi/fase-11-docker-rete.md` (**review con modello avanzato**)
 - Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10 (fase 13 = checklist manuale, da eseguire dopo la 12)
+- **Fase 14 (verifica di produzione, dopo la 13)**: `piano/fasi/fase-14-verifica-produzione.md` —
+  deploy e verifica completa sul mini PC (HTTPS tailnet senza dominio, scans vera libreria,
+  IP reali, Cloudflare quando ci sarà un dominio); chiusura dei punti "differiti" della fase 11
 - Branch attivo: `fase-11-docker-rete` (fase-10 mergiata su main con `e25c3ac`)
+- Decisione di percorso (registrata): sviluppo su Mac + container multi-arch (build locale per
+  macchina, nessun registry); container eseguibile su più macchine; mini PC solo come macchina
+  di deploy (verifica in fase 14)
 - Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); header `server: uvicorn` visibile in dev (fix in fase 11); **il `backend/.env` di sviluppo con URL Apprise reale va neutralizzato nei backend E2E con `NOTIFY_URLS=`** (documentato in `e2e/README.md`; il gap notify-test è chiuso — endpoint implementato in fase 10)
 - Idee emerse ma rimandate (v2): nessuna
 
