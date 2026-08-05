@@ -46,6 +46,19 @@ class Settings(BaseSettings):
             return value
         return str(Path(info.data.get("data_dir", "./data")) / "covers")
 
+    @field_validator("notify_enabled", mode="before")
+    @classmethod
+    def empty_notify_enabled_is_unset(cls, value: str | None) -> str | None:
+        """Treat an empty NOTIFY_ENABLED (e.g. `NOTIFY_ENABLED=` in .env) as unset.
+
+        docker-compose env_file forwards every placeholder of .env to the
+        container, so an empty value must mean "keep the default" instead of
+        failing boolean parsing (phase 11, containerized boot).
+        """
+        if value == "":
+            return None
+        return value
+
     @field_validator("data_dir", "covers_dir")
     @classmethod
     def ensure_dirs(cls, value: str) -> str:
