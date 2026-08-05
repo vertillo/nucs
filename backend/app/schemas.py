@@ -36,7 +36,7 @@ class ReleaseStatePatch(BaseModel):
 class SeenAllRequest(BaseModel):
     """Optional ISO-date range for POST /releases/seen-all (spec 10)."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     from_: str | None = Field(default=None, alias="from", max_length=10)
     to: str | None = Field(default=None, max_length=10)

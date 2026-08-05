@@ -14,7 +14,6 @@ from app.models import Session as DbSession
 from app.schemas import LoginRequest, PasswordChangeRequest
 from app.security import (
     DUMMY_HASH,
-    SESSION_COOKIE_MAX_AGE,
     SESSION_COOKIE_NAME,
     create_session,
     get_setting,
@@ -24,6 +23,7 @@ from app.security import (
     password_change_limiter,
     revoke_other_sessions,
     revoke_session,
+    set_session_cookie,
     set_setting,
     verify_password,
 )
@@ -58,15 +58,7 @@ def _log_login_blocked(db: Session, ip: str) -> None:
 
 
 def _set_session_cookie(response: Response, value: str) -> None:
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
-        value,
-        max_age=SESSION_COOKIE_MAX_AGE,
-        path="/",
-        httponly=True,
-        secure=not get_settings().dev_insecure_cookies,
-        samesite="lax",
-    )
+    set_session_cookie(response, value, secure=not get_settings().dev_insecure_cookies)
 
 
 @router.post("/login", status_code=204)
