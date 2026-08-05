@@ -6,27 +6,26 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **12** → chiusa (hardening, audit, E2E, README, v1.0.0)
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10, 11, **12**
-- **Fase 13 (checklist manuale avversaria, da eseguire dopo la 12)**: `piano/fasi/fase-13-verifica-manuale-completa.md` — checklist manuale completa con azioni avversarie
+- Fase corrente: **13** → checklist manuale avversaria (`piano/fasi/fase-13-verifica-manuale-completa.md`), da eseguire sul mini PC
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10, 11, **12 (CHIUSA 2026-08-05 — merge su main + tag v1.0.0)**
 - **Fase 14 (verifica di produzione, dopo la 13)**: `piano/fasi/fase-14-verifica-produzione.md` —
   deploy e verifica completa sul mini PC (HTTPS tailnet senza dominio, scans vera libreria,
   IP reali, Cloudflare quando ci sarà un dominio); chiusura dei punti "differiti" della fase 11
-- Branch attivo: `fase-12-hardening-qa`
+- Branch attivo: `main` (v1.0.0 taggata)
 - Decisione di percorso (registrata): sviluppo su Mac + container multi-arch (build locale per
   macchina, nessun registry); container eseguibile su più macchine; mini PC solo come macchina
   di deploy (verifica in fase 14)
-- **v1.0.0 rilasciata** (fase 12): tutti i debiti chiusi o giustificati, audit dipendenze puliti
+- **v1.0.0 rilasciata** (fase 12, 2026-08-05): tutti i debiti chiusi o giustificati, audit dipendenze puliti
   (0 high/critical), E2E §14 automatizzabili 33/33, README finale italiano, verifica in
-  `piano/verifica-e2e.md`. Unico finding residuo di audit: 2 moderate su `react-router` 6.x
-  (non applicabili a SPA senza SSR e link interni hardcoded; fix = major upgrade v7, pianificato
-  v1.1 — vedi fase 12)
+  `piano/verifica-e2e.md`, review finale: PRONTO (26/26 checklist, 0 findings aperti). Unico
+  finding di audit residuo: 2 moderate su `react-router` 6.x (non applicabili a SPA senza SSR e
+  link interni hardcoded; fix = major upgrade v7, pianificato v1.1)
 - Problemi aperti residui: nessuno bloccante — vedi elenco debiti fase 12
 
 ---
 
 ## FASE 12 — Hardening finale, audit dipendenze, E2E §14, README, v1.0.0 — 2026-08-05
-- Branch: fase-12-hardening-qa
+- Branch: fase-12-hardening-qa (mergiato su main `2026-08-05`, tag `v1.0.0`)
 - Cosa è stato fatto:
   - **Debito tecnico — chiusura (5 risolti, 14 giustificati)** — vedi elenco completo più sotto (sezione "Debiti per fase").
     Risolti: (1) warning httpx2 → `httpx2==2.9.1` aggiunto a `requirements-dev.txt` (starlette.testclient lo preferisce quando installato: warning sparito, suite invariata 270 passed); (2) namespace package `backend/app` senza `__init__.py` → aggiunti `__init__.py` in `app/`, `app/api/`, `app/services/` (nessuna regressione); (3) access log `/api/health` rumoroso (§5.7) → `_HealthAccessFilter` sul logger `uvicorn.access` in `main.py` (verificato: 4 richieste → 0 righe, le altre righe di accesso restano); (4) `.gitkeep` orfani in `frontend/src/{api,components,pages}` e `backend/app/{api,services}`/`tests` → rimossi da git; (5) header `server: uvicorn` (già fixato in fase 11, ri-verificato).
