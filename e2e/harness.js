@@ -28,7 +28,9 @@ async function launch() {
     if (m.type() === 'error') state.consoleErrors.push(m.text())
   })
   page.on('pageerror', (e) => state.pageErrors.push(String(e)))
-  page.on('requestfailed', (r) => state.failedRequests.push(r.url()))
+  page.on('requestfailed', (r) =>
+    state.failedRequests.push(`${r.url()} ${(r.failure() || {}).errorText || ''}`),
+  )
   page.on('response', (r) => {
     if (r.request().resourceType() === 'image') {
       try {

@@ -6,21 +6,105 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **12** → aprire `piano/fasi/fase-12-hardening-qa.md`
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10, 11 (fase 13 = checklist manuale, da eseguire dopo la 12)
+- Fase corrente: **12** → chiusa (hardening, audit, E2E, README, v1.0.0)
+- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10, 11, **12**
+- **Fase 13 (checklist manuale avversaria, da eseguire dopo la 12)**: `piano/fasi/fase-13-verifica-manuale-completa.md` — checklist manuale completa con azioni avversarie
 - **Fase 14 (verifica di produzione, dopo la 13)**: `piano/fasi/fase-14-verifica-produzione.md` —
   deploy e verifica completa sul mini PC (HTTPS tailnet senza dominio, scans vera libreria,
   IP reali, Cloudflare quando ci sarà un dominio); chiusura dei punti "differiti" della fase 11
-- Branch attivo: `fase-11-docker-rete` (fase-10 mergiata su main con `e25c3ac`)
+- Branch attivo: `fase-12-hardening-qa`
 - Decisione di percorso (registrata): sviluppo su Mac + container multi-arch (build locale per
   macchina, nessun registry); container eseguibile su più macchine; mini PC solo come macchina
   di deploy (verifica in fase 14)
-- Problemi aperti: warning deprecazione `httpx2` da `fastapi.testclient` (non bloccante); **header `server: uvicorn` FIXATO in fase 11** (`--no-server-header` nel CMD del Dockerfile, verificato: header assente); **il `backend/.env` di sviluppo con URL Apprise reale va neutralizzato nei backend E2E con `NOTIFY_URLS=`** (documentato in `e2e/README.md`; il gap notify-test è chiuso — endpoint implementato in fase 10)
-- Idee emerse ma rimandate (v2): nessuna
+- **v1.0.0 rilasciata** (fase 12): tutti i debiti chiusi o giustificati, audit dipendenze puliti
+  (0 high/critical), E2E §14 automatizzabili 33/33, README finale italiano, verifica in
+  `piano/verifica-e2e.md`. Unico finding residuo di audit: 2 moderate su `react-router` 6.x
+  (non applicabili a SPA senza SSR e link interni hardcoded; fix = major upgrade v7, pianificato
+  v1.1 — vedi fase 12)
+- Problemi aperti residui: nessuno bloccante — vedi elenco debiti fase 12
 
 ---
 
-## FASE 11 — Docker multi-stage, compose con cloudflared e tailscale, docs deploy — 2026-08-05
+## FASE 12 — Hardening finale, audit dipendenze, E2E §14, README, v1.0.0 — 2026-08-05
+- Branch: fase-12-hardening-qa
+- Cosa è stato fatto:
+  - **Debito tecnico — chiusura (5 risolti, 14 giustificati)** — vedi elenco completo più sotto (sezione "Debiti per fase").
+    Risolti: (1) warning httpx2 → `httpx2==2.9.1` aggiunto a `requirements-dev.txt` (starlette.testclient lo preferisce quando installato: warning sparito, suite invariata 270 passed); (2) namespace package `backend/app` senza `__init__.py` → aggiunti `__init__.py` in `app/`, `app/api/`, `app/services/` (nessuna regressione); (3) access log `/api/health` rumoroso (§5.7) → `_HealthAccessFilter` sul logger `uvicorn.access` in `main.py` (verificato: 4 richieste → 0 righe, le altre righe di accesso restano); (4) `.gitkeep` orfani in `frontend/src/{api,components,pages}` e `backend/app/{api,services}`/`tests` → rimossi da git; (5) header `server: uvicorn` (già fixato in fase 11, ri-verificato).
+  - **Audit dipendenze**:
+    - Backend: `pip-audit -r backend/requirements.txt` → **"No known vulnerabilities found"** (0 findings).
+    - Frontend: `npm audit --omit=dev` → **2 moderate** su `react-router` 6.0.0-7.17.0: GHSA-wrjc-x8rr-h8h6 (open redirect via backslash in `<Link>`/`useNavigate`, CVE-2025-68470 bypass) e GHSA-337j-9hxr-rhxg (constructor injection via `deserializeErrors()` in SSR hydration). Fix disponibile SOLO come **major upgrade a react-router-dom 7.18.2** (breaking) → **NON applicato ora** (vincolo fase 12: major rischioso → giustifica e pianifica). Giustificazione: (a) tutte le `to` di `frontend/src` sono hardcoded interne (mai input utente → open redirect non sfruttabile); (b) nucs è SPA pura senza SSR (deserializeErrors mai eseguito). Pianificato: upgrade a v7 in v1.1 (nessun blocco per §14.8: "senza vulnerabilità high/critical non giustificate" — queste sono moderate e non applicabili).
+    - `e2e/`: `npm audit` → **0 vulnerabilities**.
+  - **Hardening spot-check (checklist A-F)** — verifica manuale eseguita:
+    - **A4 timing login**: misura curl (5 richieste ciascuno, server freschi separati): utente esistente 45/36/37/37/37 ms vs inesistente 65/36/36/36/37 ms → **bilanciate dopo warmup** (la differenza iniziale 2 ms era il 429 del rate limiter, non un leak: 5 fallimenti dell'IP bloccano le richieste successive — è il comportamento §5.3, non il dummy hash). Dummy hash confermato attivo (`security.py:37` + `auth.py:90`).
+    - **A3 cookie Secure**: curl senza `DEV_INSECURE_COOKIES` → `Set-Cookie: nucs_session=...; HttpOnly; Max-Age=604800; Path=/; SameSite=lax; Secure` — Secure sempre in produzione; la verifica end-to-end dietro tunnel HTTPS reale resta fase 14 (richiede dominio Cloudflare).
+    - **CSP**: rimosso `'unsafe-inline'` da `style-src` (deviazione da §5.5 autorizzata dal prompt: il frontend non usa attributi `style` — grep 0 su `src/` — né Tailwind a runtime; build = CSS statico). Ora: `default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; ...`. **Testato nel browser**: `e2e:12` → zero violazioni CSP con stile "senza unsafe-inline". `'unsafe-eval'` mai presente (`script-src 'self'`).
+    - **C4 log avvio**: grep `password|secret|tgram|token|api_key` sui log di 3 boot → **0 match** (solo "admin created from env", senza valori).
+    - **B7/A5 brute force reale**: 12 login sbagliati via curl → 5×401 + 7×429; login corretto durante blocco → 429; audit log `login_fail` ×5 + `login_blocked` senza dati sensibili.
+  - **E2E fase 12** — `e2e/scenarios/fase-12.js` (nuovo) + script `e2e:12`: automatizza §14.2 (brute force → 429 + Retry-After), §14.3-4 (seed library+discovery → feed popolato 88 release, cover locali 25, dettaglio 4 link + noopener), §14.6 (tema persistente entrambe le direzioni), §14.9 (backup-now CLI → file valido "SQLite format 3"), §14.10 (persistenza dati/sessione/settings dopo riavvio backend), più check CSP senza unsafe-eval/unsafe-inline. Lo scenario **riavvia il backend da solo** (spawn + unref + kill per porta da lsof) per resettare il rate limiter in-memory e per la prova di persistenza. **`npm run e2e:12` → 33/33 PASS**. `piano/verifica-e2e.md` generato (tabella §14 con esiti + evidenze + punti dichiarati umani).
+  - **README.md finale** (italiano, struttura esatta del prompt): Cos'è + ASCII mockup / Requisiti / Installazione passo-passo (docker, tabella `.env` completa, compose up con profili, dev override) / Cloudflare Tunnel (link `deploy/cloudflared.md`) / Tailscale (link `deploy/tailscale.md`) / Primo avvio e primo scan / Uso quotidiano / Backup e ripristino / Aggiornamento (git pull + rebuild) / Sicurezza (login, rate limit, header, container; raccomandazione Cloudflare Access) / FAQ (5 domande: release mancante→rematch; artista spezzato→ignored; notifiche; cambio porta→nessuna porta; reset password da CLI).
+  - **Versione**: `1.0.0` verificata ovunque esposta — `main.py:46 APP_VERSION` (→ `/api/health`), `frontend/package.json`, `e2e/package.json`. Nessun'altra superficie.
+  - **Rifiniture**: harness `requestfailed` ora registra `errorText` (i check E2E filtrano `ERR_ABORTED` da navigazione/riavvio); e2e/README aggiornato con e2e:12 + env `E2E_DATA_DIR`/`E2E_MUSIC_LIBRARY`; fix nel runner (header SQLite a 15 byte, spawn async senza `status`).
+- Test: backend suite completa **270 passed** (invariata: nessuna dipendenza runtime cambiata; `httpx2` è solo test), ruff check + format OK; frontend `tsc --noEmit` + `npm run build` verdi; `e2e:12` **33/33 PASS**.
+- Decisioni prese (e perché):
+  - **`httpx2` solo in requirements-dev** (non in runtime): il runtime usa `httpx` (spec 2, client MusicBrainz/Deezer/Spotify); `httpx2` serve solo a silenziare la deprecazione di starlette.testclient nei test. Aggiunto con commento.
+  - **CSP senza `'unsafe-inline'` in style-src (deviazione da §5.5, autorizzata dal prompt fase 12)**: Tailwind 3.4 compila a CSS statico, nessun componente usa `style=`, quindi l'inline non serve; la rimozione è il default più sicuro (blocca futuri style injection). Registrata qui come deviazione approvata dal task; se un futuro componente avesse bisogno di style inline si riaggiunge con giustificazione.
+  - **React-router non aggiornato a v7 ora**: major breaking (API data router, import diversi) a 3 giorni dal rilascio; le due moderate non sono applicabili (vedi audit). Pianificazione: upgrade in v1.1 con test E2E dedicati.
+  - **E2E 14.3 "≥100 file"**: la verifica automatica usa la libreria di test esistente (7 file con feat/album artist, artisti estratti 13); la prova a scala ≥100 file resta alla fase 14 sul mini PC (la logica è identica, coperta dagli unit test di `library_scan`).
+- Deviazioni dalle specifiche (approvate da chi): (1) CSP `style-src 'self'` senza unsafe-inline (autorizzata dal prompt di fase 12, registrata sopra); (2) `requirements-dev.txt` esteso con `httpx2` (tooling test, nessun impatto runtime).
+- Esito verifica (tutti i punti del prompt di verifica parte B, dove applicabili localmente):
+  1. `pytest -q` 270 passed + `ruff check` OK; `tsc --noEmit` + `npm run build` verdi ✓
+  2. `pip-audit -r backend/requirements.txt` → 0 findings; `npm audit --omit=dev` → 2 moderate giustificate (sopra, tabella in verifica-e2e.md) ✓
+  3. `e2e:12` → 33/33 PASS; `piano/verifica-e2e.md` compilato con punti umani dichiarati (Apprise su dispositivo, docker stats 24h, README su seconda macchina, tunnel CF reale) ✓
+  4. Attacco simulato curl: 12 login errati → 429 entro §5.3, audit senza leak; login corretto durante blocco → 429 ✓ (login corretto dopo scadenza blocco = coperto dai test unit del limiter e dal reset al riavvio in e2e:12)
+  5. `docker stats` dopo 24h → fase 14 (fase 11: 75.19 MiB a riposo)
+  6. `git ls-files | grep -iE "\.env$|secret|token"` → **nessun file sensibile** ✓
+  7. README → da validare con installazione pulita su seconda macchina (fase 14, dichiarato umano)
+- Esito review: **da eseguire (modello AVANZATO obbligatorio)** — checklist compilata in `piano/checklist-sicurezza.md` al termine; `piano/verifica-e2e.md` come base.
+- Problemi noti / debito tecnico residui (dopo questa fase):
+  - `react-router` 6.x con 2 advisory moderate non applicabili (SPA senza SSR, link interni) — **pianificato**: upgrade v7 in v1.1.
+  - Punti §14 umani (non automatizzabili su questa macchina): ricezione notifica Apprise su dispositivo, `docker stats` dopo 24h, README da installazione pulita su seconda macchina, tunnel Cloudflare reale — tutti in `piano/verifica-e2e.md` e fase 14.
+  - `serve.json` Tailscale da validare al primo avvio (fase 14, già registrato in fase 11).
+- Istruzioni (per la verifica locale):
+  ```bash
+  cd backend && .venv/bin/python -m pytest -q && .venv/bin/ruff check .
+  cd frontend && npm run build
+  cd e2e && npm ci && BASE=http://127.0.0.1:8080 E2E_DATA_DIR=/tmp/nucs-e2e npm run e2e:12
+  pip-audit -r backend/requirements.txt && npm audit --omit=dev --prefix frontend
+  ```
+
+### Debiti tecnici per fase (tutti gli storici → esito)
+
+| Fase | Debito | Esito |
+|---|---|---|
+| 01 | warning httpx2 (fastapi.testclient) | ✅ **RISOLTO** — `httpx2` in requirements-dev |
+| 01 | namespace package senza `__init__.py` | ✅ **RISOLTO** — `__init__.py` aggiunti (app, api, services) |
+| 01 | access log `/api/health` non filtrato (§5.7) | ✅ **RISOLTO** — `_HealthAccessFilter` |
+| 02 | `server: uvicorn` | ✅ risolto fase 11 (`--no-server-header`), ri-verificato |
+| 02 | rate limiter in-memory perso al restart | ➖ accettato per spec (§5.3 "in memoria"); E2E lo usa come feature (riavvio = reset) |
+| 03 | file corrotti ritentati a ogni scan | ➖ comportamento voluto (annotato in fase 03) |
+| 03 | fixtures audio binari ffmpeg | ➖ documentato (fase 03) |
+| 03 | test API con polling | ➖ documentato (fase 03) |
+| 05 | livello 2 lento per artisti prolifici | ➖ cap 2000/artista spec-sanctioned (fase 05) |
+| 05 | `release_groups_found` minore al 2° run | ➖ documentato (fase 05) |
+| 06 | cover PNG salvate `.jpg`, servite image/jpeg | ➖ spec-driven (fase 06), rischio minimo con nosniff |
+| 06 | backfill ritenta coverless | ➖ documentato (fase 06), bounded da `--limit` |
+| 06 | Spotify attivo solo con credenziali | ➖ spec §8.3 |
+| 07 | niente mockup | ➖ assenti in repo (fase 07) |
+| 07 | `.gitkeep` orfani frontend/src | ✅ **RISOLTO** — rimossi |
+| 08 | seed E2E richiede rete MB | ➖ documentato (e2e/README) |
+| 08 | `text-black` su accent | ➖ spec-mandato (§11.2.3, contrasto AA) |
+| 09 | notify-test mancante | ✅ risolto fase 10 |
+| 09 | `aria-disabled` sui bottoni scan | ➖ deviazione registrata (fase 09) |
+| 10 | leak `.env` dev nei backend E2E | ✅ mitigato: `NOTIFY_URLS=` esplicita + fixture hermetiche (fase 10); ri-documentato |
+| 10 | feat_scan all'ora di scan_releases_time | ➖ interpretazione registrata (fase 10) |
+| 11 | serve.json da validare al primo avvio | ➖ differito fase 14 (richiede mini PC/TUN) |
+| 11 | Cloudflare tunnel differito | ➖ differito fase 14 (richiede dominio) |
+| 11 | profilo tailscale non avviabile su Mac | ➖ previsto (no /dev/net/tun su Docker Desktop), fase 14 |
+| 11 | NOTIFY_ENABLED vuota = default | ✅ fixato fase 11 con test |
+| 11 | immagine 334MB margine | ➖ nessuna azione (sotto 400MB) |
+| 12 | react-router 2 moderate non applicabili | ➖ **pianificato**: upgrade v7 in v1.1 |
+
+---
 - Branch: fase-11-docker-rete
 - Cosa è stato fatto:
   - **`docker/Dockerfile`** (nuovo, §12.1 esatto): stage `fe` = `node:20-alpine` → `COPY frontend/package*.json` → `npm ci --no-audit --no-fund` → `COPY frontend/` → `npm run build`; stage `runtime` = `python:3.12-slim` → `ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1` → `apt-get install -y --no-install-recommends tini` + pulizia apt lists → `pip install requirements.txt` → `COPY backend/ /app/backend` → `COPY --from=fe /frontend/dist /app/static` → utente `app` (uid 1000, `--create-home`, owner di /app e /data) → `USER app` → `ENV DATA_DIR=/data COVERS_DIR=/data/covers FRONTEND_DIST=/app/static` → `WORKDIR /app/backend` → `EXPOSE 8080` → `HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/api/health')"` → `ENTRYPOINT ["/usr/bin/tini","--"]` → CMD `uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers --no-server-header --workers 1` (**--no-server-header = fix registrato in fase 02/03**, header `server` ora assente — verificato). Multi-arch: nessun pacchetto arch-specifico; build locale per macchina, nessun registry (verificata anche la build amd64 via buildx, che boota).

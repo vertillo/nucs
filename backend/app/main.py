@@ -48,7 +48,7 @@ _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _ALEMBIC_INI = _BACKEND_DIR / "alembic.ini"
 
 _CSP = (
-    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+    "default-src 'self'; img-src 'self' data:; style-src 'self'; "
     "script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; "
     "base-uri 'self'; form-action 'self'"
 )
@@ -180,6 +180,14 @@ class _KeyValueFormatter(logging.Formatter):
         return " ".join(parts)
 
 
+class _HealthAccessFilter(logging.Filter):
+    """Drop uvicorn access-log lines for /api/health (spec 5.7: noise)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "/api/health" not in message
+
+
 def configure_logging() -> None:
     """Configure root logging: key=value format on stdout, level from config."""
     settings = get_settings()
@@ -188,6 +196,9 @@ def configure_logging() -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(settings.log_level.upper())
+    # Access log lines for the health endpoint are pure noise (spec 5.7).
+    uvicorn_access = logging.getLogger("uvicorn.access")
+    uvicorn_access.addFilter(_HealthAccessFilter())
 
 
 def run_migrations() -> None:
