@@ -86,6 +86,16 @@ def test_notify_enabled_false_from_env(app_env, monkeypatch):
     assert _setting("notify_enabled") == "false"
 
 
+def test_notify_enabled_empty_env_var_is_unset(app_env, monkeypatch):
+    """Phase 11: docker-compose env_file forwards `NOTIFY_ENABLED=` from .env;
+    an empty value must not crash settings parsing and keeps the default."""
+    monkeypatch.setenv("NOTIFY_ENABLED", "")
+    with TestClient(create_app()) as _:
+        pass
+
+    assert _setting("notify_enabled") == "true"
+
+
 def test_env_ignored_when_settings_table_already_populated(app_env, monkeypatch):
     with TestClient(create_app()) as _:
         pass

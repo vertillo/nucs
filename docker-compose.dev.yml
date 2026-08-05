@@ -1,0 +1,15 @@
+# nucs — LOCAL DEVELOPMENT / VERIFICATION OVERRIDE (macOS Docker only).
+# Merges on top of docker-compose.yml and publishes the app port on 127.0.0.1 so
+# the app can be reached at http://127.0.0.1:8080 for local testing (e2e:11, scans,
+# manual checks). NEVER use this file in production: the base compose publishes
+# no port at all — production traffic only enters through the Tailscale tailnet
+# or the Cloudflare tunnel.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# The app service (build, volumes, constraints) is shared with the base compose.
+
+services:
+  app:
+    ports:
+      - "127.0.0.1:8080:8080"

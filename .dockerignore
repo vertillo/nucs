@@ -1,5 +1,18 @@
-.git
-node_modules
-data
-piano
-.env
+# IMPORTANT: dockerignore patterns are matched against the FULL relative path
+# (filepath.Match semantics, NOT gitignore): a pattern without a slash would
+# only match the context root. The `**/` prefix is required to exclude nested
+# paths (backend/.env, frontend/node_modules, backend/data, __pycache__, ...).
+**/.git
+**/node_modules
+**/data
+**/piano
+**/music
+**/e2e
+**/.env
+**/.venv
+**/.pytest_cache
+**/.ruff_cache
+**/.coverage
+**/__pycache__
+**/*.pyc
+**/.DS_Store
