@@ -14,6 +14,8 @@ export interface Settings {
   mb_contact_email: string
   spotify_client_id_set: boolean
   spotify_client_secret_set: boolean
+  discogs_token_set: boolean
+  discovery_filter_official: 'true' | 'false'
 }
 
 export function useSettings() {
@@ -44,8 +46,14 @@ export interface ScanRun {
   stats: Record<string, number | string> | null
 }
 
+export interface ScanProgress {
+  total: number
+  done: number
+  phase: string
+}
+
 export interface ScanStatus {
-  running: { type: string; since: string } | null
+  running: { type: string; since: string; progress: ScanProgress } | null
   last_runs: ScanRun[]
 }
 

@@ -1,7 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
-import { useReleases, useSeenAll, type ReleaseFilters, type ReleaseType } from '../api/releases'
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll'
+import {
+  useReleases,
+  useSeenAll,
+  useSetReleaseSeen,
+  type ReleaseFilters,
+  type ReleaseListItem,
+  type ReleaseType,
+} from '../api/releases'
+import { useScanStatus, useStartScan } from '../api/settings'
 import ReleaseCard from '../components/ReleaseCard'
 
 const TYPE_CHIPS: { value: ReleaseType | 'all'; label: string }[] = [
@@ -50,6 +59,38 @@ function EmptyState() {
   )
 }
 
+function SyncIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 0 0-14.3-3M4 15a8 8 0 0 0 14.3 3"
+      />
+    </svg>
+  )
+}
+
+/** Day label: partial MB dates ("2024", "2024-05") are shown as they are. */
+function dayLabel(date: string): string {
+  if (!date) return 'No date'
+  return date
+}
+
+function groupByDay(items: ReleaseListItem[]): { day: string; items: ReleaseListItem[] }[] {
+  const groups: { day: string; items: ReleaseListItem[] }[] = []
+  for (const item of items) {
+    const day = dayLabel(item.first_release_date)
+    const last = groups[groups.length - 1]
+    if (last && last.day === day) {
+      last.items.push(item)
+    } else {
+      groups.push({ day, items: [item] })
+    }
+  }
+  return groups
+}
+
 export default function Feed() {
   const [type, setType] = useState<ReleaseType | 'all'>('all')
   const [unseenOnly, setUnseenOnly] = useState(false)
@@ -65,14 +106,27 @@ export default function Feed() {
   const { data, isPending, isError, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useReleases(filters)
   const seenAll = useSeenAll()
+  const setSeen = useSetReleaseSeen()
+  const startScan = useStartScan()
+  const status = useScanStatus()
 
   const items = data?.pages.flatMap((page) => page.items) ?? []
   const total = data?.pages[0]?.total ?? 0
+  const groups = groupByDay(items)
+
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  useInfiniteScroll(sentinelRef, !!hasNextPage, isFetchingNextPage, () => {
+    void fetchNextPage()
+  })
 
   function handleMarkAllSeen() {
     if (window.confirm('Mark all releases as seen?')) {
       seenAll.mutate()
     }
+  }
+
+  function handleToggleSeen(release: ReleaseListItem) {
+    setSeen.mutate({ id: release.id, seen: !release.seen })
   }
 
   return (
@@ -162,27 +216,71 @@ export default function Feed() {
 
       {!isPending && !isError && items.length > 0 && (
         <>
-          <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-            {items.map((release) => (
-              <ReleaseCard key={release.id} release={release} />
-            ))}
-          </div>
-          <div className="mt-8 text-center text-sm text-light-textDim dark:text-dark-textDim">
-            {hasNextPage ? (
-              <button
-                type="button"
-                onClick={() => fetchNextPage()}
-                disabled={isFetchingNextPage}
-                className="rounded-full bg-light-surface2 px-5 py-2 font-medium text-light-text transition-colors hover:bg-light-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:bg-dark-surface2 dark:text-dark-text dark:hover:bg-dark-border"
-              >
-                {isFetchingNextPage ? 'Loading…' : 'Load more'}
-              </button>
+          {groups.map((group) => (
+            <section key={group.day} className="mt-6">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-light-textDim dark:text-dark-textDim">
+                {group.day}
+                <span className="ml-2 normal-case text-light-textDim/70 dark:text-dark-textDim/70">
+                  {group.items.length} release{group.items.length === 1 ? '' : 's'}
+                </span>
+              </h2>
+              <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                {group.items.map((release) => (
+                  <ReleaseCard key={release.id} release={release} onToggleSeen={handleToggleSeen} />
+                ))}
+              </div>
+            </section>
+          ))}
+          {/* infinite-scroll sentinel; keeps the "X of Y" footer while more pages exist */}
+          <div ref={sentinelRef} className="mt-8 text-center text-sm text-light-textDim dark:text-dark-textDim">
+            {isFetchingNextPage ? (
+              <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-light-border border-t-accent dark:border-dark-border dark:border-t-accent" />
+            ) : hasNextPage ? (
+              <span>Loading more…</span>
             ) : (
-              <span>{items.length} of {total}</span>
+              <span>
+                {items.length} of {total}
+              </span>
             )}
           </div>
         </>
       )}
+
+      <SyncButton busy={status.data?.running != null} startScan={startScan} />
     </div>
+  )
+}
+
+/** Floating sync button (bottom-right): only the "check new releases" scan. */
+function SyncButton({
+  busy,
+  startScan,
+}: {
+  busy: boolean
+  startScan: ReturnType<typeof useStartScan>
+}) {
+  const pending = startScan.isPending
+
+  function handleSync() {
+    if (busy || pending) return
+    startScan.mutate('releases')
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleSync}
+      aria-label="Check for new releases"
+      title={busy ? 'A scan is already running' : 'Check for new releases'}
+      disabled={busy || pending}
+      className={`fixed bottom-5 right-5 z-30 inline-flex items-center gap-2 rounded-full px-4 py-3 text-sm font-semibold text-black shadow-xl shadow-black/30 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60 ${
+        busy
+          ? 'bg-light-surface2 text-light-textDim dark:bg-dark-surface2 dark:text-dark-textDim'
+          : 'bg-accent hover:bg-accentHover active:bg-accentActive'
+      }`}
+    >
+      <SyncIcon />
+      {busy ? 'Syncing…' : 'Sync'}
+    </button>
   )
 }

@@ -69,9 +69,9 @@ async def _read_limited(response: httpx.Response, limit: int = MAX_COVER_BYTES) 
     return b"".join(chunks)
 
 
-def _save_cover_atomic(rgid: str, content: bytes) -> str:
-    """Write COVERS_DIR/{rgid}.jpg atomically (tmp + rename); returns the filename."""
-    filename = f"{rgid}.jpg"
+def _save_cover_atomic(base: str, content: bytes) -> str:
+    """Write COVERS_DIR/{base}.jpg atomically (tmp + rename); returns the filename."""
+    filename = f"{base}.jpg"
     final = _covers_dir() / filename
     tmp = _covers_dir() / f".{filename}.{os.getpid()}.tmp"
     tmp.write_bytes(content)
@@ -79,21 +79,28 @@ def _save_cover_atomic(rgid: str, content: bytes) -> str:
     return filename
 
 
-async def _download_and_save(rgid: str, response: httpx.Response, source_url: str) -> str | None:
-    """Validate and persist one downloaded cover; returns the filename when saved."""
+async def save_cover_response(base: str, response: httpx.Response) -> str | None:
+    """Validate and persist one downloaded cover (public; ``base`` is the
+    validated rgid or the numeric release id — anything else never reaches disk)."""
     if not _content_type_ok(response):
         logger.warning(
             "cover %s discarded: content-type %r is not an image",
-            rgid,
+            base,
             response.headers.get("content-type"),
         )
         return None
     content = await _read_limited(response)
     if content is None:
-        logger.warning("cover %s discarded: body too large", rgid)
+        logger.warning("cover %s discarded: body too large", base)
         return None
-    filename = _save_cover_atomic(rgid, content)
-    logger.debug("cover saved for %s from %s", rgid, source_url)
+    return _save_cover_atomic(base, content)
+
+
+async def _download_and_save(rgid: str, response: httpx.Response, source_url: str) -> str | None:
+    """Validate and persist one downloaded cover; returns the filename when saved."""
+    filename = await save_cover_response(rgid, response)
+    if filename is not None:
+        logger.debug("cover saved for %s from %s", rgid, source_url)
     return filename
 
 
@@ -108,28 +115,26 @@ async def fetch_cover(db: Session, release: Release) -> str | None:
     single Deezer call; otherwise None. Never raises.
     """
     rgid = release.rgid
-    if not valid_rgid(rgid):
-        logger.warning("cover fetch skipped for invalid rgid %r", rgid)
-        return None
-    client = await get_client(get_setting(db, "mb_contact_email"))
-    try:
-        response = await client.get_cover_art_front(rgid, size=CAA_FRONT_SIZE)
-        filename = await _download_and_save(rgid, response, str(response.url))
-        if filename is not None:
-            release.cover_url = str(response.url)
-            release.cover_path = filename
-            return None
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            logger.debug("no cover on Cover Art Archive for %s; falling back to Deezer", rgid)
-        else:
-            logger.warning("cover art archive error for %s: HTTP %d", rgid, exc.response.status_code)
-    except (MBError, httpx.HTTPError):
-        logger.warning("cover art archive request failed for %s", rgid)
+    if valid_rgid(rgid):
+        client = await get_client(get_setting(db, "mb_contact_email"))
+        try:
+            response = await client.get_cover_art_front(rgid, size=CAA_FRONT_SIZE)
+            filename = await _download_and_save(rgid, response, str(response.url))
+            if filename is not None:
+                release.cover_url = str(response.url)
+                release.cover_path = filename
+                return None
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.debug("no cover on Cover Art Archive for %s; falling back to Deezer", rgid)
+            else:
+                logger.warning("cover art archive error for %s: HTTP %d", rgid, exc.response.status_code)
+        except (MBError, httpx.HTTPError):
+            logger.warning("cover art archive request failed for %s", rgid)
     return await _deezer_fallback(db, release, rgid)
 
 
-async def _deezer_fallback(db: Session, release: Release, rgid: str) -> str | None:
+async def _deezer_fallback(db: Session, release: Release, rgid: str | None) -> str | None:
     """Deezer fallback (spec 8.4): album search -> cover_xl, when hit."""
     deezer_url, cover_xl = await deezer.resolve_album(release.primary_artist, release.title)
     if not cover_xl:
@@ -139,7 +144,8 @@ async def _deezer_fallback(db: Session, release: Release, rgid: str) -> str | No
     except httpx.HTTPError:
         logger.warning("deezer cover download failed for %s", rgid)
         return deezer_url
-    filename = await _download_and_save(rgid, response, cover_xl)
+    base = rgid if valid_rgid(rgid) else str(release.id)
+    filename = await save_cover_response(base, response)
     if filename is not None:
         release.cover_url = cover_xl
         release.cover_path = filename

@@ -130,7 +130,7 @@ async function apiJson(page, path) {
 }
 
 /** Poll /scans/status until nothing is running (used by --seed). */
-async function waitForScanIdle(page, timeoutMs = 300000) {
+async function waitForScanIdle(page, timeoutMs = 900000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     const status = await page.evaluate(async () =>

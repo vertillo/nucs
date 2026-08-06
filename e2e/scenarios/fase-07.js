@@ -64,7 +64,7 @@ async function main() {
     // 5. Persistence: light survives reload (PUT /settings server sync)
     await page.click(toggle)
     await h.wait(2000)
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await h.wait(1500)
     h.check(
       'light theme persists after reload (server sync)',
@@ -75,7 +75,7 @@ async function main() {
     // 6. Persistence: dark survives reload
     await page.click(toggle)
     await h.wait(2000)
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await h.wait(1500)
     h.check(
       'dark theme persists after reload (server sync)',
@@ -89,7 +89,7 @@ async function main() {
     })
     await page.waitForFunction(() => location.pathname === '/login', { timeout: 10000 })
     h.check('logout returns to /login', true)
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await page.waitForFunction(() => location.pathname === '/login', { timeout: 20000 })
     h.check('protected / without session redirects to /login', true)
 

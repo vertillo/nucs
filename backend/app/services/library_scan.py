@@ -25,7 +25,8 @@ from sqlalchemy import delete, func, select
 
 from app.config import get_settings
 from app.db import get_session_factory
-from app.models import Artist, ScanFile, ScanRun, utc_now
+from app.models import Artist, ArtistFile, ReleaseArtist, ScanFile, ScanRun, utc_now
+from app.services import errors as error_service
 from app.services import mb_matching, scan_locks
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.names import extract_feat_from_title, is_trivial_artist, normalize_name
@@ -39,12 +40,16 @@ SOURCE_TAG_ARTIST = "tag_artist"
 SOURCE_TAG_ALBUMARTIST = "tag_albumartist"
 SOURCE_TAG_FEAT = "tag_feat"
 SOURCE_TAG_CONTRIB = "tag_contrib"
+SOURCE_TAG_REMIX = "tag_remix"
 
-# tag_artist / tag_albumartist outrank feat/contrib sources (spec 6.4).
+# tag_artist / tag_albumartist outrank feat/contrib/remix sources (spec 6.4).
 _STRONG_SOURCES = frozenset({SOURCE_TAG_ARTIST, SOURCE_TAG_ALBUMARTIST})
-_WEAK_SOURCES = frozenset({SOURCE_TAG_FEAT, SOURCE_TAG_CONTRIB})
+_WEAK_SOURCES = frozenset({SOURCE_TAG_FEAT, SOURCE_TAG_CONTRIB, SOURCE_TAG_REMIX})
 
-_ID3_CONTRIB_ROLES = frozenset({"performer", "composer", "remixer"})
+# Phase 12b: contributions are limited to remixers, from structured tags only
+# (REMIXER for Vorbis, TIPL/TMCL role "remixer" for ID3). Performers and
+# composers are no longer tracked (user decision, recorded in piano/STATO.md).
+_ID3_CONTRIB_ROLES = frozenset({"remixer"})
 
 
 def _frame_texts(value: object) -> list[str]:
@@ -108,10 +113,7 @@ def _read_mp4(audio: MP4) -> tuple[str | None, dict[str, list[str]]]:
     album_names = _names_from_tag(_tag_values(audio, "aART"))
     if album_names:
         names[SOURCE_TAG_ALBUMARTIST] = album_names
-    # MP4 has no standard performer fields; \xa9wrt (writer/composer) is best effort.
-    contrib_names = _names_from_tag(_tag_values(audio, "\xa9wrt"))
-    if contrib_names:
-        names[SOURCE_TAG_CONTRIB] = contrib_names
+    # MP4 has no standard remixer tag (phase 12b: no contributor sources).
     return title, names
 
 
@@ -126,9 +128,10 @@ def _read_id3(tags: ID3 | None) -> tuple[str | None, dict[str, list[str]]]:
     album_names = _names_from_tag(_tag_values(tags, "TPE2"))
     if album_names:
         names[SOURCE_TAG_ALBUMARTIST] = album_names
-    contrib_names = _id3_contributors(tags)
-    if contrib_names:
-        names[SOURCE_TAG_CONTRIB] = contrib_names
+    # Phase 12b: only the "remixer" role from TIPL/TMCL is tracked.
+    remix_names = _id3_contributors(tags)
+    if remix_names:
+        names[SOURCE_TAG_REMIX] = remix_names
     return title, names
 
 
@@ -141,9 +144,10 @@ def _read_vorbis(audio) -> tuple[str | None, dict[str, list[str]]]:
     album_names = _names_from_tag(_tag_values(audio, "ALBUMARTIST"))
     if album_names:
         names[SOURCE_TAG_ALBUMARTIST] = album_names
-    contrib_names = _names_from_tag(_tag_values(audio, "PERFORMER", "COMPOSER", "REMIXER"))
-    if contrib_names:
-        names[SOURCE_TAG_CONTRIB] = contrib_names
+    # Phase 12b: remixers only, from the REMIXER tag (PERFORMER/COMPOSER dropped).
+    remix_names = _names_from_tag(_tag_values(audio, "REMIXER"))
+    if remix_names:
+        names[SOURCE_TAG_REMIX] = remix_names
     return title, names
 
 
@@ -172,22 +176,24 @@ def _candidates(title: str | None, names_by_source: dict[str, list[str]]) -> lis
     return candidates
 
 
-def _upsert_artist(db, name: str, source: str) -> bool:
-    """Upsert an artist on normalized_name; return True when a row was created.
+def _upsert_artist(db, name: str, source: str) -> tuple[int | None, bool]:
+    """Upsert an artist on normalized_name; return (artist id, created).
 
     Existing rows keep their original name and source unless the new source is
-    stronger (tag_artist/tag_albumartist) and the old one was weak (tag_feat/tag_contrib).
+    stronger (tag_artist/tag_albumartist) and the old one was weak (tag_feat/tag_contrib/tag_remix).
     """
     normalized = normalize_name(name)
     if not normalized:
-        return False
+        return None, False
     row = db.scalar(select(Artist).where(Artist.normalized_name == normalized))
     if row is None:
-        db.add(Artist(name=name, normalized_name=normalized, source=source))
-        return True
+        row = Artist(name=name, normalized_name=normalized, source=source)
+        db.add(row)
+        db.flush()
+        return row.id, True
     if row.source in _WEAK_SOURCES and source in _STRONG_SOURCES:
         row.source = source
-    return False
+    return row.id, False
 
 
 def _scan_one_file(db, path: Path, known: dict[str, tuple[int, int]], full: bool, stats: dict) -> None:
@@ -209,14 +215,51 @@ def _scan_one_file(db, path: Path, known: dict[str, tuple[int, int]], full: bool
             stats["files_error"] += 1
             return
         title, names_by_source = _read_track(audio)
+        # The (artist, path) mapping is rebuilt for this file every time it is
+        # parsed, so renamed/edited tags never leave stale artist_files rows.
+        db.execute(delete(ArtistFile).where(ArtistFile.path == str(path)))
+        seen_artists: set[int] = set()
         for name, source in _candidates(title, names_by_source):
-            if _upsert_artist(db, name, source):
+            artist_id, created = _upsert_artist(db, name, source)
+            if artist_id is None:
+                continue
+            if artist_id not in seen_artists:
+                seen_artists.add(artist_id)
+                db.add(ArtistFile(artist_id=artist_id, path=str(path)))
+            if created:
                 stats["artists_new"] += 1
         db.merge(ScanFile(path=str(path), mtime=stat.st_mtime_ns, size=stat.st_size))
         stats["files_parsed"] += 1
     except Exception:
         logger.exception("scan: error reading %s", path)
         stats["files_error"] += 1
+
+
+def _cleanup_orphan_artists(db, stats: dict) -> None:
+    """Delete weak-source artists that no file produced anymore (phase 12b).
+
+    After a full rescan with the new tag criteria (remixer-only contributions,
+    no composer/performer), old rows from the retired sources would otherwise
+    stay forever. Only unmatched (mbid NULL), release-less artists with no
+    artist_files row are removed; anything real is preserved.
+    """
+    orphans = db.scalars(
+        select(Artist)
+        .where(Artist.source.in_(_WEAK_SOURCES), Artist.mbid.is_(None), Artist.ignored == 0)
+        .order_by(Artist.id)
+    ).all()
+    removed = 0
+    for artist in orphans:
+        has_file = db.scalar(select(ArtistFile.artist_id).where(ArtistFile.artist_id == artist.id).limit(1))
+        has_release = db.scalar(
+            select(ReleaseArtist.artist_id).where(ReleaseArtist.artist_id == artist.id).limit(1)
+        )
+        if has_file is None and has_release is None:
+            db.delete(artist)
+            removed += 1
+    if removed:
+        stats["artists_removed"] = removed
+        logger.info("cleanup: removed %d orphan artists", removed)
 
 
 def _record_scan_run(started_at: str, start_time: float, status: str, stats: dict) -> None:
@@ -251,6 +294,7 @@ def scan_library_sync(full: bool = False) -> dict:
         "files_skipped": 0,
         "files_error": 0,
         "artists_new": 0,
+        "artists_removed": 0,
         "artists_total": 0,
         "duration_s": 0.0,
     }
@@ -264,19 +308,29 @@ def scan_library_sync(full: bool = False) -> dict:
         with get_session_factory()() as db:
             if full:
                 db.execute(delete(ScanFile))
+                db.execute(delete(ArtistFile))
                 db.commit()
             known = {row.path: (row.mtime, row.size) for row in db.scalars(select(ScanFile)).all()}
-            for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
-                for filename in sorted(filenames):
-                    path = Path(dirpath) / filename
-                    if path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                        _scan_one_file(db, path, known, full, stats)
+            audio_paths = [
+                Path(dirpath) / filename
+                for dirpath, _dirnames, filenames in os.walk(root, followlinks=False)
+                for filename in sorted(filenames)
+                if Path(filename).suffix.lower() in SUPPORTED_EXTENSIONS
+            ]
+            scan_locks.update_progress(SCAN_TYPE_LIBRARY, total=len(audio_paths), phase="scanning")
+            for path in audio_paths:
+                _scan_one_file(db, path, known, full, stats)
+                scan_locks.update_progress(SCAN_TYPE_LIBRARY, done=stats["files_seen"])
+            if full:
+                scan_locks.update_progress(SCAN_TYPE_LIBRARY, phase="cleanup")
+                _cleanup_orphan_artists(db, stats)
             db.commit()
             stats["artists_total"] = db.scalar(select(func.count()).select_from(Artist)) or 0
             log_event(db, EVENT_SCAN_RUN, None, {"type": SCAN_TYPE_LIBRARY, "status": status})
     except Exception:
         logger.exception("library scan aborted")
         status = "error"
+        error_service.record_error("library_scan", "error", "library scan aborted")
     finally:
         _record_scan_run(started_at, start_time, status, stats)
     return stats
@@ -306,7 +360,9 @@ async def start_library_scan(full: bool = False) -> bool:
 
 async def _run_scan_task(full: bool) -> None:
     try:
+        scan_locks.update_progress(SCAN_TYPE_LIBRARY, phase="library scan")
         stats = await asyncio.to_thread(scan_library_sync, full)
+        scan_locks.update_progress(SCAN_TYPE_LIBRARY, phase="matching artists")
         match_stats = await _match_pending_after_scan()
         logger.info("library scan done stats=%s match=%s", json.dumps(stats), json.dumps(match_stats))
     except Exception:

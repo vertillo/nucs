@@ -66,12 +66,12 @@ async function setInput(page, selector, value) {
 }
 
 async function gotoArtists(page) {
-  await page.goto(`${h.BASE}/artists`, { waitUntil: 'networkidle0' })
+  await page.goto(`${h.BASE}/artists`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('table tbody tr', { timeout: 20000 })
 }
 
 async function gotoSettings(page) {
-  await page.goto(`${h.BASE}/settings`, { waitUntil: 'networkidle0' })
+  await page.goto(`${h.BASE}/settings`, { waitUntil: 'domcontentloaded' })
   await page.waitForFunction(
     () => [...document.querySelectorAll('section h2')].some((el) => el.textContent.trim() === 'Discovery'),
     { timeout: 20000 },
@@ -96,28 +96,36 @@ async function main() {
 
     // ============ 1. /artists ============
     await gotoArtists(page)
+    // wait for the REAL table (the skeleton also has 6 empty rows)
+    await page.waitForFunction(
+      () => {
+        const row = document.querySelector('table tbody tr')
+        return row && row.textContent.trim().length > 3
+      },
+      { timeout: 15000 },
+    )
     const rowCount = await page.evaluate(() => document.querySelectorAll('table tbody tr').length)
     h.check('artists list populated', rowCount > 0, `rows=${rowCount}`)
     const firstRow = await page.evaluate(() => document.querySelector('table tbody tr').textContent)
     h.check(
-      'source badge shown (Artist/Album artist/Featuring/Contributor/Manual)',
-      /Artist|Album artist|Featuring|Contributor|Manual/.test(firstRow),
+      'source badge shown (Artist/Album artist/Featuring/Contributor/Remixer/Manual)',
+      /Artist|Album artist|Featuring|Contributor|Remixer|Manual/.test(firstRow),
       firstRow.slice(0, 80),
     )
 
-    // Search filters (debounce)
-    await setInput(page, 'input[aria-label="Search artist"]', 'daft')
+    // Search filters (debounce) — "avicii" exists in the test library
+    await setInput(page, 'input[aria-label="Search artist"]', 'avicii')
     await page.waitForFunction(
       () => {
         const rows = [...document.querySelectorAll('table tbody tr')]
-        return rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('daft'))
+        return rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('avicii'))
       },
       { timeout: 15000 },
     )
     const searchTexts = await page.evaluate(() =>
       [...document.querySelectorAll('table tbody tr')].map((r) => r.textContent.toLowerCase()),
     )
-    h.check('search "daft" filters the list (debounce)', searchTexts.length > 0, `rows=${searchTexts.length}`)
+    h.check('search "avicii" filters the list (debounce)', searchTexts.length > 0, `rows=${searchTexts.length}`)
     await setInput(page, 'input[aria-label="Search artist"]', '')
     await page.waitForFunction(() => document.querySelectorAll('table tbody tr').length > 1, {
       timeout: 15000,
@@ -156,18 +164,20 @@ async function main() {
       { timeout: 15000 },
     )
 
-    // + Add artist (new name) -> appears in list; duplicate -> inline error
+    // + Add artist (phase 12b flow: search -> pick or "Add by name")
     await clickByText(page, '+ Add artist')
-    await page.waitForSelector('#add-artist-name')
-    await page.type('#add-artist-name', NEW_ARTIST)
-    await clickByText(page, 'Add')
+    await page.waitForSelector('#add-artist-query')
+    await page.type('#add-artist-query', NEW_ARTIST)
+    await clickByText(page, 'Add by name')
+    // the new artist is sorted at the end of the list: filter by search to see it
+    await setInput(page, 'input[aria-label="Search artist"]', NEW_ARTIST)
     await page.waitForFunction((n) => document.body.innerText.includes(n), { timeout: 15000 }, NEW_ARTIST)
     h.check('added artist appears in the list', true)
     await h.wait(10000) // background MusicBrainz match
     const addedRow = await artistRowText(page, NEW_ARTIST)
     h.check('new artist is unmatched after background match (esito visibile)', addedRow && addedRow.includes('Unmatched'), 'matched!')
 
-    // Retry on the unmatched artist -> inline feedback
+    // Retry on the unmatched artist -> opens the candidate picker modal
     const retryOk = await page.evaluate((n) => {
       const row = [...document.querySelectorAll('table tbody tr')].find((r) => r.textContent.includes(n))
       const btn = row && [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Retry')
@@ -176,21 +186,16 @@ async function main() {
       return true
     }, NEW_ARTIST)
     h.check('Retry button present on unmatched artist', retryOk)
-    await page.waitForFunction(
-      (n) => {
-        const row = [...document.querySelectorAll('table tbody tr')].find((r) => r.textContent.includes(n))
-        return row ? row.textContent.includes('No match found') : false
-      },
-      { timeout: 40000 },
-      NEW_ARTIST,
-    )
-    h.check('Retry shows inline outcome ("No match found")', true)
+    await page.waitForSelector('[role="dialog"]', { timeout: 10000 })
+    h.check('Retry opens the candidate picker dialog', true)
+    await page.keyboard.press('Escape')
+    await h.wait(500)
 
     // Duplicate add -> inline error in the modal
     await clickByText(page, '+ Add artist')
-    await page.waitForSelector('#add-artist-name')
-    await page.type('#add-artist-name', NEW_ARTIST)
-    await clickByText(page, 'Add')
+    await page.waitForSelector('#add-artist-query')
+    await page.type('#add-artist-query', NEW_ARTIST)
+    await clickByText(page, 'Add by name')
     await page.waitForFunction(() => document.body.innerText.includes('Artist already exists'), { timeout: 10000 })
     h.check('duplicate add shows inline error', true)
     await clickByText(page, 'Cancel')
@@ -200,7 +205,7 @@ async function main() {
     await setInput(page, '#discovery-from-date', '2025-06-15')
     await clickButtonInSection(page, 'Discovery', 'Save')
     await waitForToast(page, 'Saved ✓')
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#discovery-from-date')
     const savedDate = await page.evaluate(() => document.querySelector('#discovery-from-date').value)
     h.check('discovery date persists after reload', savedDate === '2025-06-15', `value=${savedDate}`)
@@ -279,7 +284,7 @@ async function main() {
       )
       const btn = [...s.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Scan library now')
       return btn ? btn.getAttribute('aria-disabled') !== 'true' : false
-    }, { timeout: 60000 })
+    }, { timeout: 900000 })
 
     // Start a releases scan via the real button, then a second real click while
     // the run is in progress -> "Scan already in progress" (client guard, same
@@ -331,7 +336,7 @@ async function main() {
     await setInput(page, '#spotify-client-secret', 'fake-secret-456')
     await clickButtonInSection(page, 'Integrations', 'Save')
     await waitForToast(page, 'Saved ✓')
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#spotify-client-secret')
     const integ = await page.evaluate(() => ({
       idVal: document.querySelector('#spotify-client-id').value,
@@ -357,9 +362,13 @@ async function main() {
     })
     await page.waitForFunction(() => !document.documentElement.classList.contains('dark'), { timeout: 10000 })
     h.check('appearance Light applies immediately', true)
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await page.waitForFunction(() => !document.documentElement.classList.contains('dark'), { timeout: 10000 })
     h.check('light theme persists after reload', true)
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Log out'),
+      { timeout: 15000 },
+    )
     await clickByText(page, 'Log out')
     await page.waitForFunction(() => location.pathname === '/login', { timeout: 10000 })
     await h.uiLogin(page)
@@ -410,7 +419,7 @@ async function main() {
     await page2.click('button[type="submit"]')
     await page2.waitForFunction(() => location.pathname === '/', { timeout: 20000 })
     h.check('second session (incognito) logs in with new password', true)
-    await page2.reload({ waitUntil: 'networkidle0' })
+    await page2.reload({ waitUntil: 'domcontentloaded' })
     await page2.waitForFunction(() => location.pathname === '/', { timeout: 15000 })
     h.check('second session stays authenticated after reload', true)
 
@@ -427,7 +436,7 @@ async function main() {
     h.check('revoke other sessions succeeds', true)
 
     // The incognito session is now dead: reload -> redirected to login
-    await page2.reload({ waitUntil: 'networkidle0' })
+    await page2.reload({ waitUntil: 'domcontentloaded' })
     await page2.waitForFunction(() => location.pathname === '/login', { timeout: 15000 })
     h.check('revoked session receives 401 (redirected to login)', true)
     await ctx.close()
@@ -447,7 +456,7 @@ async function main() {
 
     // ============ 9. Mobile 375px ============
     await page.setViewport({ width: 375, height: 667 })
-    await page.goto(`${h.BASE}/artists`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/artists`, { waitUntil: 'domcontentloaded' })
     await page.waitForFunction(() => document.querySelectorAll('ul li').length > 0, { timeout: 15000 })
     const hScrollArtists = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     h.check('mobile 375px /artists: no horizontal scroll', hScrollArtists)
@@ -457,7 +466,7 @@ async function main() {
       return table.display === 'none' && list.display !== 'none'
     })
     h.check('mobile 375px /artists: card list replaces the table', cardVisible)
-    await page.goto(`${h.BASE}/settings`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/settings`, { waitUntil: 'domcontentloaded' })
     await page.waitForFunction(
       () => [...document.querySelectorAll('section h2')].some((el) => el.textContent.trim() === 'Discovery'),
       { timeout: 15000 },

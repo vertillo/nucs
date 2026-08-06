@@ -512,7 +512,19 @@ async def test_api_artists_list_filters_and_pagination(client):
     assert body["total"] == 3
     assert [item["name"] for item in body["items"]] == ["AC/DC", "Beyonce", "Radiohead"]
     item = body["items"][0]
-    assert set(item) == {"id", "name", "source", "mbid", "mb_match_score", "ignored", "releases_count"}
+    assert set(item) == {
+        "id",
+        "name",
+        "source",
+        "provider",
+        "provider_id",
+        "external_url",
+        "mbid",
+        "mb_match_score",
+        "ignored",
+        "releases_count",
+        "source_files",
+    }
     assert item["releases_count"] == 0
     counts = {artist["name"]: artist["releases_count"] for artist in body["items"]}
     assert counts == {"AC/DC": 0, "Beyonce": 1, "Radiohead": 0}
@@ -599,6 +611,13 @@ async def test_api_rematch_404(client):
 
 async def test_api_rematch_matches_and_returns_result(client, monkeypatch):
     _install_search(monkeypatch, {"ZZ Band": [{"mbid": "mb-zz", "name": "ZZ Band", "score": 94}]})
+
+    async def _no_candidates(name, db=None):
+        return []
+
+    import app.api.artists as artists_api
+
+    monkeypatch.setattr(artists_api, "search_artists_everywhere", _no_candidates)
     with get_session_factory()() as db:
         row = Artist(name="ZZ Band", normalized_name="zz band", source="tag_artist")
         db.add(row)
@@ -608,7 +627,11 @@ async def test_api_rematch_matches_and_returns_result(client, monkeypatch):
 
     response = await client.post(f"/api/v1/artists/{artist_id}/rematch", headers=API_HEADERS)
     assert response.status_code == 200
-    assert response.json() == {"matched": True, "mbid": "mb-zz"}
+    body = response.json()
+    assert body["matched"] is True
+    assert body["mbid"] == "mb-zz"
+    assert body["candidates"] == []
+    assert body["split"] == []
 
 
 async def test_api_rematch_503_when_musicbrainz_down(client, monkeypatch):

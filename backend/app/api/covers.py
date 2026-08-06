@@ -22,6 +22,10 @@ router = APIRouter(prefix="/api/v1/covers", tags=["covers"])
 _CACHE_CONTROL = "public, max-age=604800"
 
 
+def _cover_path(base: str) -> Path:
+    return Path(get_settings().covers_dir) / f"{base}.jpg"
+
+
 @router.get("/{rgid}")
 async def get_cover(
     rgid: str,
@@ -30,7 +34,19 @@ async def get_cover(
     """Serve COVERS_DIR/{rgid}.jpg when cached, else 404 (spec 10)."""
     if RGID_RE.fullmatch(rgid) is None:
         raise HTTPException(status_code=400, detail="Invalid release group id")
-    path = Path(get_settings().covers_dir) / f"{rgid}.jpg"
+    path = _cover_path(rgid)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": _CACHE_CONTROL})
+
+
+@router.get("/release/{release_id}")
+async def get_release_cover(
+    release_id: int,
+    current: DbSession = Depends(require_user),
+) -> FileResponse:
+    """Serve COVERS_DIR/{release_id}.jpg for non-MusicBrainz releases (phase 12b)."""
+    path = _cover_path(str(release_id))
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": _CACHE_CONTROL})

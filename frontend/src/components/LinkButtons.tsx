@@ -33,6 +33,40 @@ function DeezerIcon() {
   )
 }
 
+function AppleIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+      <path d="M16.7 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.8-3.5.8s-1.9-.8-3.1-.8c-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.6.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.1.8c1.3 0 2.1-1.2 2.9-2.4.9-1.3 1.3-2.6 1.3-2.7 0 0-2.5-1-2.5-3.4zM14.3 5.7c.7-.8 1.1-1.9 1-3-1 .1-2.2.7-2.9 1.5-.6.7-1.2 1.9-1 3 1.1.1 2.2-.6 2.9-1.5z" />
+    </svg>
+  )
+}
+
+function TidalIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+      <path d="M12 3 3.5 11.5 12 20l3.2-3.2-4.8-4.8 4.8-4.8L12 3zm6.5 3.2L17.3 7.4l1.2 1.2 3.2-3.2-3.2-3.2-1.2 1.2 1.2 1.2z" />
+    </svg>
+  )
+}
+
+function QobuzIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+      <path d="M12 3a9 9 0 1 0 9 9 9 9 0 0 0-9-9zm0 2.4a6.6 6.6 0 1 1-6.6 6.6A6.6 6.6 0 0 1 12 5.4zm0 2.8a3.8 3.8 0 1 0 3.8 3.8A3.8 3.8 0 0 0 12 8.2z" />
+    </svg>
+  )
+}
+
+function DiscogsIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="12" cy="12" r="2.4" />
+      <circle cx="12" cy="12" r="0.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  )
+}
+
 function SearchIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
@@ -43,7 +77,16 @@ function SearchIcon() {
 }
 
 interface LinkSpec {
-  key: 'spotify' | 'ytm' | 'deezer' | 'google'
+  key:
+    | 'spotify'
+    | 'ytm'
+    | 'deezer'
+    | 'apple_music'
+    | 'tidal'
+    | 'qobuz'
+    | 'discogs'
+    | 'beatport'
+    | 'google'
   label: string
   icon: ReactNode
   className: string
@@ -69,6 +112,36 @@ const LINKS: LinkSpec[] = [
     className: 'bg-deezer text-light-bg',
   },
   {
+    key: 'apple_music',
+    label: 'Apple Music',
+    icon: <AppleIcon />,
+    className: 'bg-[#fa243c] text-white',
+  },
+  {
+    key: 'tidal',
+    label: 'Tidal',
+    icon: <TidalIcon />,
+    className: 'bg-black text-white dark:bg-white dark:text-black',
+  },
+  {
+    key: 'qobuz',
+    label: 'Qobuz',
+    icon: <QobuzIcon />,
+    className: 'bg-[#0a4f9e] text-white',
+  },
+  {
+    key: 'discogs',
+    label: 'Discogs',
+    icon: <DiscogsIcon />,
+    className: 'bg-[#333] text-white',
+  },
+  {
+    key: 'beatport',
+    label: 'Beatport',
+    icon: <SearchIcon />,
+    className: 'bg-[#00ff95] text-black',
+  },
+  {
     key: 'google',
     label: 'Search on Google',
     icon: <SearchIcon />,
@@ -82,6 +155,11 @@ export default function LinkButtons({ release }: { release: ReleaseDetail }) {
     spotify: release.spotify_url,
     ytm: release.ytm_url,
     deezer: release.deezer_url,
+    apple_music: release.apple_music_url,
+    tidal: release.tidal_url,
+    qobuz: release.qobuz_url,
+    discogs: release.discogs_url,
+    beatport: release.beatport_url,
     google: release.google_url,
   }
 

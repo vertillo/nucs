@@ -46,7 +46,9 @@ def _copy_skeleton(target: Path, ext: str) -> None:
     target.write_bytes((_FIXTURES / f"s{ext}").read_bytes())
 
 
-def _write_flac(path, *, artist=None, albumartist=None, title=None, performer=None, composer=None):
+def _write_flac(
+    path, *, artist=None, albumartist=None, title=None, remixer=None, performer=None, composer=None
+):
     _copy_skeleton(path, ".flac")
     audio = FLAC(path)
     if artist:
@@ -55,6 +57,10 @@ def _write_flac(path, *, artist=None, albumartist=None, title=None, performer=No
         audio["ALBUMARTIST"] = [albumartist]
     if title:
         audio["TITLE"] = [title]
+    if remixer:
+        audio["REMIXER"] = [remixer]
+    # phase 12b: PERFORMER/COMPOSER are no longer tracked; kept here only to
+    # prove they are ignored by the new criteria.
     if performer:
         audio["PERFORMER"] = [performer]
     if composer:
@@ -62,7 +68,7 @@ def _write_flac(path, *, artist=None, albumartist=None, title=None, performer=No
     audio.save()
 
 
-def _write_ogg(path, *, artist=None, albumartist=None, title=None, performer=None):
+def _write_ogg(path, *, artist=None, albumartist=None, title=None, remixer=None):
     _copy_skeleton(path, ".ogg")
     audio = OggOpus(path)
     if artist:
@@ -71,8 +77,8 @@ def _write_ogg(path, *, artist=None, albumartist=None, title=None, performer=Non
         audio["ALBUMARTIST"] = [albumartist]
     if title:
         audio["TITLE"] = [title]
-    if performer:
-        audio["PERFORMER"] = [performer]
+    if remixer:
+        audio["REMIXER"] = [remixer]
     audio.save()
 
 
@@ -151,26 +157,33 @@ def test_scan_extracts_artists_with_sources(scan_db, tmp_path):
         title="Canzone (feat. Qualcuno)",
     )
     _write_flac(music / "b.flac", artist="AA; BB", title="Senza feat")
-    _write_flac(music / "c.flac", artist="Gruppo C", title="Pezzo", performer="Pianista X")
-    _write_ogg(music / "d.ogg", artist="Artista OGG", title="Traccia [ft. Feat OGG]", performer="Suonatore Y")
+    _write_flac(
+        music / "c.flac",
+        artist="Gruppo C",
+        title="Pezzo (Remix Mio)",
+        performer="Pianista X",
+        remixer="DJ Remix",
+    )
+    _write_ogg(music / "d.ogg", artist="Artista OGG", title="Traccia [ft. Feat OGG]")
 
     stats = library_scan.scan_library_sync()
 
     assert stats["files_seen"] == 4
     assert stats["files_parsed"] == 4
     assert stats["files_error"] == 0
-    assert stats["artists_new"] == 10
-    assert stats["artists_total"] == 10
+    assert stats["artists_new"] == 9
+    assert stats["artists_total"] == 9
     artists = _artist_rows()
     assert artists[("artista solo", "tag_artist")] == "Artista Solo"
     assert artists[("banda album", "tag_albumartist")] == "Banda Album"
     assert artists[("qualcuno", "tag_feat")] == "Qualcuno"
     assert artists[("aa", "tag_artist")] == "AA"
     assert artists[("bb", "tag_artist")] == "BB"
-    assert artists[("pianista x", "tag_contrib")] == "Pianista X"
+    assert artists[("dj remix", "tag_remix")] == "DJ Remix"
+    # phase 12b: performers and composers are NOT tracked anymore
+    assert ("pianista x", "tag_contrib") not in artists
     assert artists[("artista ogg", "tag_artist")] == "Artista OGG"
     assert artists[("feat ogg", "tag_feat")] == "Feat OGG"
-    assert artists[("suonatore y", "tag_contrib")] == "Suonatore Y"
 
 
 def test_scan_handles_mp3_and_m4a(scan_db, tmp_path):
@@ -181,7 +194,7 @@ def test_scan_handles_mp3_and_m4a(scan_db, tmp_path):
         artist="Artista MP3",
         albumartist="Album MP3",
         title="Pezzo MP3",
-        people=[["performer", "Batterista K"], ["composer", "Compositore Z"]],
+        people=[["remixer", "Remixer K"], ["performer", "Batterista K"], ["composer", "Compositore Z"]],
     )
     _write_mp4(music / "t.m4a", artist="Artista MP4", albumartist="Album MP4", title="Traccia MP4")
 
@@ -193,10 +206,60 @@ def test_scan_handles_mp3_and_m4a(scan_db, tmp_path):
     artists = _artist_rows()
     assert artists[("artista mp3", "tag_artist")] == "Artista MP3"
     assert artists[("album mp3", "tag_albumartist")] == "Album MP3"
-    assert artists[("batterista k", "tag_contrib")] == "Batterista K"
-    assert artists[("compositore z", "tag_contrib")] == "Compositore Z"
+    assert artists[("remixer k", "tag_remix")] == "Remixer K"
+    # phase 12b: only the remixer role is extracted from TIPL/TMCL
+    assert ("batterista k", "tag_contrib") not in artists
+    assert ("compositore z", "tag_contrib") not in artists
     assert artists[("artista mp4", "tag_artist")] == "Artista MP4"
     assert artists[("album mp4", "tag_albumartist")] == "Album MP4"
+
+
+def test_scan_records_artist_files_and_cleans_orphans(scan_db, tmp_path):
+    """Every scanned file is mapped to its artists; after a full rescan the
+    weak-source artists that no file produces anymore are deleted."""
+    from app.models import ArtistFile
+
+    music = tmp_path / "music"
+    music.mkdir()
+    track = music / "a.flac"
+    _write_flac(track, artist="Mantieni", title="Pezzo (feat. Da Eliminare)")
+
+    library_scan.scan_library_sync(full=True)
+    with get_session_factory()() as db:
+        rows = db.execute(select(ArtistFile)).all()
+        assert len(rows) == 2
+        feat = db.scalar(select(Artist).where(Artist.normalized_name == "da eliminare"))
+        assert feat is not None
+
+    # The feat is gone from the file: a full rescan removes the orphan artist.
+    _write_flac(track, artist="Mantieni", title="Pezzo")
+    stats = library_scan.scan_library_sync(full=True)
+    assert stats["artists_removed"] == 1
+    with get_session_factory()() as db:
+        feat = db.scalar(select(Artist).where(Artist.normalized_name == "da eliminare"))
+        assert feat is None
+        rows = db.execute(select(ArtistFile)).all()
+        assert len(rows) == 1
+
+
+def test_scan_keeps_orphans_that_are_matched_or_have_releases(scan_db, tmp_path):
+    """The cleanup never removes matched artists or artists with releases."""
+
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "a.flac", artist="Mantieni", title="Pezzo (feat. Matchato)")
+    _write_flac(music / "b.flac", artist="Altro", title="Pezzo")
+    library_scan.scan_library_sync(full=True)
+    with get_session_factory()() as db:
+        feat = db.scalar(select(Artist).where(Artist.normalized_name == "matchato"))
+        feat.mbid = "11111111-1111-1111-1111-111111111111"
+        db.commit()
+    _write_flac(music / "a.flac", artist="Mantieni", title="Pezzo")
+    stats = library_scan.scan_library_sync(full=True)
+    assert stats["artists_removed"] == 0
+    with get_session_factory()() as db:
+        feat = db.scalar(select(Artist).where(Artist.normalized_name == "matchato"))
+        assert feat is not None
 
 
 def test_scan_trivial_artists_are_filtered(scan_db, tmp_path):

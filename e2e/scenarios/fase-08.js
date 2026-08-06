@@ -73,7 +73,7 @@ async function main() {
     const total = await seedFeed(page)
 
     // 1. Feed rendering
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector(CARD, { timeout: 30000 })
     let cs = await cardsState(page)
     h.check('feed renders cards', cs.count > 0, `cards=${cs.count}, total=${total}`)
@@ -139,12 +139,12 @@ async function main() {
       { timeout: 15000 },
     )
 
-    // 5. Load more: next page without duplicates
+    // 5. Infinite scroll: scrolling to the bottom loads the next page (phase 12b)
     cs = await cardsState(page)
     if (total > cs.count) {
-      h.check('load more button visible when more pages exist', true)
+      h.check('more pages exist than initially rendered', true, `rendered=${cs.count} total=${total}`)
       const beforeCount = cs.count
-      await clickByText(page, 'Load more')
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
       await page.waitForFunction(
         (n) => document.querySelectorAll('a[href^="/releases/"]').length > n,
         { timeout: 20000 },
@@ -154,9 +154,9 @@ async function main() {
       cs = await cardsState(page)
       const ids = cs.ids.map((i) => i.replace('/releases/', ''))
       const unique = new Set(ids)
-      h.check('load more appends without duplicates', unique.size === ids.length, `cards=${ids.length}`)
+      h.check('infinite scroll appends without duplicates', unique.size === ids.length, `cards=${ids.length}`)
     } else {
-      h.check('load more: pagination exercisable (total > 30)', false, `total=${total} <= page_size 30`)
+      h.check('infinite scroll: pagination exercisable (total > 30)', false, `total=${total} <= page_size 30`)
     }
 
     // 6. Detail page: links, favorite persistence, back -> dot gone
@@ -175,14 +175,19 @@ async function main() {
     })
     h.check('detail shows release title (H1)', detail.h1.length > 0, detail.h1)
     h.check(
-      'detail has 4 external link buttons with noopener',
-      detail.linkLabels.length === 4,
+      'detail has 9 external link buttons with noopener',
+      detail.linkLabels.length === 9,
       detail.linkLabels.join(','),
     )
     const domains = [
       ['https://open.spotify.com/', 'spotify'],
       ['https://music.youtube.com/', 'ytm'],
       ['https://www.deezer.com/', 'deezer'],
+      ['https://music.apple.com/', 'apple_music'],
+      ['https://tidal.com/', 'tidal'],
+      ['https://www.qobuz.com/', 'qobuz'],
+      ['https://www.discogs.com/', 'discogs'],
+      ['https://www.beatport.com/', 'beatport'],
       ['https://www.google.com/', 'google'],
     ]
     for (const [prefix, name] of domains) {
@@ -209,6 +214,11 @@ async function main() {
         url.startsWith('https://open.spotify.com/') ||
           url.startsWith('https://music.youtube.com/') ||
           url.startsWith('https://www.deezer.com/') ||
+          url.startsWith('https://music.apple.com/') ||
+          url.startsWith('https://tidal.com/') ||
+          url.startsWith('https://www.qobuz.com/') ||
+          url.startsWith('https://www.discogs.com/') ||
+          url.startsWith('https://www.beatport.com/') ||
           url.startsWith('https://www.google.com/'),
         url.slice(0, 90),
       )
@@ -217,18 +227,9 @@ async function main() {
       h.check('click on external link opens a new tab (sensible destination)', false, 'no target created')
     }
 
-    // Favorite: toggle -> pressed; reload -> still pressed
-    await clickByText(page, 'Favorite')
-    await h.wait(1000)
-    let fav = await ariaPressedByText(page, 'Favorite')
-    h.check('favorite toggles to active (heart filled)', fav === 'true', `aria-pressed=${fav}`)
-    await page.reload({ waitUntil: 'networkidle0' })
-    await page.waitForFunction(
-      () => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Favorite'),
-      { timeout: 15000 },
-    )
-    fav = await ariaPressedByText(page, 'Favorite')
-    h.check('favorite persists after reload', fav === 'true', `aria-pressed=${fav}`)
+    // Favorite button was removed in phase 12b: assert it is not rendered
+    const favBtn = await ariaPressedByText(page, 'Favorite')
+    h.check('favorite button removed from the release page', favBtn === null)
 
     // Back to feed: the visited release lost its "new" dot
     await page.goBack()
@@ -249,7 +250,7 @@ async function main() {
     await page.waitForFunction(() => location.pathname.startsWith('/releases/'), { timeout: 15000 })
     await clickByText(page, 'Hide')
     await h.wait(1000)
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector(CARD, { timeout: 15000 })
     const hiddenGone = await page.evaluate(
       (href, sel) => ![...document.querySelectorAll(sel)].some((c) => c.getAttribute('href') === href),
@@ -270,7 +271,7 @@ async function main() {
 
     // 9. Mobile 375px: two-column grid
     await page.setViewport({ width: 375, height: 667 })
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector(CARD, { timeout: 15000 })
     const cols = await page.evaluate((sel) => {
       const grid = document.querySelector(sel)?.parentElement

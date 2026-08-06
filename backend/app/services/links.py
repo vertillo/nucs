@@ -1,10 +1,9 @@
-"""External link builders (spec section 9). Pure module: no I/O, no network.
+"""External link builders (spec section 9 + phase 12b). Pure module: no I/O.
 
-Every release always gets four links:
-- Spotify: direct album URL when resolved (spotify.py), otherwise the search URL
-- YouTube Music: always the search URL
-- Deezer: direct album URL when resolved (deezer.py), otherwise the search URL
-- Google: always the search URL, with the release type appended to the query
+Every release gets search links for all eight destinations. Direct URLs
+(Spotify/Deezer/Apple Music resolved by the enrich pipeline) override the
+search fallback; Tidal and Qobuz have no public API, so they are always
+search links (documented in piano/STATO.md, phase 12b).
 """
 
 from __future__ import annotations
@@ -18,10 +17,11 @@ def _q(value: str) -> str:
 
 
 def build_search_links(primary_artist: str, title: str, type_: str) -> dict[str, str]:
-    """The four §9 search URLs for one release, exactly as specified.
+    """The search URLs for one release, exactly as specified.
 
-    Returns ``spotify_search``, ``ytm``, ``deezer_search`` and ``google``;
-    the Google query includes the release type (album|single|ep|other).
+    Returns ``spotify_search``, ``ytm``, ``deezer_search``, ``apple_music``,
+    ``tidal``, ``qobuz``, ``discogs``, ``beatport`` and ``google``; the Google
+    query includes the release type (album|single|ep|other).
     """
     artist = primary_artist.strip()
     clean_title = title.strip()
@@ -30,5 +30,10 @@ def build_search_links(primary_artist: str, title: str, type_: str) -> dict[str,
         "spotify_search": f"https://open.spotify.com/search/{_q(artist_title)}",
         "ytm": f"https://music.youtube.com/search?q={_q(artist_title)}",
         "deezer_search": f"https://www.deezer.com/search/{_q(artist_title)}",
+        "apple_music": f"https://music.apple.com/search?term={_q(artist_title)}",
+        "tidal": f"https://tidal.com/search?q={_q(artist_title)}",
+        "qobuz": f"https://www.qobuz.com/us-en/search?q={_q(artist_title)}",
+        "discogs": f"https://www.discogs.com/search/?q={_q(artist_title)}&type=release",
+        "beatport": f"https://www.beatport.com/search?q={_q(artist_title)}",
         "google": f"https://www.google.com/search?q={_q(f'{artist_title} {type_}'.strip())}",
     }

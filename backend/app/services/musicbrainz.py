@@ -148,6 +148,15 @@ class MusicBrainzClient:
         """Release-group details: artist-credit, primary-type, secondary-types, first-release-date."""
         return await self._get(f"release-group/{rgid}", {"inc": "artist-credits"})
 
+    async def get_release_group_with_releases(self, rgid: str) -> dict:
+        """Release-group lookup including its releases (status, date, id) — used by
+        the phase-12b official-status filter and the tracklist resolution."""
+        return await self._get(f"release-group/{rgid}", {"inc": "releases artist-credits"})
+
+    async def get_release_with_recordings(self, release_id: str) -> dict:
+        """One release with its media/tracks — used for the release tracklist."""
+        return await self._get(f"release/{release_id}", {"inc": "recordings"})
+
     async def get_cover_art_front(self, rgid: str, size: int = 500) -> httpx.Response:
         """Cover Art Archive front cover (spec 7: same global rate limiter).
 

@@ -70,15 +70,20 @@ async def _get_client() -> httpx.AsyncClient:
     stop=stop_after_attempt(MAX_ATTEMPTS),
     retry=retry_if_exception(_is_retryable),
 )
-async def _search_album(artist: str, title: str) -> dict:
-    """One rate-limited album search; retries on 429/5xx/transport errors."""
+async def _search(path: str, params: dict) -> dict:
+    """One rate-limited Deezer GET; retries on 429/5xx/transport errors."""
     await _rate_limit()
+    response = await (await _get_client()).get(path, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+async def _search_album(artist: str, title: str) -> dict:
+    """Search one album on Deezer (rate limited, retried)."""
     escaped_artist = artist.replace('"', '\\"')
     escaped_title = title.replace('"', '\\"')
     query = f'artist:"{escaped_artist}" album:"{escaped_title}"'
-    response = await (await _get_client()).get("search/album", params={"q": query, "limit": 1})
-    response.raise_for_status()
-    return response.json()
+    return await _search("search/album", {"q": query, "limit": 1})
 
 
 async def resolve_album(artist: str, title: str) -> tuple[str | None, str | None]:

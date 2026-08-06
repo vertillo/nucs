@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { NavLink, useNavigate } from 'react-router-dom'
 
 import { post, put } from '../api/client'
+import { useErrors } from '../api/errors'
 import { applyTheme, getStoredTheme, type Theme } from '../theme'
 
 interface NavbarProps {
@@ -64,6 +65,18 @@ function SettingsIcon() {
   )
 }
 
+function BugIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5 sm:hidden">
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M8 8h8a4 4 0 0 1 4 4v1a4 4 0 0 1-2 3.5V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-3.5A4 4 0 0 1 4 13v-1a4 4 0 0 1 4-4zM6 8l-2-3M18 8l2-3M8 3l2 3m6-3-2 3M5 13H2m20 0h-3M5 17H2.5M21.5 17H19"
+      />
+    </svg>
+  )
+}
+
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   const base =
     'flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
@@ -76,6 +89,8 @@ export default function Navbar({ username, theme }: NavbarProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [current, setCurrent] = useState<Theme>(() => getStoredTheme() ?? theme)
+  const { data: errorsData } = useErrors()
+  const errorCount = errorsData?.total ?? 0
 
   const logout = useMutation({
     mutationFn: () => post('/api/v1/auth/logout', {}),
@@ -119,6 +134,15 @@ export default function Navbar({ username, theme }: NavbarProps) {
           <NavLink to="/settings" className={navLinkClass} aria-label="Settings">
             <SettingsIcon />
             <span className="hidden sm:inline">Settings</span>
+          </NavLink>
+          <NavLink to="/errors" className={navLinkClass} aria-label="Errors">
+            <BugIcon />
+            <span className="hidden sm:inline">Errors</span>
+            {errorCount > 0 && (
+              <span className="rounded-full bg-danger px-1.5 py-0.5 text-[10px] font-bold leading-none text-light-bg">
+                {errorCount}
+              </span>
+            )}
           </NavLink>
         </div>
         <div className="flex items-center gap-2">

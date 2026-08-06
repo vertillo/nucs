@@ -9,7 +9,8 @@
     "e2e:08": "node scenarios/fase-08.js",
     "e2e:09": "node scenarios/fase-09.js",
     "e2e:11": "node scenarios/fase-11.js",
-    "e2e:12": "node scenarios/fase-12.js"
+    "e2e:12": "node scenarios/fase-12.js",
+    "e2e:12b": "node scenarios/fase-12b.js"
   },
   "devDependencies": {
     "puppeteer": "25.4.0"

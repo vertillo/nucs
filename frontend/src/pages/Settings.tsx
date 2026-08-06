@@ -15,6 +15,7 @@ import {
   type ScanRun,
 } from '../api/settings'
 import { useTrackedArtistsCount } from '../api/artists'
+import { useResetLibrary } from '../api/library'
 import type { ReleasesResponse } from '../api/releases'
 import Toast, { useToast } from '../components/Toast'
 import { applyTheme, type Theme } from '../theme'
@@ -149,6 +150,7 @@ interface DiscoveryForm {
   single: boolean
   ep: boolean
   feat: boolean
+  filterOfficial: boolean
 }
 
 export default function Settings() {
@@ -158,7 +160,14 @@ export default function Settings() {
   const { toast, show } = useToast()
 
   // --- Discovery -------------------------------------------------------------
-  const [discovery, setDiscovery] = useState<DiscoveryForm>({ from: '', album: true, single: true, ep: true, feat: false })
+  const [discovery, setDiscovery] = useState<DiscoveryForm>({
+    from: '',
+    album: true,
+    single: true,
+    ep: true,
+    feat: false,
+    filterOfficial: true,
+  })
   const [discoveryErrors, setDiscoveryErrors] = useState<{ from?: string; types?: string }>({})
 
   // --- Scans -------------------------------------------------------------
@@ -174,8 +183,11 @@ export default function Settings() {
   const notifyTest = useNotifyTest()
 
   // --- Integrations -------------------------------------------------------------
-  const [integrations, setIntegrations] = useState({ clientId: '', clientSecret: '', email: '' })
+  const [integrations, setIntegrations] = useState({ clientId: '', clientSecret: '', email: '', discogsToken: '' })
   const [integrationsErrors, setIntegrationsErrors] = useState<{ email?: string }>({})
+
+  // --- Danger zone -------------------------------------------------------------
+  const resetLibrary = useResetLibrary()
 
   // --- Appearance -------------------------------------------------------------
   const [theme, setTheme] = useState<Theme>('dark')
@@ -217,6 +229,7 @@ export default function Settings() {
       single: types.includes('single'),
       ep: types.includes('ep'),
       feat: settings.feat_scan_enabled === 'true',
+      filterOfficial: settings.discovery_filter_official === 'true',
     })
     setScanTimes({
       library: settings.scan_library_time,
@@ -274,6 +287,7 @@ export default function Settings() {
         discovery_from_date: discovery.from,
         release_types: selected.join(','),
         feat_scan_enabled: discovery.feat,
+        discovery_filter_official: discovery.filterOfficial,
       },
       {
         onSuccess: () => show('Saved ✓'),
@@ -350,10 +364,35 @@ export default function Settings() {
     const patch: Record<string, string> = { mb_contact_email: integrations.email.trim() }
     if (integrations.clientId.trim()) patch.spotify_client_id = integrations.clientId.trim()
     if (integrations.clientSecret.trim()) patch.spotify_client_secret = integrations.clientSecret.trim()
+    if (integrations.discogsToken.trim()) patch.discogs_token = integrations.discogsToken.trim()
     updateSettings.mutate(patch, {
       onSuccess: () => {
-        setIntegrations((prev) => ({ ...prev, clientId: '', clientSecret: '' }))
+        setIntegrations((prev) => ({ ...prev, clientId: '', clientSecret: '', discogsToken: '' }))
         show('Saved ✓')
+      },
+      onError: (error) => show(error.message, 'error'),
+    })
+  }
+
+  function handleResetLibrary() {
+    if (
+      !window.confirm(
+        'Reset the whole library?\n\nThis deletes all artists, releases, states, scan caches and the downloaded covers. Settings and your account stay.\n\nThis cannot be undone.',
+      )
+    ) {
+      return
+    }
+    if (!window.confirm('Are you absolutely sure? Type nothing to keep it.\n\nThis is the last confirmation.')) {
+      return
+    }
+    resetLibrary.mutate(undefined, {
+      onSuccess: () => {
+        show('Library reset')
+        queryClient.invalidateQueries({ queryKey: ['releases'] })
+        queryClient.invalidateQueries({ queryKey: ['artists'] })
+        queryClient.invalidateQueries({ queryKey: ['artists-count'] })
+        queryClient.invalidateQueries({ queryKey: ['releases-count'] })
+        queryClient.invalidateQueries({ queryKey: ['scan-status'] })
       },
       onError: (error) => show(error.message, 'error'),
     })
@@ -451,6 +490,19 @@ export default function Settings() {
                 checked={discovery.feat}
                 onChange={(v) => setDiscovery((f) => ({ ...f, feat: v }))}
                 label="Weekly featuring scan"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <span className="block text-sm text-light-text dark:text-dark-text">Only official releases</span>
+                <span className="text-xs text-light-textDim dark:text-dark-textDim">
+                  Excludes bootlegs and unofficial reworks (e.g. "Yeezus (Andre's Rework)").
+                </span>
+              </div>
+              <Switch
+                checked={discovery.filterOfficial}
+                onChange={(v) => setDiscovery((f) => ({ ...f, filterOfficial: v }))}
+                label="Only official releases"
               />
             </div>
             <div className="flex items-center gap-3">
@@ -655,6 +707,24 @@ export default function Settings() {
               />
               <FieldError message={integrationsErrors.email} />
             </div>
+            <div>
+              <label htmlFor="discogs-token" className={labelClass}>
+                Discogs personal access token
+              </label>
+              <input
+                id="discogs-token"
+                type="password"
+                autoComplete="new-password"
+                value={integrations.discogsToken}
+                onChange={(e) => setIntegrations((i) => ({ ...i, discogsToken: e.target.value }))}
+                placeholder={settings?.discogs_token_set ? '••••••••' : ''}
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-light-textDim dark:text-dark-textDim">
+                Optional, enables Discogs artist search and releases. Stored value is never shown; leave empty to keep
+                it unchanged.
+              </p>
+            </div>
             <div className="flex items-center gap-3">
               <SaveButton pending={updateSettings.isPending} onClick={saveIntegrations} />
             </div>
@@ -828,6 +898,28 @@ export default function Settings() {
               </dd>
             </div>
           </dl>
+        </Section>
+        <Section
+          title="Danger zone"
+          description="Destructive actions that cannot be undone."
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium text-light-text dark:text-dark-text">Reset library</p>
+              <p className="mt-0.5 text-xs text-light-textDim dark:text-dark-textDim">
+                Deletes all artists, releases, seen/hidden states, scan caches and the downloaded covers. Settings and
+                your account stay. Refused while a scan is running.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={resetLibrary.isPending}
+              onClick={handleResetLibrary}
+              className="rounded-full border border-danger px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
+            >
+              {resetLibrary.isPending ? 'Resetting…' : 'Reset library'}
+            </button>
+          </div>
         </Section>
       </div>
 

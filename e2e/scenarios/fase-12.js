@@ -145,23 +145,25 @@ async function main() {
     const total = feed.body.total || 0
     h.check('14.3/14.4: feed populated (releases > 0)', total > 0, `total ${total}`)
 
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('a[href^="/releases/"]', { timeout: 30000 }).catch(() => {})
     const cards = await page.$$eval('a[href^="/releases/"]', (els) => els.length)
     h.check('14.4: feed shows release cards', cards > 0, `cards ${cards}`)
     const coverImgs = await page.$$eval('img[src*="/api/v1/covers/"]', (els) => els.length)
     h.check('14.4: cards use local cover cache', coverImgs > 0, `covers ${coverImgs}`)
 
     const firstHref = await page.$eval('a[href^="/releases/"]', (a) => a.getAttribute('href'))
-    await page.goto(`${h.BASE}${firstHref}`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}${firstHref}`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('a[target="_blank"]', { timeout: 30000 }).catch(() => {})
     const detailText = await page.$eval('body', (b) => b.innerText)
     const buttons = await page.$$eval('a[target="_blank"]', (els) =>
       els.map((a) => ({ text: a.innerText, rel: a.getAttribute('rel') })),
     )
     h.check(
-      '14.4: detail has the 4 link buttons',
+      '14.4: detail has the link buttons (4 original + phase-12b extras)',
       ['Spotify', 'YouTube Music', 'Deezer', 'Search on Google'].every((s) =>
         buttons.some((b) => b.text.includes(s)),
-      ),
+      ) && buttons.length >= 4,
       JSON.stringify(buttons.map((b) => b.text)),
     )
     h.check(
@@ -174,15 +176,15 @@ async function main() {
     const toggle = 'button[aria-label="Toggle theme"]'
     const htmlDark = () => page.evaluate(() => document.documentElement.classList.contains('dark'))
     const bodyBg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor)
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await page.click(toggle)
     await h.wait(2000)
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await h.wait(1500)
     h.check('14.6: light theme persists after reload', !(await htmlDark()) && (await bodyBg()) === 'rgb(255, 255, 255)', await bodyBg())
     await page.click(toggle)
     await h.wait(2000)
-    await page.reload({ waitUntil: 'networkidle0' })
+    await page.reload({ waitUntil: 'domcontentloaded' })
     await h.wait(1500)
     h.check('14.6: dark theme persists after reload', (await htmlDark()) && (await bodyBg()) === 'rgb(15, 15, 15)', await bodyBg())
 
@@ -227,7 +229,7 @@ async function main() {
     const beforeTotal = { artists: artists.body.total, releases: releases.body.total }
     const themeBefore = settings.body.theme
     await restartBackend()
-    await page.goto(`${h.BASE}/`, { waitUntil: 'networkidle0' })
+    await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await page.waitForFunction(() => location.pathname === '/', { timeout: 20000 })
     const artists2 = await h.apiJson(page, '/api/v1/artists?page_size=1')
     const releases2 = await h.apiJson(page, '/api/v1/releases?page_size=1')

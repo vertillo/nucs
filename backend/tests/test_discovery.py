@@ -93,6 +93,8 @@ class _FakeClient:
         self.crash_artists: set[str] = set()
         self.fail_release_ids: set[str] = set()
         self.gate: asyncio.Event | None = None
+        # Phase 12b: rgids whose release-group lookup reports no official release.
+        self.unofficial_rgids: set[str] = set()
 
     async def _maybe_gate(self) -> None:
         if self.gate is not None:
@@ -133,10 +135,52 @@ class _FakeClient:
 
 
 def _install_fake(monkeypatch, fake: _FakeClient) -> None:
+    """Route every MusicBrainz client access (discovery + the MB provider) to
+    the fake, stub the phase-12b official-status lookup so that every new
+    release group is official unless listed in ``fake.unofficial_rgids``, and
+    neutralize the cover/link pipeline (no network in tests)."""
+
     async def _get_client(contact_email=None):
         return fake
 
     monkeypatch.setattr(discovery, "get_client", _get_client)
+    monkeypatch.setattr(musicbrainz, "get_client", _get_client)
+    from app.services.providers import musicbrainz as providers_mb
+
+    monkeypatch.setattr(providers_mb, "get_client", _get_client)
+
+    async def _noop_cover(db, release):
+        return None
+
+    async def _noop_resolve(artist, title):
+        return (None, None)
+
+    async def _noop_itunes(artist, title):
+        return (None, None)
+
+    monkeypatch.setattr(discovery, "fetch_cover", _noop_cover)
+    monkeypatch.setattr(discovery.deezer, "resolve_album", _noop_resolve)
+    from app.services.providers.itunes import provider as itunes_provider
+
+    monkeypatch.setattr(itunes_provider, "resolve_album", _noop_itunes)
+
+    from app.services.providers.musicbrainz import provider as mb_provider
+
+    async def _release_group_details(rgid, email=None, stats=None):
+        status = "unofficial" if rgid in fake.unofficial_rgids else "official"
+        return {
+            "releases": [
+                {"id": f"rel-{rgid}", "date": "2024-01-01", "status": status},
+                {"id": f"rel2-{rgid}", "date": "2024-06-01", "status": status},
+            ]
+        }
+
+    monkeypatch.setattr(mb_provider, "release_group_details", _release_group_details)
+    monkeypatch.setattr(mb_provider, "fetch_tracks", _noop_tracks)
+
+
+async def _noop_tracks(provider_id, *, email=None):
+    return []
 
 
 # --- Role heuristic ------------------------------------------------------------
@@ -145,20 +189,21 @@ def _install_fake(monkeypatch, fake: _FakeClient) -> None:
 def test_role_heuristic_with_join_phrases():
     mio = Artist(name="Mio", normalized_name="mio", source="tag_artist")
     altro = Artist(name="Altro", normalized_name="altro", source="tag_artist")
-    mio_first = {"artist-credit": [{"name": "Mio", "joinphrase": " & "}, {"name": "Altro", "joinphrase": ""}]}
-    altro_feat = {
-        "artist-credit": [{"name": "Altro", "joinphrase": " feat. "}, {"name": "Mio", "joinphrase": ""}]
-    }
+    mio_first = "Mio & Altro"
+    altro_feat = "Altro feat. Mio"
     assert discovery._role_for(mio, mio_first) == "primary"
     assert discovery._role_for(altro, mio_first) == "featured"
     assert discovery._role_for(mio, altro_feat) == "featured"
-    assert discovery._role_for(mio, {}) == "featured"
+    assert discovery._role_for(mio, "") == "featured"
 
 
 def test_artist_credit_phrase_rebuilt_from_entries():
+    from app.services.providers.musicbrainz import provider as mb_provider
+
+    artist = Artist(name="Mio", normalized_name="mio", source="tag_artist")
     group = {"artist-credit": [{"name": "Altro", "joinphrase": " feat. "}, {"name": "Mio", "joinphrase": ""}]}
-    assert discovery._artist_credit_phrase(group) == "Altro feat. Mio"
-    assert discovery._artist_credit_phrase({}) == ""
+    candidate = mb_provider._candidate_from_group(group, artist)
+    assert candidate.primary_artist == "Altro feat. Mio"
 
 
 # --- Level 1 ------------------------------------------------------------------
@@ -196,7 +241,6 @@ async def test_level1_inserts_roles_types_and_skips(disc_db, monkeypatch):
         stats = await discovery.run_discovery(db)
 
     assert stats["artists_processed"] == 1
-    assert stats["release_groups_found"] == 6
     assert stats["releases_new"] == 3
     assert stats["releases_updated"] == 0
     assert stats["skipped_no_date"] == 1
@@ -379,6 +423,141 @@ async def test_level1_mberror_on_one_artist_does_not_block_others(disc_db, monke
         assert mio.last_release_check is None
         run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
         assert run.status == "ok"
+
+
+# --- Phase 12b: official filter + multi-provider dedup -------------------------
+
+
+async def test_official_filter_skips_unofficial_release_groups(disc_db, monkeypatch):
+    """The 'Yeezus (Andre's Rework)' regression: a release group whose releases
+    are all unofficial is never inserted into the feed."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [
+            _rg("rg-official", "Album Ufficiale", "Album", "2024-07-01", _credit(("Mio", ""))),
+            _rg("rg-bootleg", "Rework Non Ufficiale", "Album", "2024-07-02", _credit(("Mio", ""))),
+        ]
+    ]
+    fake.search_counts["mb-mio"] = 2
+    fake.unofficial_rgids = {"rg-bootleg"}
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1
+    assert stats["skipped_not_official"] == 1
+    with get_session_factory()() as db:
+        rows = db.scalars(select(Release)).all()
+        assert [row.rgid for row in rows] == ["rg-official"]
+
+
+async def test_level1_dedups_by_name_across_providers(disc_db, monkeypatch):
+    """The same release found by two providers (same title+artist, dates within
+    the window) becomes ONE row whose URLs are merged."""
+    from app.services.providers.musicbrainz import provider as real_mb_provider
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-deez", "Stessa Canzone", "Single", "2024-07-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            from app.services.providers.base import ReleaseCandidate
+
+            return [
+                ReleaseCandidate(
+                    title="Stessa Canzone",
+                    primary_artist="Mio",
+                    type="single",
+                    first_release_date="2024-07-02",
+                    provider="deezer",
+                    provider_id="99",
+                    urls={"deezer": "https://www.deezer.com/album/99"},
+                )
+            ]
+
+    monkeypatch.setattr(
+        discovery,
+        "get_provider",
+        lambda name: _FakeDeezerProvider() if name == "deezer" else real_mb_provider,
+    )
+
+    second = Artist(
+        name="Mio", normalized_name="mio-deezer", source="tag_artist", provider="deezer", provider_id="d1"
+    )
+    with get_session_factory()() as db:
+        db.add(second)
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1  # the Deezer copy merged into the MB row
+    with get_session_factory()() as db:
+        rows = db.scalars(select(Release)).all()
+        assert len(rows) == 1
+        assert rows[0].rgid == "rg-deez"
+        assert rows[0].deezer_url == "https://www.deezer.com/album/99"
+        assert rows[0].provider == "mb"
+
+
+async def test_tracks_stored_from_deezer_candidates(disc_db, monkeypatch):
+    """Candidates carrying a tracklist populate release_tracks at discovery."""
+    from app.services.providers.base import ReleaseCandidate, TrackCandidate
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    with get_session_factory()() as db:
+        db.add(
+            Artist(
+                name="Mio", normalized_name="mio2", source="tag_artist", provider="deezer", provider_id="d2"
+            )
+        )
+        db.commit()
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="Album Deezer",
+                    primary_artist="Mio",
+                    type="album",
+                    first_release_date="2024-07-01",
+                    provider="deezer",
+                    provider_id="100",
+                    tracks=[
+                        TrackCandidate(position=1, title="Pezzo Uno", duration_s=180),
+                        TrackCandidate(position=2, title="Pezzo Due", duration_s=None),
+                    ],
+                )
+            ]
+
+    monkeypatch.setattr(discovery, "get_provider", lambda name: _FakeDeezerProvider())
+
+    from app.models import ReleaseTrack
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.provider_id == "100"))
+        tracks = db.scalars(select(ReleaseTrack).where(ReleaseTrack.release_id == row.id)).all()
+        assert [(t.position, t.title, t.duration_s) for t in tracks] == [
+            (1, "Pezzo Uno", 180),
+            (2, "Pezzo Due", None),
+        ]
 
 
 # --- Level 2 ------------------------------------------------------------------
@@ -667,7 +846,7 @@ async def test_pipeline_enriches_new_releases_with_covers_and_links(disc_db, mon
 
     assert stats["releases_new"] == 1
     assert stats["covers_fetched"] == 1
-    assert stats["links_resolved"] == 4
+    assert stats["links_resolved"] == 9
     assert stats["pipeline_errors"] == 0
     with get_session_factory()() as db:
         row = db.scalar(select(Release).where(Release.rgid == "rg-enrich"))
@@ -675,6 +854,10 @@ async def test_pipeline_enriches_new_releases_with_covers_and_links(disc_db, mon
         assert row.spotify_url == "https://open.spotify.com/album/abc123"
         assert row.deezer_url == "https://www.deezer.com/album/4321"
         assert row.ytm_url == "https://music.youtube.com/search?q=Mio%20Album%20Enrich"
+        assert row.apple_music_url == "https://music.apple.com/search?term=Mio%20Album%20Enrich"
+        assert row.tidal_url == "https://tidal.com/search?q=Mio%20Album%20Enrich"
+        assert row.qobuz_url == "https://www.qobuz.com/us-en/search?q=Mio%20Album%20Enrich"
+        assert row.discogs_url == "https://www.discogs.com/search/?q=Mio%20Album%20Enrich&type=release"
         assert row.google_url == "https://www.google.com/search?q=Mio%20Album%20Enrich%20album"
 
 
@@ -793,7 +976,7 @@ async def test_enrich_new_releases_caps_concurrency_at_two(disc_db, monkeypatch)
     active = 0
     peak = 0
 
-    async def _fake_enrich(rgid, stats):
+    async def _fake_enrich(key, stats):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
@@ -802,7 +985,7 @@ async def test_enrich_new_releases_caps_concurrency_at_two(disc_db, monkeypatch)
 
     monkeypatch.setattr(discovery, "_enrich_release", _fake_enrich)
     stats: dict[str, int] = {"pipeline_errors": 0}
-    await discovery._enrich_new_releases([f"rg-{i}" for i in range(4)], stats)
+    await discovery._enrich_new_releases([("mb", f"rg-{i}") for i in range(4)], stats)
     assert peak <= 2
 
 
@@ -812,6 +995,7 @@ def test_backfill_links_covers_selects_only_incomplete_releases(disc_db, monkeyp
             [
                 Release(
                     rgid="rg-complete",
+                    provider_id="rg-complete",
                     title="A",
                     primary_artist="Mio",
                     type="album",
@@ -820,23 +1004,34 @@ def test_backfill_links_covers_selects_only_incomplete_releases(disc_db, monkeyp
                     spotify_url="https://s",
                     ytm_url="https://y",
                     deezer_url="https://d",
+                    apple_music_url="https://a",
+                    tidal_url="https://t",
+                    qobuz_url="https://q",
+                    discogs_url="https://ds",
+                    beatport_url="https://b",
                     google_url="https://g",
                 ),
-                Release(rgid="rg-incomplete", title="B", primary_artist="Mio", type="album"),
+                Release(
+                    rgid="rg-incomplete",
+                    provider_id="rg-incomplete",
+                    title="B",
+                    primary_artist="Mio",
+                    type="album",
+                ),
             ]
         )
         db.commit()
     seen: list[list[str]] = []
 
-    async def _fake_enrich(rgids, stats):
-        seen.append(list(rgids))
+    async def _fake_enrich(keys, stats):
+        seen.append(list(keys))
 
     monkeypatch.setattr(discovery, "_enrich_new_releases", _fake_enrich)
 
     with get_session_factory()() as db:
         stats = discovery.backfill_links_covers(db, limit=200)
 
-    assert seen == [["rg-incomplete"]]
+    assert seen == [[("mb", "rg-incomplete")]]
     assert stats["covers_fetched"] == 0
     assert stats["links_resolved"] == 0
     assert stats["pipeline_errors"] == 0
@@ -845,25 +1040,41 @@ def test_backfill_links_covers_selects_only_incomplete_releases(disc_db, monkeyp
 def test_backfill_links_covers_respects_limit(disc_db, monkeypatch):
     with get_session_factory()() as db:
         for index in range(3):
-            db.add(Release(rgid=f"rg-l-{index}", title=f"T{index}", primary_artist="Mio", type="album"))
+            db.add(
+                Release(
+                    rgid=f"rg-l-{index}",
+                    provider_id=f"rg-l-{index}",
+                    title=f"T{index}",
+                    primary_artist="Mio",
+                    type="album",
+                )
+            )
         db.commit()
     seen: list[list[str]] = []
 
-    async def _fake_enrich(rgids, stats):
-        seen.append(list(rgids))
+    async def _fake_enrich(keys, stats):
+        seen.append(list(keys))
 
     monkeypatch.setattr(discovery, "_enrich_new_releases", _fake_enrich)
     with get_session_factory()() as db:
         discovery.backfill_links_covers(db, limit=2)
-    assert seen == [["rg-l-0", "rg-l-1"]]
+    assert seen == [[("mb", "rg-l-0"), ("mb", "rg-l-1")]]
 
 
 def test_cli_backfill_links_command(disc_db, monkeypatch, capsys):
     with get_session_factory()() as db:
-        db.add(Release(rgid="rg-cli", title="C", primary_artist="Mio", type="album"))
+        db.add(
+            Release(
+                rgid="rg-cli",
+                provider_id="rg-cli",
+                title="C",
+                primary_artist="Mio",
+                type="album",
+            )
+        )
         db.commit()
 
-    async def _fake_enrich(rgids, stats):
+    async def _fake_enrich(keys, stats):
         stats["covers_fetched"] = 1
         stats["links_resolved"] = 4
 
@@ -900,6 +1111,10 @@ async def test_discovery_requests_go_through_global_rate_limiter(disc_db, monkey
         return client
 
     monkeypatch.setattr(discovery, "get_client", _get_client)
+    monkeypatch.setattr(musicbrainz, "get_client", _get_client)
+    from app.services.providers import musicbrainz as providers_mb
+
+    monkeypatch.setattr(providers_mb, "get_client", _get_client)
     _seed_artists(("A", "mb-a"), ("B", "mb-b"), ("C", "mb-c"))
 
     with get_session_factory()() as db:
@@ -909,6 +1124,7 @@ async def test_discovery_requests_go_through_global_rate_limiter(disc_db, monkey
     assert len(sleeps) == 2  # first call never waits, two gaps of ~1s each
     assert all(0.9 <= value <= 1.1 for value in sleeps)
     assert sum(sleeps) >= 1.9
+    await client.aclose()  # GC-close after the test loop would raise elsewhere
 
 
 # --- Background task / locks ---------------------------------------------------

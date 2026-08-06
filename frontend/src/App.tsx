@@ -5,11 +5,13 @@ import { get } from './api/client'
 import { applyTheme, getStoredTheme } from './theme'
 
 import Navbar from './components/Navbar'
+import ActivityBar from './components/ActivityBar'
 import Login from './pages/Login'
 import Feed from './pages/Feed'
 import ReleaseDetail from './pages/ReleaseDetail'
 import Artists from './pages/Artists'
 import Settings from './pages/Settings'
+import Errors from './pages/Errors'
 
 interface Me {
   username: string
@@ -50,6 +52,7 @@ function RequireAuth() {
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg">
       <Navbar username={data.username} theme={data.theme} />
+      <ActivityBar />
       <main className="mx-auto max-w-6xl px-4 py-6">
         <Outlet />
       </main>
@@ -66,6 +69,7 @@ export default function App() {
         <Route path="/releases/:id" element={<ReleaseDetail />} />
         <Route path="/artists" element={<Artists />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/errors" element={<Errors />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

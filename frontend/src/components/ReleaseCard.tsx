@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import type { MatchedArtist, ReleaseListItem, ReleaseType } from '../api/releases'
@@ -20,7 +20,7 @@ function NoteIcon() {
   )
 }
 
-function CardCover({ rgid, hasCover }: { rgid: string; hasCover: boolean }) {
+function CardCover({ coverKey, hasCover }: { coverKey: string; hasCover: boolean }) {
   const [broken, setBroken] = useState(false)
   if (!hasCover || broken) {
     return (
@@ -31,7 +31,7 @@ function CardCover({ rgid, hasCover }: { rgid: string; hasCover: boolean }) {
   }
   return (
     <img
-      src={`/api/v1/covers/${rgid}`}
+      src={`/api/v1/covers/${coverKey}`}
       alt=""
       loading="lazy"
       onError={() => setBroken(true)}
@@ -40,10 +40,26 @@ function CardCover({ rgid, hasCover }: { rgid: string; hasCover: boolean }) {
   )
 }
 
+function EyeIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth="1.8"
+      className="h-3.5 w-3.5"
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+      <circle cx="12" cy="12" r="2.6" />
+    </svg>
+  )
+}
+
 /** primary_artist with the tracked (primary/featured) names highlighted in accent. */
 function ArtistLine({ primaryArtist, tracked }: { primaryArtist: string; tracked: MatchedArtist[] }) {
   if (tracked.length === 0) return <>{primaryArtist}</>
-  const parts: ReactNode[] = []
+  const parts: React.ReactNode[] = []
   let rest = primaryArtist
   for (const t of tracked) {
     const idx = rest.indexOf(t.name)
@@ -61,7 +77,13 @@ function ArtistLine({ primaryArtist, tracked }: { primaryArtist: string; tracked
   return <>{parts}</>
 }
 
-export default function ReleaseCard({ release }: { release: ReleaseListItem }) {
+export default function ReleaseCard({
+  release,
+  onToggleSeen,
+}: {
+  release: ReleaseListItem
+  onToggleSeen?: (release: ReleaseListItem) => void
+}) {
   const tracked = release.matched_artists.filter((a) => a.role === 'primary' || a.role === 'featured')
   const featured = release.matched_artists.filter((a) => a.role === 'featured')
   const featuredExtra = featured.filter((f) => !release.primary_artist.includes(f.name))
@@ -72,13 +94,35 @@ export default function ReleaseCard({ release }: { release: ReleaseListItem }) {
       to={`/releases/${release.id}`}
       className="group relative flex flex-col gap-2 rounded-2xl bg-light-surface p-2 transition-transform hover:scale-[1.02] hover:shadow-lg hover:shadow-black/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:bg-dark-surface dark:hover:shadow-black/40"
     >
-      {isNew && (
-        <span
-          aria-label="New"
-          className="absolute right-3.5 top-3.5 z-10 h-2.5 w-2.5 rounded-full bg-accent shadow-sm shadow-black/30"
-        />
-      )}
-      <CardCover rgid={release.rgid} hasCover={!!release.cover_path} />
+      <div className="absolute right-3.5 top-3.5 z-10 flex items-center gap-1.5">
+        {isNew && (
+          <span
+            aria-label="New"
+            className="h-2.5 w-2.5 rounded-full bg-accent shadow-sm shadow-black/30"
+          />
+        )}
+        {onToggleSeen && (
+          <button
+            type="button"
+            aria-label={release.seen ? 'Mark as unseen' : 'Mark as seen'}
+            aria-pressed={!!release.seen}
+            title={release.seen ? 'Mark as unseen' : 'Mark as seen'}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              onToggleSeen(release)
+            }}
+            className={`rounded-full p-1.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              release.seen
+                ? 'bg-accent text-black'
+                : 'bg-black/40 text-white opacity-0 backdrop-blur-sm hover:opacity-100 group-hover:opacity-100'
+            }`}
+          >
+            <EyeIcon filled={!!release.seen} />
+          </button>
+        )}
+      </div>
+      <CardCover coverKey={release.cover_key} hasCover={!!release.cover_path} />
       <div className="px-1 pb-1">
         <h3 className="line-clamp-2 text-sm font-semibold text-light-text dark:text-dark-text">
           {release.title}

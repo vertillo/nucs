@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 
 import { ApiError } from '../api/client'
 import {
@@ -23,30 +23,21 @@ const ROLE_LABEL: Record<ArtistRole, string> = {
   contributor: 'Contributor',
 }
 
+const SOURCE_LABEL: Record<string, string> = {
+  mb: 'MusicBrainz',
+  deezer: 'Deezer',
+  itunes: 'Apple Music',
+  discogs: 'Discogs',
+  soundcloud: 'SoundCloud',
+  beatport: 'Beatport',
+}
+
 function NoteIcon({ className = 'h-24 w-24' }: { className?: string }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className={className}>
       <path strokeLinecap="round" d="M9 18V5l12-2v13" />
       <circle cx="6" cy="18" r="3" />
       <circle cx="18" cy="16" r="3" />
-    </svg>
-  )
-}
-
-function HeartIcon({ filled }: { filled: boolean }) {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-      fill={filled ? 'currentColor' : 'none'}
-      stroke="currentColor"
-      strokeWidth="2"
-      className="h-4 w-4"
-    >
-      <path
-        strokeLinejoin="round"
-        d="M12 21C6.5 16.5 2 12.9 2 8.7 2 5.6 4.4 3.5 7.1 3.5c1.9 0 3.6 1 4.9 2.8 1.3-1.8 3-2.8 4.9-2.8 2.7 0 5.1 2.1 5.1 5.2 0 4.2-4.5 7.8-10 12.3z"
-      />
     </svg>
   )
 }
@@ -65,8 +56,26 @@ function DetailSkeleton() {
   )
 }
 
+function formatDuration(seconds: number | null): string {
+  if (seconds == null) return ''
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return `${minutes}:${String(rest).padStart(2, '0')}`
+}
+
+function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
+  if (value === null || value === undefined || value === '' || value === false) return null
+  return (
+    <div className="flex justify-between gap-6 py-1.5">
+      <dt className="text-sm text-light-textDim dark:text-dark-textDim">{label}</dt>
+      <dd className="text-right text-sm font-medium text-light-text dark:text-dark-text">{value}</dd>
+    </div>
+  )
+}
+
 export default function ReleaseDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { data: release, isPending, isError, error, refetch } = useRelease(id)
   const setState = useSetReleaseState(release?.id)
 
@@ -75,15 +84,26 @@ export default function ReleaseDetail() {
     setCoverBroken(false)
   }, [id])
 
+  // "Back to feed" behaves like the browser back button (scroll position is
+  // preserved by the feed cache); "/" is the fallback when there is no history.
+  function backToFeed() {
+    if (window.history.length > 1) {
+      navigate(-1)
+    } else {
+      navigate('/')
+    }
+  }
+
   if (isPending) {
     return (
       <div>
-        <Link
-          to="/"
+        <button
+          type="button"
+          onClick={backToFeed}
           className="inline-flex items-center gap-1 rounded text-sm text-light-textDim transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-textDim"
         >
           ← Back to feed
-        </Link>
+        </button>
         <div className="mt-6">
           <DetailSkeleton />
         </div>
@@ -95,20 +115,22 @@ export default function ReleaseDetail() {
     if (error instanceof ApiError && error.status === 404) {
       return (
         <div>
-          <Link
-            to="/"
+          <button
+            type="button"
+            onClick={backToFeed}
             className="inline-flex items-center gap-1 rounded text-sm text-light-textDim transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-textDim"
           >
             ← Back to feed
-          </Link>
+          </button>
           <div className="mt-16 flex flex-col items-center gap-3 text-center">
             <p className="text-lg font-semibold text-light-text dark:text-dark-text">Release not found</p>
-            <Link
-              to="/"
+            <button
+              type="button"
+              onClick={backToFeed}
               className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-accentHover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
               Back to feed
-            </Link>
+            </button>
           </div>
         </div>
       )
@@ -135,12 +157,13 @@ export default function ReleaseDetail() {
 
   return (
     <div>
-      <Link
-        to="/"
+      <button
+        type="button"
+        onClick={backToFeed}
         className="inline-flex items-center gap-1 rounded text-sm text-light-textDim transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-textDim"
       >
         ← Back to feed
-      </Link>
+      </button>
 
       <div className="mt-6 grid gap-8 md:grid-cols-[384px,1fr]">
         {showPlaceholder ? (
@@ -149,7 +172,7 @@ export default function ReleaseDetail() {
           </div>
         ) : (
           <img
-            src={`/api/v1/covers/${release.rgid}`}
+            src={`/api/v1/covers/${release.cover_key}`}
             alt={`Cover of ${release.title}`}
             onError={() => setCoverBroken(true)}
             className="aspect-square w-full max-w-[384px] rounded-xl object-cover"
@@ -177,7 +200,18 @@ export default function ReleaseDetail() {
           </div>
 
           <h1 className="mt-3 text-3xl font-bold text-light-text dark:text-dark-text">{release.title}</h1>
-          <p className="mt-1 text-light-textDim dark:text-dark-textDim">{release.first_release_date}</p>
+          <p className="mt-1 text-light-textDim dark:text-dark-textDim">{release.primary_artist}</p>
+
+          <dl className="mt-4 max-w-md">
+            <InfoRow label="Release date" value={release.first_release_date} />
+            <InfoRow label="Type" value={TYPE_LABEL[release.type]} />
+            {secondary.length > 0 && <InfoRow label="Secondary types" value={secondary.join(', ')} />}
+            <InfoRow label="Source" value={SOURCE_LABEL[release.source] ?? release.source} />
+            <InfoRow
+              label="Discovered"
+              value={release.discovered_at ? new Date(release.discovered_at).toLocaleString() : null}
+            />
+          </dl>
 
           <section className="mt-5">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-light-textDim dark:text-dark-textDim">
@@ -197,6 +231,29 @@ export default function ReleaseDetail() {
             )}
           </section>
 
+          {release.tracks.length > 0 && (
+            <section className="mt-6">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-light-textDim dark:text-dark-textDim">
+                Tracklist
+              </h2>
+              <ol className="mt-2 max-w-md divide-y divide-light-border dark:divide-dark-border">
+                {release.tracks.map((track) => (
+                  <li key={track.position} className="flex items-baseline gap-3 py-1.5 text-sm">
+                    <span className="w-6 shrink-0 text-right tabular-nums text-light-textDim dark:text-dark-textDim">
+                      {track.position}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-light-text dark:text-dark-text">{track.title}</span>
+                    {track.duration_s != null && (
+                      <span className="shrink-0 tabular-nums text-light-textDim dark:text-dark-textDim">
+                        {formatDuration(track.duration_s)}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
+
           <div className="mt-6">
             <LinkButtons release={release} />
           </div>
@@ -213,19 +270,6 @@ export default function ReleaseDetail() {
               }`}
             >
               Seen
-            </button>
-            <button
-              type="button"
-              aria-pressed={!!release.favorite}
-              onClick={() => setState.mutate({ favorite: !release.favorite })}
-              className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                release.favorite
-                  ? 'bg-accent text-black'
-                  : 'border border-light-border text-light-textDim hover:text-light-text dark:border-dark-border dark:text-dark-textDim dark:hover:text-dark-text'
-              }`}
-            >
-              <HeartIcon filled={!!release.favorite} />
-              Favorite
             </button>
             <button
               type="button"

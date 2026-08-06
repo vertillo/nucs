@@ -1,4 +1,15 @@
-"""Release endpoints: /api/v1/releases/* (spec section 10)."""
+"""Release endpoints: /api/v1/releases/* (spec section 10 + phase 12b).
+
+Phase 12b additions:
+- release detail carries ``source`` (provider), ``tracks`` (lazy-fetched from
+  the provider and cached in ``release_tracks``) and the new link columns
+  (Apple Music, Tidal, Qobuz, Discogs, Beatport);
+- the feed's ``matched_artists`` also includes tracked artists matched by
+  normalized name against the release credit phrase (fix: artists like PiKi
+  whose release is not linked via release_artists were not highlighted);
+- ``cover_key`` lets the frontend render covers for non-MusicBrainz releases
+  (rgid may be NULL now).
+"""
 
 from __future__ import annotations
 
@@ -10,10 +21,14 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import require_user
-from app.models import Artist, Release, ReleaseArtist, ReleaseState, utc_now
+from app.models import Artist, Release, ReleaseArtist, ReleaseState, ReleaseTrack, utc_now
 from app.models import Session as DbSession
 from app.schemas import ReleaseStatePatch, SeenAllRequest
+from app.security import get_setting
+from app.services import errors as error_service
 from app.services.dates import parse_mb_date
+from app.services.names import normalize_name
+from app.services.providers import fetch_tracks_for
 
 router = APIRouter(prefix="/api/v1/releases", tags=["releases"])
 
@@ -58,8 +73,46 @@ def _state_filters(state: ReleaseState | None) -> dict[str, int]:
     }
 
 
+def _cover_key(row: Release) -> str:
+    """Filename base for the cover endpoint: rgid (MB) or the release id."""
+    return row.rgid if row.rgid else str(row.id)
+
+
+def _name_match_role(credit: str, artist_name: str) -> str | None:
+    """role when the tracked artist's normalized name appears in the credit
+    phrase (word-boundary match, so "Ye" never matches inside "Yeat").
+
+    Returns 'primary' when the credit starts with the name, 'featured'
+    otherwise — the same heuristic as the discovery role assignment.
+    """
+    norm_credit = normalize_name(credit)
+    norm_name = normalize_name(artist_name)
+    if not norm_name or not norm_credit:
+        return None
+    if norm_name not in norm_credit:
+        return None
+    # Word-boundary check: a normalized name only matches between non-alnum chars.
+    position = norm_credit.find(norm_name)
+    while position != -1:
+        before = norm_credit[position - 1] if position > 0 else " "
+        after_idx = position + len(norm_name)
+        after = norm_credit[after_idx] if after_idx < len(norm_credit) else " "
+        if not before.isalnum() and not after.isalnum():
+            break
+        position = norm_credit.find(norm_name, position + 1)
+    else:
+        return None
+    return "primary" if norm_credit.startswith(norm_name) else "featured"
+
+
 def _matched_artists_for(db: Session, release_ids: list[int]) -> dict[int, list[dict]]:
-    """One query for the page: release_id -> [{id, name, role}] (no N+1)."""
+    """release_id -> [{id, name, role}] (no N+1).
+
+    Linked artists (release_artists) first; then every non-ignored tracked
+    artist whose normalized name appears in the release credit phrase is added
+    with the heuristic role (phase 12b fix: PiKi-style releases are highlighted
+    even without a release_artists link).
+    """
     by_release: dict[int, list[dict]] = defaultdict(list)
     if not release_ids:
         return by_release
@@ -69,8 +122,27 @@ def _matched_artists_for(db: Session, release_ids: list[int]) -> dict[int, list[
         .where(ReleaseArtist.release_id.in_(release_ids))
         .order_by(ReleaseArtist.release_id, Artist.name)
     ).all()
+    linked_ids: dict[int, set[int]] = defaultdict(set)
     for release_id, artist_id, name, role in rows:
         by_release[release_id].append({"id": artist_id, "name": name, "role": role})
+        linked_ids[release_id].add(artist_id)
+    tracked = db.scalars(select(Artist).where(Artist.ignored == 0)).all()
+    if not tracked:
+        return by_release
+    credits = {
+        release_id: credit
+        for release_id, credit in db.execute(
+            select(Release.id, Release.primary_artist).where(Release.id.in_(release_ids))
+        )
+    }
+    for release_id, credit in credits.items():
+        for artist in tracked:
+            if artist.id in linked_ids.get(release_id, ()):
+                continue
+            role = _name_match_role(credit, artist.name)
+            if role:
+                by_release[release_id].append({"id": artist.id, "name": artist.name, "role": role})
+        by_release[release_id].sort(key=lambda item: item["name"])
     return by_release
 
 
@@ -144,6 +216,7 @@ async def list_releases(
         {
             "id": row.id,
             "rgid": row.rgid,
+            "cover_key": _cover_key(row),
             "title": row.title,
             "primary_artist": row.primary_artist,
             "type": row.type,
@@ -155,6 +228,41 @@ async def list_releases(
         for row in rows
     ]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+async def _tracks_for(db: Session, row: Release) -> list[dict]:
+    """Tracklist of one release: cached rows, otherwise fetched from the
+    provider on demand and persisted (best effort, never raises)."""
+    cached = db.scalars(
+        select(ReleaseTrack).where(ReleaseTrack.release_id == row.id).order_by(ReleaseTrack.position)
+    ).all()
+    if cached:
+        return [{"position": t.position, "title": t.title, "duration_s": t.duration_s} for t in cached]
+    tracks = await fetch_tracks_for(
+        row.provider, row.mb_release_id or row.provider_id, email=get_setting(db, "mb_contact_email")
+    )
+    for track in tracks:
+        if not track.title:
+            continue
+        db.add(
+            ReleaseTrack(
+                release_id=row.id,
+                position=track.position,
+                title=track.title,
+                duration_s=track.duration_s,
+            )
+        )
+    db.commit()
+    if not tracks:
+        error_service.record_error(
+            "release",
+            "warning",
+            "tracklist unavailable",
+            context={"release_id": row.id, "provider": row.provider},
+        )
+    return [
+        {"position": track.position, "title": track.title, "duration_s": track.duration_s} for track in tracks
+    ]
 
 
 @router.get("/{release_id}")
@@ -180,9 +288,11 @@ async def get_release(
     elif state.seen:
         state.seen_at = utc_now()
     db.commit()
+    tracks = await _tracks_for(db, row)
     return {
         "id": row.id,
         "rgid": row.rgid,
+        "cover_key": _cover_key(row),
         "title": row.title,
         "primary_artist": row.primary_artist,
         "type": row.type,
@@ -190,11 +300,18 @@ async def get_release(
         "first_release_date": row.first_release_date,
         "cover_path": row.cover_path,
         "cover_url": row.cover_url,
+        "source": row.provider,
         "spotify_url": row.spotify_url,
         "deezer_url": row.deezer_url,
         "ytm_url": row.ytm_url,
+        "apple_music_url": row.apple_music_url,
+        "tidal_url": row.tidal_url,
+        "qobuz_url": row.qobuz_url,
+        "discogs_url": row.discogs_url,
+        "beatport_url": row.beatport_url,
         "google_url": row.google_url,
         "discovered_at": row.discovered_at,
+        "tracks": tracks,
         **_state_filters(state),
         "seen_at": state.seen_at,
         "matched_artists": _matched_artists_for(db, [row.id]).get(row.id, []),

@@ -65,10 +65,14 @@ async def scan_status(
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
 ) -> dict:
-    """Running scan (if any) plus the last 10 scan_runs."""
+    """Running scan (if any) plus the last 10 scan_runs.
+
+    ``running`` carries ``{type, since, progress:{total,done,phase}}`` (phase
+    12b: the progress dict is updated live by the scan workers).
+    """
     running = None
-    for scan_type, since in scan_locks.running_scans().items():
-        running = {"type": scan_type, "since": since}
+    for scan_type, snapshot in scan_locks.running_scans().items():
+        running = {"type": scan_type, "since": snapshot["since"], "progress": snapshot["progress"]}
     rows = db.scalars(select(ScanRun).order_by(ScanRun.id.desc()).limit(10)).all()
     last_runs = []
     for row in rows:

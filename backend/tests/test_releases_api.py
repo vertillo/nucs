@@ -82,6 +82,7 @@ async def test_api_releases_list_shape_and_defaults(client):
     assert set(item) == {
         "id",
         "rgid",
+        "cover_key",
         "title",
         "primary_artist",
         "type",
@@ -93,6 +94,7 @@ async def test_api_releases_list_shape_and_defaults(client):
         "matched_artists",
     }
     assert item["rgid"] == "rg-2"
+    assert item["cover_key"] == "rg-2"
     assert item["matched_artists"] == [{"id": seed["artist_id"], "name": "Mio", "role": "primary"}]
     assert item["cover_path"] is None
     # hidden filter defaults to "no": the hidden EP must not appear.

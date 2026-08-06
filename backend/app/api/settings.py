@@ -37,7 +37,7 @@ _MAX_NOTIFY_URLS_LENGTH = 4000
 _MAX_EMAIL_LENGTH = 254
 _MAX_RELEASE_TYPES_LENGTH = 100
 
-_SECRET_KEYS = frozenset({"spotify_client_id", "spotify_client_secret"})
+_SECRET_KEYS = frozenset({"spotify_client_id", "spotify_client_secret", "discogs_token"})
 
 _VALIDATORS: dict[str, object] = {}
 
@@ -139,10 +139,21 @@ def _validate_email(key: str, value: object) -> str:
 
 @_validator("spotify_client_id")
 @_validator("spotify_client_secret")
-def _validate_spotify_credential(key: str, value: object) -> str:
+@_validator("discogs_token")
+def _validate_token(key: str, value: object) -> str:
     text = str(value).strip()
     if len(text) > 256:
         _fail(key, "too long (max 256 characters)")
+    return text
+
+
+@_validator("discovery_filter_official")
+def _validate_official_flag(key: str, value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = str(value).strip().lower()
+    if text not in ("true", "false"):
+        _fail(key, "expected a boolean")
     return text
 
 

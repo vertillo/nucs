@@ -61,7 +61,7 @@ async def send_notification(title: str, body: str) -> tuple[bool, str]:
         return False, "Notification failed"
 
 
-async def maybe_notify_new_releases(new_rgids: list[str]) -> None:
+async def maybe_notify_new_releases(new_release_ids: list[int]) -> None:
     """Aggregate notification for newly discovered releases (spec 8.4.3).
 
     Called at the end of a discovery run; the release rows already exist in
@@ -71,12 +71,12 @@ async def maybe_notify_new_releases(new_rgids: list[str]) -> None:
         with get_session_factory()() as db:
             enabled = get_setting(db, "notify_enabled") == "true"
             urls = get_setting(db, "notify_urls")
-        if not enabled or not urls or not new_rgids:
+        if not enabled or not urls or not new_release_ids:
             return
         with get_session_factory()() as db:
             rows = db.scalars(
                 select(Release)
-                .where(Release.rgid.in_(new_rgids))
+                .where(Release.id.in_(new_release_ids))
                 .order_by(Release.first_release_date.desc(), Release.id.desc())
             ).all()
         if not rows:

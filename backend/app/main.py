@@ -26,6 +26,8 @@ from app import scheduler as scheduler_module
 from app.api.artists import router as artists_router
 from app.api.auth import router as auth_router
 from app.api.covers import router as covers_router
+from app.api.errors import router as errors_router
+from app.api.library import router as library_router
 from app.api.releases import router as releases_router
 from app.api.scans import router as scans_router
 from app.api.settings import router as settings_router
@@ -43,6 +45,7 @@ from app.security import (
     set_session_cookie,
 )
 from app.services import deezer, discovery, spotify
+from app.services import errors as error_service
 from app.services.musicbrainz import close_client
 
 APP_VERSION = "1.0.0"
@@ -78,7 +81,10 @@ _DEFAULT_SETTINGS: dict[str, str] = {
     "notify_urls": "",
     "spotify_client_id": "",
     "spotify_client_secret": "",
+    "discogs_token": "",
     "release_types": "album,single,ep",
+    # Phase 12b: only official MusicBrainz releases enter the feed by default.
+    "discovery_filter_official": "true",
 }
 
 
@@ -298,6 +304,15 @@ async def lifespan(app: FastAPI):
     await close_client()
     await deezer.close_client()
     await spotify.close_client()
+    from app.services.providers import beatport as beatport_provider
+    from app.services.providers import discogs as discogs_provider
+    from app.services.providers import itunes as itunes_provider
+    from app.services.providers import soundcloud as soundcloud_provider
+
+    await itunes_provider.close_client()
+    await discogs_provider.close_client()
+    await soundcloud_provider.close_client()
+    await beatport_provider.close_client()
     get_engine().dispose()
     logging.getLogger(__name__).info("nucs backend stopped")
 
@@ -327,6 +342,8 @@ def create_app() -> FastAPI:
     app.include_router(releases_router)
     app.include_router(settings_router)
     app.include_router(covers_router)
+    app.include_router(errors_router)
+    app.include_router(library_router)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
@@ -363,6 +380,11 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         logging.getLogger(__name__).exception("unhandled exception on %s", request.url.path)
+        error_service.record_exception(
+            "server",
+            exc,
+            context={"path": request.url.path, "method": request.method},
+        )
         return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
     return app

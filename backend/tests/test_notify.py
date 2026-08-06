@@ -107,24 +107,26 @@ async def test_send_provider_failure_reports_error(make_client, monkeypatch):
         assert error == "Notification failed (provider error)"
 
 
-async def _insert_releases(count: int) -> list[str]:
-    rgids = []
+async def _insert_releases(count: int) -> list[int]:
+    """Insert ``count`` releases and return their ids (phase 12b: the
+    aggregate notification hook is keyed on release ids, not rgids)."""
+    ids = []
     with get_session_factory()() as db:
         for i in range(count):
-            rgid = f"rg-notify-{i}"
-            rgids.append(rgid)
-            db.add(
-                Release(
-                    rgid=rgid,
-                    title=f"Title {i}",
-                    primary_artist=f"Artist {i}",
-                    type="album" if i % 2 == 0 else "single",
-                    first_release_date=f"2026-{i + 1:02d}-01",
-                    discovered_at="2026-01-01T00:00:00",
-                )
+            row = Release(
+                rgid=f"rg-notify-{i}",
+                provider_id=f"rg-notify-{i}",
+                title=f"Title {i}",
+                primary_artist=f"Artist {i}",
+                type="album" if i % 2 == 0 else "single",
+                first_release_date=f"2026-{i + 1:02d}-01",
+                discovered_at="2026-01-01T00:00:00",
             )
+            db.add(row)
+            db.flush()
+            ids.append(row.id)
         db.commit()
-    return rgids
+    return ids
 
 
 async def test_aggregate_notification_single_message(make_client, monkeypatch):

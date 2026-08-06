@@ -108,6 +108,10 @@ async def match_artist(db: Session, artist_row: Artist) -> bool:
         if part_best is not None and part_best["score"] >= MATCH_PART_SCORE:
             if not _upsert_child(db, part, artist_row.source, part_best["mbid"], part_best["score"]):
                 return False
+            # Phase 12b fix: never hold a write transaction across the next
+            # network call — a slow/retrying MusicBrainz request would lock the
+            # SQLite DB for other writers (observed "database is locked").
+            db.commit()
             matched_any = True
     if matched_any:
         artist_row.ignored = 1

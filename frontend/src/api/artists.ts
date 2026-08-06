@@ -1,16 +1,21 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, get } from './client'
 
-export type ArtistSource = 'tag_artist' | 'tag_albumartist' | 'tag_feat' | 'tag_contrib' | 'manual'
+export type ArtistSource = 'tag_artist' | 'tag_albumartist' | 'tag_feat' | 'tag_contrib' | 'tag_remix' | 'manual'
+export type ArtistProvider = 'mb' | 'deezer' | 'itunes' | 'discogs' | 'soundcloud' | 'beatport' | 'manual'
 
 export interface ArtistItem {
   id: number
   name: string
   source: ArtistSource
+  provider: ArtistProvider
+  provider_id: string | null
+  external_url: string | null
   mbid: string | null
   mb_match_score: number | null
   ignored: 0 | 1
   releases_count: number
+  source_files: string[]
 }
 
 export interface ArtistsResponse {
@@ -22,13 +27,31 @@ export interface ArtistsResponse {
 
 export interface ArtistFilters {
   ignored: 'all' | 'yes' | 'no'
+  matched: 'all' | 'no'
   q: string
+}
+
+export interface ArtistCandidate {
+  name: string
+  provider: ArtistProvider
+  provider_id: string | null
+  mbid: string | null
+  score: number | null
+  url: string | null
+}
+
+export interface RematchResult {
+  matched: boolean
+  mbid: string | null
+  candidates: ArtistCandidate[]
+  split: string[]
 }
 
 function buildUrl(filters: ArtistFilters, page: number): string {
   const params = new URLSearchParams()
   params.set('page', String(page))
   if (filters.ignored !== 'all') params.set('ignored', filters.ignored)
+  if (filters.matched !== 'all') params.set('matched', filters.matched)
   if (filters.q) params.set('q', filters.q)
   return `/api/v1/artists?${params.toString()}`
 }
@@ -54,11 +77,28 @@ export function useTrackedArtistsCount() {
   })
 }
 
+/** Multi-provider name search for the add-artist and retry pickers. */
+export function useArtistSearch(q: string) {
+  return useQuery<{ items: ArtistCandidate[] }>({
+    queryKey: ['artist-search', q],
+    queryFn: () => get<{ items: ArtistCandidate[] }>(`/api/v1/artists/search?q=${encodeURIComponent(q)}`),
+    enabled: q.trim().length >= 2,
+  })
+}
+
+export interface AddArtistPayload {
+  name: string
+  provider?: ArtistProvider
+  provider_id?: string
+  mbid?: string | null
+  external_url?: string | null
+}
+
 export function useAddArtist() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (name: string) =>
-      apiFetch<ArtistItem>('/api/v1/artists', { method: 'POST', body: JSON.stringify({ name }) }),
+    mutationFn: (payload: AddArtistPayload) =>
+      apiFetch<ArtistItem>('/api/v1/artists', { method: 'POST', body: JSON.stringify(payload) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['artists'] })
       queryClient.invalidateQueries({ queryKey: ['artists-count'] })
@@ -120,14 +160,50 @@ export function useSetArtistIgnored() {
   })
 }
 
-/** Retry the MusicBrainz match for one artist (POST /artists/{id}/rematch). */
+/** Retry the match for one artist: returns candidates for the picker. */
 export function useRematchArtist() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) =>
-      apiFetch<{ matched: boolean; mbid: string | null }>(`/api/v1/artists/${id}/rematch`, {
+      apiFetch<RematchResult>(`/api/v1/artists/${id}/rematch`, {
         method: 'POST',
       }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artists'] })
+      queryClient.invalidateQueries({ queryKey: ['artists-count'] })
+    },
+  })
+}
+
+export interface LinkArtistPayload {
+  id: number
+  url?: string
+  provider?: ArtistProvider
+  provider_id?: string
+}
+
+/** Track an artist by provider URL or an explicit provider pair (parsed
+ * server-side; the URL is never fetched). */
+export function useLinkArtist() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, url, provider, provider_id }: LinkArtistPayload) =>
+      apiFetch<ArtistItem>(`/api/v1/artists/${id}/link`, {
+        method: 'POST',
+        body: JSON.stringify({ url, provider, provider_id }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artists'] })
+      queryClient.invalidateQueries({ queryKey: ['artists-count'] })
+    },
+  })
+}
+
+/** Delete an artist (release links cascade; releases stay). */
+export function useDeleteArtist() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => apiFetch<void>(`/api/v1/artists/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['artists'] })
       queryClient.invalidateQueries({ queryKey: ['artists-count'] })

@@ -45,6 +45,7 @@ npm run e2e:08   # fase 08: feed release + dettaglio (browser, seed lungo)
 npm run e2e:09   # fase 09: artisti + impostazioni (browser, seed lungo)
 npm run e2e:11   # fase 11: login+tema+logout+security headers (browser, container)
 npm run e2e:12   # fase 12: DoD §14 automatizzabili (brute force, seed+feed+dettaglio, tema, backup, persistenza)
+npm run e2e:12b  # fase 12b: feed per giorno/seen/sync, dettaglio senza Favorite con tracklist+9 link, artisti (filtro unmatched/retry/delete), add-artist multi-provider, pagina errori, reset library
 ```
 
 Variabili d'ambiente:

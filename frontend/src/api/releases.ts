@@ -12,7 +12,8 @@ export interface MatchedArtist {
 
 export interface ReleaseListItem {
   id: number
-  rgid: string
+  rgid: string | null
+  cover_key: string
   title: string
   primary_artist: string
   type: ReleaseType
@@ -24,13 +25,26 @@ export interface ReleaseListItem {
   matched_artists: MatchedArtist[]
 }
 
+export interface ReleaseTrack {
+  position: number
+  title: string
+  duration_s: number | null
+}
+
 export interface ReleaseDetail extends ReleaseListItem {
   secondary_types: string
   cover_url: string | null
+  source: string
   spotify_url: string | null
   deezer_url: string | null
   ytm_url: string | null
+  apple_music_url: string | null
+  tidal_url: string | null
+  qobuz_url: string | null
+  discogs_url: string | null
+  beatport_url: string | null
   google_url: string | null
+  tracks: ReleaseTrack[]
   discovered_at: string
   seen_at: string | null
 }
@@ -118,6 +132,47 @@ export function useSeenAll() {
   return useMutation({
     mutationFn: () => post('/api/v1/releases/seen-all', {}),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['releases'] })
+    },
+  })
+}
+
+/** Per-card "seen" toggle from the feed list (phase 12b), optimistic. */
+function patchReleaseSeen(old: unknown, id: number, seen: boolean): unknown {
+  if (!old || typeof old !== 'object') return old
+  const isInfinite = 'pages' in old && Array.isArray((old as { pages: unknown }).pages)
+  if (isInfinite) {
+    const infinite = old as { pages: ReleasesResponse[]; pageParams: unknown[] }
+    return {
+      ...infinite,
+      pages: infinite.pages.map((page) => ({
+        ...page,
+        items: page.items.map((release) =>
+          release.id === id ? { ...release, seen: seen ? 1 : 0 } : release,
+        ),
+      })),
+    }
+  }
+  return old
+}
+
+export function useSetReleaseSeen() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, seen }: { id: number; seen: boolean }) =>
+      post(`/api/v1/releases/${id}/state`, { seen }),
+    onMutate: async ({ id, seen }) => {
+      await queryClient.cancelQueries({ queryKey: ['releases'] })
+      const previous = queryClient.getQueriesData({ queryKey: ['releases'] })
+      queryClient.setQueriesData({ queryKey: ['releases'] }, (old) => patchReleaseSeen(old, id, seen))
+      return { previous }
+    },
+    onError: (_error, _patch, context) => {
+      if (context?.previous) {
+        for (const [key, data] of context.previous) queryClient.setQueryData(key, data)
+      }
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['releases'] })
     },
   })

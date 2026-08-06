@@ -6,21 +6,51 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **13** → checklist manuale avversaria (`piano/fasi/fase-13-verifica-manuale-completa.md`), da eseguire sul mini PC
-- Fasi completate: 00, 01, 02, 03, 04, 05, 06, 07, 08, 09, 09b, 10, 11, **12 (CHIUSA 2026-08-05 — merge su main + tag v1.0.0)**
-- **Fase 14 (verifica di produzione, dopo la 13)**: `piano/fasi/fase-14-verifica-produzione.md` —
-  deploy e verifica completa sul mini PC (HTTPS tailnet senza dominio, scans vera libreria,
-  IP reali, Cloudflare quando ci sarà un dominio); chiusura dei punti "differiti" della fase 11
-- Branch attivo: `main` (v1.0.0 taggata)
-- Decisione di percorso (registrata): sviluppo su Mac + container multi-arch (build locale per
-  macchina, nessun registry); container eseguibile su più macchine; mini PC solo come macchina
-  di deploy (verifica in fase 14)
-- **v1.0.0 rilasciata** (fase 12, 2026-08-05): tutti i debiti chiusi o giustificati, audit dipendenze puliti
-  (0 high/critical), E2E §14 automatizzabili 33/33, README finale italiano, verifica in
-  `piano/verifica-e2e.md`, review finale: PRONTO (26/26 checklist, 0 findings aperti). Unico
-  finding di audit residuo: 2 moderate su `react-router` 6.x (non applicabili a SPA senza SSR e
-  link interni hardcoded; fix = major upgrade v7, pianificato v1.1)
-- Problemi aperti residui: nessuno bloccante — vedi elenco debiti fase 12
+- Fase corrente: **12b (CHIUSA 2026-08-06)** — correzioni richieste dall'utente prima della fase 13 — branch `fase-12b-correzioni-utente`
+- Fasi completate: 00-12, **12b** (2026-08-06, non ancora mergiata su main)
+- Prossima: **fase 13** (verifica manuale) ri-eseguita sulle aree toccate, poi fase 14
+- Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
+
+---
+
+## FASE 12b — Correzioni utente pre-fase 13: multi-provider, criteri tag, UX feed/artisti, errori, reset — 2026-08-06
+- Branch: `fase-12b-correzioni-utente` (da mergiare su main dopo la review)
+- Doc di fase: `piano/fasi/fase-12b-correzioni-utente.md`
+- Cosa è stato fatto (per richiesta utente, tutte implementate e verificate):
+  1. **Feed**: infinite scroll al posto di "Load more" (IntersectionObserver, vale anche per Artisti); release raggruppate per giorno con header; bottone "seen" (occhio) su ogni card con optimistic update; pulsante **Sync** in basso a destra → solo `POST /scans/releases`; "Back to feed" → `navigate(-1)` (ripristina lo scroll come il back del browser).
+  2. **Discovery multi-fonte**: MusicBrainz + Deezer + Apple Music/iTunes (catalogo ufficiale, keyless) + Discogs (opzionale, token) + SoundCloud (api-v2 con client_id estratto dalla pagina) + Beatport (EXPERIMENTAL, endpoint interno dietro Cloudflare — errori registrati in pagina errori). Dedup cross-provider su (titolo normalizzato + artista + data ±7gg) con unione URL. **Filtro "solo release ufficiali"** su MB (`discovery_filter_official`, default true): un release-group entra solo se almeno una release ha status `official` (fix "Yeezus (Andre's Rework)" — il case di MB è capitalizzato, gestito case-insensitive).
+  3. **Pagina release**: rimosso pulsante Favorite (e relativo test E2E); tracklist (lazy-fetch dal provider, cache in `release_tracks`, per MB via l'id della release ufficiale più vecchia — nuova colonna `mb_release_id`); info rilevanti (data, tipo, secondary types, source, discovered); **9 link buttons**: Spotify, YouTube Music, Deezer, Apple Music, Tidal, Qobuz, Discogs, Beatport, Google (Tidal/Qobuz solo search URL: nessuna API pubblica — deviazione documentata).
+  4. **Artisti**: add-artist con ricerca multi-provider e scelta (MB+Deezer+iTunes+Discogs); retry → modale con candidati di tutti i provider + suggerimento split + "track by URL" (o coppia provider/id dal picker); filtro "Unmatched only" (`matched=no`); `source_files` per gli unmatched (tabella `artist_files`); **DELETE /artists/{id}**; tabella ordinata per nome (server).
+  5. **Criteri tag**: artisti principali (TPE1/©ART/ARTIST), album artist (TPE2/aART/ALBUMARTIST), featuring dal titolo, e **remixer SOLO da tag** (REMIXER Vorbis, ruolo remixer TIPL/TMCL ID3; nuova source `tag_remix`; NIENTE estrazione dal titolo — decisione utente: Walden va tracciato solo se taggato, Monster Massive mai). Rimossi performer/composer e ©wrt MP4. Cleanup orfani al full scan (source deboli senza file, senza mbid, 0 release). MP4 senza contributi (nessun tag remixer standard).
+  6. **Fix PiKi / evidenziazione feed**: `matched_artists` ora include anche gli artisti tracciati per **name-match normalizzato** sull'artist credit (word-boundary: "Ye" non matcha "Yeat"; artisti ignored esclusi) — gli artisti tracciati vengono evidenziati anche senza link `release_artists`.
+  7. **Activity bar globale**: polling `/scans/status` ogni 3s mentre uno scan è in corso, con **progress {total, done, phase}** live (scan_locks esteso) e barra percentuale su tutte le pagine; spinner/fase anche nello stato running.
+  8. **Pagina errori** (`/errors` in navbar con badge conteggio): tabella `app_errors` con ts/source/level/message/stack/context; hook di registrazione in scan workers, matching, provider adapter, exception handler globale, errori client (`POST /api/v1/errors`); **scrubbing** (pattern token/URL-userinfo/stringhe lunghe + redazione valori sotto chiavi sensibili) e clip; pagina con stack espandibile, **Copy JSON / Download .json / Clear all**.
+  9. **Reset library** (Settings → Danger zone, doppia conferma, 409 se uno scan è in corso): svuota artisti, release, stati, tracklist, seen_recordings, scan_files, artist_files + cancella le cover da disco; settings/sessioni conservate.
+  10. **Settings**: campo Discogs token (write-only, `discogs_token_set`), toggle "Only official releases".
+- **Bug di concorrenza trovati e fixati (importanti)**:
+  - **"database is locked" durante gli scan con MB lento/flaky**: transazioni di scrittura tenute aperte durante chiamate di rete in `match_artist` (dopo ogni child upsert) e in `_level1_artist`/`_level2_artist`/`_enrich_release` (commit per candidato / subito dopo la cover). Verificato live: gli scan ora non bloccano più le altre richieste (prima: 500 a catena su /scans/status, /errors, /auth/me).
+  - **`await error_service.record_error(...)` su funzione sincrona** in tutti i provider → TypeError che abortiva l'intero discovery run quando MB falliva (MBError → record_error → await None). Rimossi gli `await`.
+- Deviazioni dalle specifiche (approvate dall'utente, registrate qui):
+  - Contributi limitati ai remixer, solo da tag strutturati (nessuna estrazione dal titolo).
+  - Tidal/Qobuz solo come link di ricerca (nessuna API pubblica); YouTube Music mai fonte discovery (nessuna API per filtrare "ufficiali"); Discogs/Beatport come fonti opzionali/experimental.
+  - iTunes mappa i tipi con euristica trackCount ≤ 4 → single (iTunes etichetta tutto "Album").
+  - `discovery_filter_official` applicato ai NUOVI release-group MB; i release già in DB (es. "Yeezus (Andre's Rework)" già presente) restano finché non vengono nascosti/eliminati o la libreria viene resettata.
+- Test: backend **305 passed** (279 → 305; nuovi `tests/test_phase12b.py` 26 test: parse_track_url/SSRF, search multi-provider, add with provider, link by URL e by pair, delete cascade, reset library + 409, errors API + scrubbing, name-match PiKi/ignored/word-boundary, tracklist lazy+cache, matched filter+source_files, rematch candidates+split, progress, discogs write-only, official filter off), ruff check+format OK; frontend `tsc --noEmit` + build OK.
+- E2E: **e2e:12b 23/23 PASS** (nuovo scenario); regressioni: e2e:06 23/23, e2e:07 21/21, e2e:08 34/34 (aggiornato: infinite scroll, 9 link, no Favorite), e2e:09 43/43 (aggiornato: add-artist multi-provider, retry modal), e2e:11 34/34, e2e:12 14/14 (aggiornato: goto domcontentloaded per l'activity bar). `e2e/harness.js`: timeout seed 5→15 min (MB flaky).
+- Audit dipendenze: `pip-audit -r backend/requirements.txt` → **0 findings**; `npm audit --omit=dev` → 2 moderate su react-router (stesse già giustificate in fase 12: SPA senza SSR, link interni; major v7 pianificata v1.1).
+- Sicurezza (checklist WS7): no SSRF (`/artists/{id}/link` parsa l'URL, mai fetch; allowlist host in `parse_track_url`, testati anche host malevoli); errors scrubbed (test con token/password/URL-userinfo → ***); Discogs token write-only (GET /settings mai lo restituisce); reset auth+CSRF middleware globali + 409 con scan in corso; CSP/header invariati (verificati in e2e:11 e negli scenari); log senza segreti.
+- Problemi noti / debito tecnico residui:
+  - Beatport experimental: l'endpoint è dietro challenge Cloudflare (verificato), gli errori finiscono nella pagina errori; la risoluzione diretta Beatport/Discogs/Tidal/Qobuz nelle cover/link è best-effort.
+  - `rgid` nullable: le cover non-MB sono servite da `/api/v1/covers/release/{id}` (nuova route); `cover_key` nel payload.
+  - La migrazione `b1a2c3d4e5f6` modifica colonne su DB esistenti (rgid nullable, backfill provider_id=rgid) — applicata automaticamente al boot.
+- Istruzioni verifica locale:
+  ```bash
+  cd backend && .venv/bin/python -m pytest -q && .venv/bin/ruff check . && .venv/bin/ruff format --check .
+  cd frontend && npx tsc --noEmit && npm run build
+  cd e2e && BASE=http://127.0.0.1:8080 ADMIN_PASS='password-lunga-12' npm run e2e:12b   # e e2e:08 / e2e:09 / e2e:12 per regressione
+  pip-audit -r backend/requirements.txt && npm audit --omit=dev --prefix frontend
+  ```
+- Prossimo step: review AVANZATO obbligatoria (prompt §5 della doc di fase), poi merge su main e ri-esecuzione parziale della fase 13 sulle aree toccate.
 
 ---
 

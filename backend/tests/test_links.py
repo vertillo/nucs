@@ -7,9 +7,19 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from app.services.links import build_search_links
 
 
-def test_all_four_urls_present_and_section9_conformant():
+def test_all_urls_present_and_section9_conformant():
     links = build_search_links("Beyoncé", "Renaissance", "album")
-    assert set(links) == {"spotify_search", "ytm", "deezer_search", "google"}
+    assert set(links) == {
+        "spotify_search",
+        "ytm",
+        "deezer_search",
+        "apple_music",
+        "tidal",
+        "qobuz",
+        "discogs",
+        "beatport",
+        "google",
+    }
     # Spotify: path-based search URL.
     assert links["spotify_search"].startswith("https://open.spotify.com/search/")
     # YouTube Music: query parameter.
@@ -18,6 +28,12 @@ def test_all_four_urls_present_and_section9_conformant():
     assert links["deezer_search"].startswith("https://www.deezer.com/search/")
     # Google: query parameter, always present.
     assert links["google"].startswith("https://www.google.com/search?q=")
+    # Phase 12b: search URLs for the services without a public API.
+    assert links["apple_music"].startswith("https://music.apple.com/search?term=")
+    assert links["tidal"].startswith("https://tidal.com/search?q=")
+    assert links["qobuz"].startswith("https://www.qobuz.com/us-en/search?q=")
+    assert links["discogs"].startswith("https://www.discogs.com/search/")
+    assert links["beatport"].startswith("https://www.beatport.com/search?q=")
 
 
 def test_query_contains_artist_and_title():

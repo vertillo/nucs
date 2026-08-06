@@ -17,10 +17,32 @@ class PasswordChangeRequest(BaseModel):
 
 class ArtistCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    provider: str | None = Field(default=None, max_length=20)
+    provider_id: str | None = Field(default=None, max_length=200)
+    external_url: str | None = Field(default=None, max_length=500)
+
+
+class ArtistLink(BaseModel):
+    """Track-by-URL payload (phase 12b); only parsed, never fetched server-side.
+
+    Either ``url`` (parsed into provider + id) or the explicit
+    ``provider``/``provider_id`` pair from the candidate picker.
+    """
+
+    url: str | None = Field(default=None, max_length=500)
+    provider: str | None = Field(default=None, max_length=20)
+    provider_id: str | None = Field(default=None, max_length=200)
 
 
 class ArtistPatch(BaseModel):
     ignored: int = Field(ge=0, le=1)
+
+
+class ErrorReport(BaseModel):
+    """Client-reported error (phase 12b); scrubbed before persistence."""
+
+    message: str = Field(min_length=1, max_length=2000)
+    context: str | None = Field(default=None, max_length=2000)
 
 
 class ReleaseStatePatch(BaseModel):
