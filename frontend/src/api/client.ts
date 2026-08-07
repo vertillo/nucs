@@ -25,15 +25,32 @@ function detailOf(body: unknown, fallback: string): string {
   return fallback
 }
 
+/** Abort any request that hangs past this (offline/black-hole networks):
+ *  the UI must never be stuck on "Saving…" forever (phase 13b finding 13B-03). */
+const FETCH_TIMEOUT_MS = 30000
+
 export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Requested-With': 'XMLHttpRequest',
-    },
-    ...options,
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetch(path, {
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      signal: controller.signal,
+      ...options,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError(0, 'The request timed out.')
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (response.status === 401) {
     window.location.assign('/login')

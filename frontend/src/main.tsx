@@ -15,6 +15,13 @@ const queryClient = new QueryClient({
       retry: false,
       refetchOnWindowFocus: false,
     },
+    // Phase 13b finding 13B-03: v5 pauses mutations while navigator.onLine is
+    // false (networkMode "online"), leaving the UI stuck on "Saving…" with no
+    // error. Mutations must always attempt the request so the fetch failure
+    // (or the apiFetch timeout) surfaces as an inline error.
+    mutations: {
+      networkMode: 'always',
+    },
   },
 })
 
