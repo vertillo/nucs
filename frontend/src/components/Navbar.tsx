@@ -77,11 +77,19 @@ function BugIcon() {
   )
 }
 
+function LogoutIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4 sm:hidden">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12H3m0 0 4-4m-4 4 4 4M10 4h8a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-8" />
+    </svg>
+  )
+}
+
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   const base =
-    'flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+    'flex items-center gap-2 rounded-full px-2.5 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent sm:px-3'
   return isActive
-    ? `${base} text-accent`
+    ? `${base} text-accentText dark:text-accent`
     : `${base} text-light-textDim hover:text-light-text dark:text-dark-textDim dark:hover:text-dark-text`
 }
 
@@ -161,9 +169,12 @@ export default function Navbar({ username, theme }: NavbarProps) {
             type="button"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
-            className="rounded-full border border-light-border px-3 py-1.5 text-sm font-medium text-light-text transition-colors hover:bg-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:border-dark-border dark:text-dark-text dark:hover:bg-dark-bg"
+            aria-label="Log out"
+            title="Log out"
+            className="inline-flex items-center gap-1.5 rounded-full border border-light-border px-3 py-1.5 text-sm font-medium text-light-text transition-colors hover:bg-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:border-dark-border dark:text-dark-text dark:hover:bg-dark-bg"
           >
-            Log out
+            <LogoutIcon />
+            <span className="hidden sm:inline">Log out</span>
           </button>
         </div>
       </nav>

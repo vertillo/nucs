@@ -44,8 +44,8 @@ function NoteIcon({ className = 'h-24 w-24' }: { className?: string }) {
 
 function DetailSkeleton() {
   return (
-    <div className="grid gap-8 md:grid-cols-[384px,1fr]">
-      <div className="aspect-square max-w-[384px] animate-pulse rounded-xl bg-light-surface2 dark:bg-dark-surface2" />
+    <div className="grid gap-8 md:grid-cols-[384px,minmax(0,1fr)]">
+      <div className="aspect-square min-w-0 max-w-[384px] animate-pulse rounded-xl bg-light-surface2 dark:bg-dark-surface2" />
       <div className="space-y-3">
         <div className="h-8 w-2/3 animate-pulse rounded bg-light-surface2 dark:bg-dark-surface2" />
         <div className="h-4 w-1/3 animate-pulse rounded bg-light-surface2 dark:bg-dark-surface2" />
@@ -165,9 +165,9 @@ export default function ReleaseDetail() {
         ← Back to feed
       </button>
 
-      <div className="mt-6 grid gap-8 md:grid-cols-[384px,1fr]">
+      <div className="mt-6 grid gap-8 md:grid-cols-[384px,minmax(0,1fr)]">
         {showPlaceholder ? (
-          <div className="flex aspect-square w-full max-w-[384px] items-center justify-center rounded-xl bg-light-surface2 text-light-textDim dark:bg-dark-surface2 dark:text-dark-textDim">
+          <div className="flex aspect-square min-w-0 w-full max-w-[384px] items-center justify-center rounded-xl bg-light-surface2 text-light-textDim dark:bg-dark-surface2 dark:text-dark-textDim">
             <NoteIcon />
           </div>
         ) : (
@@ -179,11 +179,11 @@ export default function ReleaseDetail() {
             }
             alt={`Cover of ${release.title}`}
             onError={() => setCoverBroken(true)}
-            className="aspect-square w-full max-w-[384px] rounded-xl object-cover"
+            className="aspect-square min-w-0 w-full max-w-[384px] rounded-xl object-cover"
           />
         )}
 
-        <div>
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             {release.hidden ? (
               <span className="rounded-full bg-danger px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-light-bg">
@@ -225,7 +225,7 @@ export default function ReleaseDetail() {
               <ul className="mt-2 space-y-1">
                 {release.matched_artists.map((artist) => (
                   <li key={artist.id} className="text-sm">
-                    <span className="font-medium text-accent">{artist.name}</span>
+                    <span className="font-medium text-accentText dark:text-accent">{artist.name}</span>
                     <span className="text-light-textDim dark:text-dark-textDim"> — {ROLE_LABEL[artist.role]}</span>
                   </li>
                 ))}
