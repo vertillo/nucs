@@ -6,15 +6,15 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **12b (CHIUSA 2026-08-06)** — correzioni richieste dall'utente prima della fase 13 — branch `fase-12b-correzioni-utente`
-- Fasi completate: 00-12, **12b** (2026-08-06, non ancora mergiata su main)
-- Prossima: **fase 13** (verifica manuale) ri-eseguita sulle aree toccate, poi fase 14
+- Fase corrente: **13 (in corso)** — verifica manuale delle aree toccate da 12b
+- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`)
+- Prossima: **fase 14** (produzione) dopo la 13
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
 
 ---
 
 ## FASE 12b — Correzioni utente pre-fase 13: multi-provider, criteri tag, UX feed/artisti, errori, reset — 2026-08-06
-- Branch: `fase-12b-correzioni-utente` (da mergiare su main dopo la review)
+- Branch: `fase-12b-correzioni-utente` — **MERGIATO su main** `c80fd2d` (2026-08-07), dopo review AVANZATO e fix (vedi sotto)
 - Doc di fase: `piano/fasi/fase-12b-correzioni-utente.md`
 - Cosa è stato fatto (per richiesta utente, tutte implementate e verificate):
   1. **Feed**: infinite scroll al posto di "Load more" (IntersectionObserver, vale anche per Artisti); release raggruppate per giorno con header; bottone "seen" (occhio) su ogni card con optimistic update; pulsante **Sync** in basso a destra → solo `POST /scans/releases`; "Back to feed" → `navigate(-1)` (ripristina lo scroll come il back del browser).
@@ -58,7 +58,7 @@
   cd e2e && BASE=http://127.0.0.1:8080 ADMIN_PASS='password-lunga-12' npm run e2e:12b   # e e2e:08 / e2e:09 / e2e:12 per regressione
   pip-audit -r backend/requirements.txt && npm audit --omit=dev --prefix frontend
   ```
-- Prossimo step: review AVANZATO obbligatoria (prompt §5 della doc di fase), poi merge su main e ri-esecuzione parziale della fase 13 sulle aree toccate.
+- Prossimo step: ri-eseguire la **fase 13** (verifica manuale) sulle aree toccate da 12b (feed/artisti/release/impostazioni/reset), poi fase 14 (produzione: boot container con sqlite 3.46 verificato, tunnel Cloudflare/Tailscale).
 
 ---
 
