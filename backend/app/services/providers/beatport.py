@@ -24,6 +24,7 @@ from app.services.providers.base import (
     PROVIDER_BEATPORT,
     Provider,
     ReleaseCandidate,
+    retry_policy,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,15 +65,20 @@ async def _get_client() -> httpx.AsyncClient:
     return _http
 
 
+@retry_policy
 async def _get_json(path: str, params: dict) -> dict | None:
+    """One rate-limited GET; retried on 429/5xx/transport errors.
+
+    Non-retryable statuses (4xx except 429) return None so the caller records
+    the failure; retryable ones raise and are handled by the retry policy.
+    """
     await _rate_limit()
-    try:
-        response = await (await _get_client()).get(path, params=params)
-        if response.status_code != 200:
-            return None
+    response = await (await _get_client()).get(path, params=params)
+    if response.status_code == 200:
         return response.json()
-    except httpx.HTTPError:
-        return None
+    if response.status_code == 429 or response.status_code >= 500:
+        response.raise_for_status()
+    return None
 
 
 def _map_type(release_type: str | None, track_count: object) -> str:
@@ -96,7 +102,10 @@ class BeatportProvider(Provider):
         if not artist.provider_id:
             return []
         candidates: list[ReleaseCandidate] = []
-        data = await _get_json(f"catalog/artists/{artist.provider_id}/releases", {"per_page": 50})
+        try:
+            data = await _get_json(f"catalog/artists/{artist.provider_id}/releases", {"per_page": 50})
+        except httpx.HTTPError:
+            data = None
         if not data:
             error_service.record_error(
                 "beatport",

@@ -240,6 +240,13 @@ async function main() {
       const table = s?.querySelector('table')
       return table ? table.querySelectorAll('tbody tr').length : -1
     })
+    const baselineFirstRow = await page.evaluate(() => {
+      const s = [...document.querySelectorAll('section')].find(
+        (sec) => sec.querySelector('h2')?.textContent.trim() === 'Scans',
+      )
+      const table = s?.querySelector('table')
+      return table && table.querySelector('tbody tr') ? table.querySelector('tbody tr').textContent : ''
+    })
     h.check('recent scans table populated from seed', baselineRuns >= 2, `rows=${baselineRuns}`)
 
     await clickButtonInSection(page, 'Scans', 'Scan library now')
@@ -253,16 +260,20 @@ async function main() {
     h.check('scan button disabled while running', true)
     await page.waitForFunction(() => !!document.querySelector('.animate-spin'), { timeout: 20000 })
     h.check('spinner shown while running', true)
+    // The history is capped at the latest 10 runs, so on a busy test DB the
+    // row count may never grow: instead wait for the newest row to change.
     await page.waitForFunction(
-      (n) => {
+      (previous) => {
         const s = [...document.querySelectorAll('section')].find(
           (sec) => sec.querySelector('h2')?.textContent.trim() === 'Scans',
         )
         const table = s?.querySelector('table')
-        return table ? table.querySelectorAll('tbody tr').length > n : false
+        if (!table || !table.querySelector('tbody tr')) return false
+        const first = table.querySelector('tbody tr').textContent
+        return first !== previous && first.length > 0
       },
       { timeout: 90000 },
-      baselineRuns,
+      baselineFirstRow,
     )
     const newestRun = await page.evaluate(() => {
       const s = [...document.querySelectorAll('section')].find(

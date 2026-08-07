@@ -27,6 +27,11 @@ _SCRUBBERS = [
     re.compile(r"://([^:/@\s]+):([^@\s]+)@", re.IGNORECASE),
     # Apprise tokens: tgram://12345:TOKEN/chat / ntfy://... etc.
     re.compile(r"(tgram|telegram|ntfy|slack|discord|matrix)://[^\s/]+/[^\s/]+", re.IGNORECASE),
+    # key=value credentials: token=..., password=..., api_key: ... (any secret-like name).
+    re.compile(
+        r"\b(?:token|password|passwd|secret|api_?key|authorization|auth)\s*[=:]\s*[^\s,;&'\"]{6,}",
+        re.IGNORECASE,
+    ),
     # Opaque long tokens (JWT-ish, hex/base64 API keys).
     re.compile(r"\b[A-Za-z0-9_\-.]{48,}\b"),
 ]
@@ -56,6 +61,15 @@ def _scrub_context(value: object) -> object:
         }
     if isinstance(value, (list, tuple)):
         return [_scrub_context(item) for item in value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{"):
+            try:
+                import json as _json
+
+                return _scrub_context(_json.loads(stripped))
+            except ValueError:
+                pass
     return value
 
 

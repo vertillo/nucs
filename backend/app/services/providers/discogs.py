@@ -24,6 +24,7 @@ from app.services.providers.base import (
     ArtistCandidate,
     Provider,
     ReleaseCandidate,
+    retry_policy,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,9 @@ async def _get_client() -> httpx.AsyncClient:
     return _http
 
 
+@retry_policy
 async def _get(token: str, path: str, params: dict) -> dict:
+    """One rate-limited Discogs GET; retried on 429/5xx/transport errors."""
     await _rate_limit()
     response = await (await _get_client()).get(path, params={**params, "token": token})
     response.raise_for_status()

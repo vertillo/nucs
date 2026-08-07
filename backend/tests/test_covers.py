@@ -404,6 +404,21 @@ def test_valid_rgid_regex():
     assert not covers.valid_rgid("056e4f3e-d505-4dad-8ec1-d04f521cbb5")
 
 
+async def test_release_cover_route_for_non_mb_releases(client, cover_env):
+    """Covers of non-MusicBrainz releases (rgid NULL) live on
+    /covers/release/{id} (phase 12b): the numeric cover_key must NOT hit the
+    rgid route, whose UUID regex rejects it with 400."""
+    release_id = 42
+    (_covers_dir() / f"{release_id}.jpg").write_bytes(_JPEG)
+    await _login(client)
+    response = await client.get(f"/api/v1/covers/release/{release_id}")
+    assert response.status_code == 200
+    assert response.content == _JPEG
+    assert response.headers["cache-control"] == "public, max-age=604800"
+    response = await client.get(f"/api/v1/covers/{release_id}")
+    assert response.status_code == 400
+
+
 # --- Real MB client path: CAA redirects are followed inside one rate-limited call (BASSA-6) ---
 
 

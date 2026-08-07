@@ -103,8 +103,8 @@ _BEATPORT_ARTIST_RE = re.compile(r"^/artist/[^/]+/(\d+)")
 def parse_track_url(raw: str) -> tuple[str, str] | None:
     """Parse a provider artist URL into (provider, provider_id); None when invalid.
 
-    ``raw`` may be a bare URL or an id-only string for providers whose id is a
-    plain number (deezer/discogs/beatport/itunes).
+    ``raw`` must be a full http(s) URL on a whitelisted host; id-only strings
+    are NOT accepted (use the explicit provider/provider_id pair instead).
     """
     raw = (raw or "").strip()
     if not raw:

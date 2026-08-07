@@ -46,6 +46,18 @@ _KNOWN_PROVIDERS = frozenset({"mb", "deezer", "itunes", "discogs", "soundcloud",
 _MBID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 
 
+def _valid_external_url(raw: str | None) -> str | None:
+    """Only http(s) URLs are stored as the external tracking URL (phase 12b
+    review fix). The URL is never fetched server-side; the check keeps
+    non-URL strings (e.g. javascript:) out of the API entirely."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        return text
+    raise HTTPException(status_code=422, detail="external_url must be an http(s) URL")
+
+
 def _releases_counts(db: Session, artist_ids: list[int]) -> dict[int, int]:
     """Number of releases per artist, one grouped query (no N+1)."""
     if not artist_ids:
@@ -207,7 +219,7 @@ async def add_artist(
             raise HTTPException(status_code=422, detail="provider_id too long")
         row.provider = payload.provider
         row.provider_id = provider_id
-        row.external_url = payload.external_url or None
+        row.external_url = _valid_external_url(payload.external_url)
         if payload.provider == "mb":
             if not _MBID_RE.fullmatch(provider_id):
                 raise HTTPException(status_code=422, detail="Invalid MusicBrainz artist id")
@@ -304,7 +316,7 @@ async def link_artist(
         if len(provider_id) > 200:
             raise HTTPException(status_code=422, detail="provider_id too long")
         provider, provider_id = payload.provider, provider_id
-        external_url = payload.url.strip() if payload.url else None
+        external_url = _valid_external_url(payload.url)
     else:
         if not payload.url:
             raise HTTPException(status_code=422, detail="Provide an URL or a provider pair")
@@ -318,7 +330,7 @@ async def link_artist(
                 ),
             )
         provider, provider_id = parsed
-        external_url = payload.url.strip()
+        external_url = _valid_external_url(payload.url)
     row.provider = provider
     row.provider_id = provider_id
     row.external_url = external_url

@@ -15,6 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import httpx
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
 PROVIDER_MB = "mb"
 PROVIDER_DEEZER = "deezer"
 PROVIDER_ITUNES = "itunes"
@@ -26,6 +29,24 @@ PROVIDER_BEATPORT = "beatport"
 # picker (in priority order). SoundCloud/Beatport are deliberately excluded:
 # their name search is unofficial and unreliable; they are tracked by URL only.
 NAME_SEARCH_PROVIDERS = (PROVIDER_MB, PROVIDER_DEEZER, PROVIDER_ITUNES, PROVIDER_DISCOGS)
+
+# Shared retry policy for the adapter HTTP clients (phase 12b review fix):
+# 429/5xx and transport errors are retried with exponential backoff, so a
+# transient provider hiccup never silently drops candidates.
+MAX_ATTEMPTS = 3
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return isinstance(exc, httpx.TransportError)
+
+
+retry_policy = retry(
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    stop=stop_after_attempt(MAX_ATTEMPTS),
+    retry=retry_if_exception(_is_retryable),
+)
 
 
 @dataclass

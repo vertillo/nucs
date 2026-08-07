@@ -29,9 +29,15 @@ function CardCover({ coverKey, hasCover }: { coverKey: string; hasCover: boolean
       </div>
     )
   }
+  // cover_key is the numeric release id for non-MusicBrainz releases (rgid is
+  // NULL there): those covers live on the /covers/release/{id} route, since
+  // /covers/{rgid} only accepts the strict MusicBrainz UUID shape.
+  const coverSrc = /^[0-9]+$/.test(coverKey)
+    ? `/api/v1/covers/release/${coverKey}`
+    : `/api/v1/covers/${coverKey}`
   return (
     <img
-      src={`/api/v1/covers/${coverKey}`}
+      src={coverSrc}
       alt=""
       loading="lazy"
       onError={() => setBroken(true)}

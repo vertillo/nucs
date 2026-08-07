@@ -194,6 +194,46 @@ async def test_link_artist_with_mb_url_sets_mbid(client):
     assert response.json()["mbid"] == "11111111-1111-1111-1111-111111111111"
 
 
+async def test_link_artist_rejects_non_http_external_url(client):
+    """The provider-pair flow accepts an optional url; anything that is not an
+    http(s) URL must be rejected (phase 12b review fix, BASSA-5)."""
+    await _login(client)
+    with get_session_factory()() as db:
+        row = Artist(name="Y", normalized_name="y", source="tag_artist")
+        db.add(row)
+        db.commit()
+        artist_id = row.id
+    response = await client.post(
+        f"/api/v1/artists/{artist_id}/link",
+        json={
+            "provider": "deezer",
+            "provider_id": "2785371",
+            "url": "javascript:alert(1)",
+        },
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 422
+    with get_session_factory()() as db:
+        row = db.get(Artist, artist_id)
+        assert row.provider == "manual"
+        assert row.provider_id is None
+
+
+async def test_add_artist_rejects_non_http_external_url(client):
+    await _login(client)
+    response = await client.post(
+        "/api/v1/artists",
+        json={
+            "name": "Some Artist",
+            "provider": "deezer",
+            "provider_id": "123",
+            "external_url": "data:text/html,<script>1</script>",
+        },
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 422
+
+
 # --- DELETE /artists/{id} ------------------------------------------------------
 
 
@@ -330,8 +370,13 @@ async def test_record_error_scrubs_secrets(app_env):
         (
             "token tgram://123456:ABC-DEF/chat failed; long key "
             "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            "; failed with password=hunter2secretpw"
         ),
-        context={"url": "https://user:pass@example.com/x", "secret": "super-secret-value-1234567890"},
+        context={
+            "url": "https://user:pass@example.com/x",
+            "secret": "super-secret-value-1234567890",
+            "client_context": '{"api_key": "AKIAIOSFODNN7EXAMPLE", "note": "ok note"}',
+        },
     )
     with get_session_factory()() as db:
         row = db.scalar(select(AppError).order_by(AppError.id.desc()))
@@ -340,6 +385,9 @@ async def test_record_error_scrubs_secrets(app_env):
     assert "tgram://" not in combined or "***" in combined
     assert "user:pass@" not in combined
     assert "super-secret-value" not in combined
+    assert "hunter2secretpw" not in combined
+    assert "AKIAIOSFODNN7EXAMPLE" not in combined
+    assert '"note": "ok note"' in combined
     assert "***" in combined
 
 

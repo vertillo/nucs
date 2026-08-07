@@ -31,6 +31,7 @@ from app.services.providers.base import (
     Provider,
     ReleaseCandidate,
     TrackCandidate,
+    retry_policy,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,8 +65,9 @@ async def _get_client() -> httpx.AsyncClient:
     return _http
 
 
+@retry_policy
 async def _get(path: str, params: dict) -> dict:
-    """One rate-limited request; raises on failure (caller handles)."""
+    """One rate-limited request; retried on 429/5xx/transport errors."""
     await _rate_limit()
     response = await (await _get_client()).get(path, params=params)
     response.raise_for_status()

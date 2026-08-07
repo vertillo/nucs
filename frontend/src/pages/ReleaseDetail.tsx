@@ -172,7 +172,11 @@ export default function ReleaseDetail() {
           </div>
         ) : (
           <img
-            src={`/api/v1/covers/${release.cover_key}`}
+            src={
+              /^[0-9]+$/.test(release.cover_key)
+                ? `/api/v1/covers/release/${release.cover_key}`
+                : `/api/v1/covers/${release.cover_key}`
+            }
             alt={`Cover of ${release.title}`}
             onError={() => setCoverBroken(true)}
             className="aspect-square w-full max-w-[384px] rounded-xl object-cover"

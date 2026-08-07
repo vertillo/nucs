@@ -120,9 +120,9 @@ export default function Navbar({ username, theme }: NavbarProps) {
 
   return (
     <header className="border-b border-light-border bg-light-surface dark:border-dark-border dark:bg-dark-surface">
-      <nav className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-3" aria-label="Main">
+      <nav className="mx-auto flex max-w-6xl items-center justify-between gap-1 px-3 py-3 sm:gap-2 sm:px-4" aria-label="Main">
         <span className="text-lg font-bold text-light-text dark:text-dark-text">nucs</span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5 sm:gap-1">
           <NavLink to="/" end className={navLinkClass} aria-label="Feed">
             <HomeIcon />
             <span className="hidden sm:inline">Feed</span>

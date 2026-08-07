@@ -189,6 +189,58 @@ async function main() {
     h.check('add-artist search shows provider candidates', candidates > 0, `candidates=${candidates}`)
     await page.keyboard.press('Escape')
 
+    // 4b. Non-MusicBrainz release covers (phase 12b review fix): link a Deezer
+    // artist, discover its releases and verify a rgid-less release renders its
+    // cover through /api/v1/covers/release/{id} (the numeric cover_key must not
+    // hit the /covers/{rgid} route, which rejects it with 400).
+    await page.goto(`${h.BASE}/artists`, { waitUntil: 'domcontentloaded' })
+    await h.wait(500)
+    const dzLinked = await page.evaluate(async () => {
+      const headers = { 'X-Requested-With': 'XMLHttpRequest' }
+      const r = await fetch('/api/v1/artists/search?q=' + encodeURIComponent('deadmau5'), {
+        credentials: 'same-origin', headers,
+      })
+      const body = await r.json()
+      const cand = (body.candidates || body.items || []).find((c) => c.provider === 'deezer')
+      if (!cand) return null
+      const a = await fetch('/api/v1/artists', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: cand.name, provider: 'deezer', provider_id: cand.provider_id }),
+      })
+      return a.status === 202 ? { id: (await a.json()).id, name: cand.name } : null
+    })
+    if (dzLinked) {
+      console.log(`seed: deadmau5 linked to Deezer (id=${dzLinked.id}), discovering releases ...`)
+      await h.apiPost(page, '/api/v1/scans/releases')
+      await h.waitForScanIdle(page, 600000)
+      const nonMb = await page.evaluate(async () => {
+        const r = await fetch('/api/v1/releases?q=' + encodeURIComponent('deadmau5') + '&page_size=50', {
+          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        })
+        const body = await r.json()
+        return (body.items || []).find((it) => /^[0-9]+$/.test(it.cover_key) && it.cover_path) || null
+      })
+      if (nonMb) {
+        await page.goto(`${h.BASE}/releases/${nonMb.id}`, { waitUntil: 'domcontentloaded' })
+        await page.waitForSelector('img[src^="/api/v1/covers/release/"]', { timeout: 15000 }).catch(() => {})
+        await h.wait(1500)
+        const coverOk = await page.evaluate(() => {
+          const img = document.querySelector('img[src^="/api/v1/covers/release/"]')
+          return img ? img.naturalWidth > 0 : false
+        })
+        h.check(
+          'non-MB release cover loads via /covers/release/{id}',
+          coverOk,
+          `release=${nonMb.id} cover_key=${nonMb.cover_key}`,
+        )
+      } else {
+        h.check('non-MB cover check (no recent rgid-less release with cover in the seed — ok)', true)
+      }
+    } else {
+      h.check('non-MB cover check (Deezer search unavailable — ok)', true)
+    }
+
     // 5. Errors page + navbar badge (report an error through the API first)
     await page.evaluate(async () => {
       await fetch('/api/v1/errors', {
@@ -216,7 +268,24 @@ async function main() {
     })
     h.check('navbar shows the errors badge', badge !== null, `badge=${badge}`)
 
-    // 6. Reset library (LAST: wipes the seed)
+    // 6. Reset library (LAST: wipes the seed). Wait for any still-loading
+    // cover images first: the reset deletes the cover files from disk, and an
+    // in-flight img request would then complete with 404 (a benign race).
+    await page.evaluate(
+      () =>
+        Promise.all(
+          [...document.images]
+            .filter((img) => !img.complete)
+            .map(
+              (img) =>
+                new Promise((resolve) => {
+                  img.addEventListener('load', resolve, { once: true })
+                  img.addEventListener('error', resolve, { once: true })
+                }),
+            ),
+        ),
+    )
+    await h.wait(500)
     const reset = await page.evaluate(async () => {
       const r = await fetch('/api/v1/library', {
         method: 'DELETE',

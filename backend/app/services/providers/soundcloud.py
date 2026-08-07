@@ -27,6 +27,7 @@ from app.services.providers.base import (
     PROVIDER_SOUNDCLOUD,
     Provider,
     ReleaseCandidate,
+    retry_policy,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,14 @@ async def _get_client() -> httpx.AsyncClient:
     return _http
 
 
+@retry_policy
 async def _get(url: str, params: dict | None = None) -> httpx.Response:
+    """One rate-limited GET; retried on 429/5xx/transport errors."""
     await _rate_limit()
-    return await (await _get_client()).get(url, params=params)
+    response = await (await _get_client()).get(url, params=params)
+    if response.status_code >= 400:
+        response.raise_for_status()
+    return response
 
 
 def _username_of(artist: Artist) -> str:
