@@ -6,9 +6,9 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **13 (in corso)** — verifica manuale delle aree toccate da 12b; **13b completata** (automazione del sottoinsieme deterministico — `e2e:13`, tabella in `e2e/artifacts/fase-13-results.md`, findings `FINDING-13B-*` sotto)
-- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, branch `fase-13b-automazione-verifica`)
-- Prossima: **fase 14** (produzione) dopo la 13/13b
+- Fase corrente: **13 (in corso)** — verifica manuale delle voci residue (F4, F7, F2/B8, G8-visuale, J1-J2, C11=N.A.) con la tabella 13b come evidenza; **13b COMPLETATA E MERGIATA** (2026-08-07, branch `fase-13b-automazione-verifica` → main, fast-forward `ba07cc6`)
+- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, `e2e:13` 96/96 + findings 13B-01..06 risolti, regressioni complete verdi)
+- Prossima: **fase 14** (produzione) dopo la 13 residua
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
 
 ---
