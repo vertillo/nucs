@@ -16,3 +16,12 @@
     @apply bg-light-bg text-light-text dark:bg-dark-bg dark:text-dark-text;
   }
 }
+
+/* Phase 13b finding 13B-06: honor prefers-reduced-motion (skeleton/spinner
+   keep their layout placeholders but stop animating). */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-spin {
+    animation: none;
+  }
+}
