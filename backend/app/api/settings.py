@@ -10,7 +10,7 @@ trail (keys only).
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -62,9 +62,11 @@ def _validate_date(key: str, value: object) -> str:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         _fail(key, "expected ISO date YYYY-MM-DD")
     try:
-        date.fromisoformat(text)
+        parsed = date.fromisoformat(text)
     except ValueError:
         _fail(key, "not a valid calendar date")
+    if parsed > datetime.now(UTC).date():
+        _fail(key, "must not be in the future")
     return text
 
 

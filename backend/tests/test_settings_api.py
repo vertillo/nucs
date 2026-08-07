@@ -4,6 +4,7 @@ per-key validation and write-only secrets."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -114,6 +115,18 @@ async def test_settings_put_invalid_date_rejected(client):
             "/api/v1/settings", json={"discovery_from_date": bad}, headers=API_HEADERS
         )
         assert response.status_code == 422, bad
+
+
+async def test_settings_put_future_date_rejected(client):
+    await _login(client)
+    response = await client.put(
+        "/api/v1/settings", json={"discovery_from_date": "2099-01-01"}, headers=API_HEADERS
+    )
+    assert response.status_code == 422
+    assert "future" in response.json()["detail"]
+    today = datetime.now(UTC).date().isoformat()
+    response = await client.put("/api/v1/settings", json={"discovery_from_date": today}, headers=API_HEADERS)
+    assert response.status_code == 200
 
 
 async def test_settings_put_invalid_time_rejected(client):
