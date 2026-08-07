@@ -6,9 +6,9 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **13 (in corso)** — verifica manuale delle aree toccate da 12b
+- Fase corrente: **13 (in corso)** — verifica manuale delle aree toccate da 12b; in preparazione **13b** (automazione del sottoinsieme deterministico, doc: `piano/fasi/fase-13b-automazione-verifica-manuale.md`, branch `fase-13b-automazione-verifica`)
 - Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`)
-- Prossima: **fase 14** (produzione) dopo la 13
+- Prossima: **fase 14** (produzione) dopo la 13/13b
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
 
 ---
