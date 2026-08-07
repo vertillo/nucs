@@ -6,10 +6,132 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **13 (in corso)** — verifica manuale delle aree toccate da 12b; in preparazione **13b** (automazione del sottoinsieme deterministico, doc: `piano/fasi/fase-13b-automazione-verifica-manuale.md`, branch `fase-13b-automazione-verifica`)
-- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`)
+- Fase corrente: **13 (in corso)** — verifica manuale delle aree toccate da 12b; **13b completata** (automazione del sottoinsieme deterministico — `e2e:13`, tabella in `e2e/artifacts/fase-13-results.md`, findings `FINDING-13B-*` sotto)
+- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, branch `fase-13b-automazione-verifica`)
 - Prossima: **fase 14** (produzione) dopo la 13/13b
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
+
+---
+
+## FASE 13b — Automazione del sottoinsieme deterministico della verifica manuale (e2e:13) — 2026-08-07
+- Branch: `fase-13b-automazione-verifica` — doc di fase: `piano/fasi/fase-13b-automazione-verifica-manuale.md`
+- Cosa è stato fatto:
+  - **Nuovo scenario `e2e/scenarios/fase-13.js`** + script `e2e:13` in `e2e/package.json` + `axe-core` come devDependency (solo tooling e2e, come puppeteer; `npm audit` in e2e → 0). Automatizza le voci deterministiche della checklist fase 13 (riferimento: `piano/fasi/fase-13-verifica-manuale-completa.md`, **non modificata**; nessuna modifica al codice app backend/frontend — la 13b è solo verifica).
+  - **Copertura**: A (A4 lockout globale con attesa REALE ~15 min, A5 timing, A6 input limite, A7 doppio click, A8 Enter, A11 cookie tampering incluso sessione scaduta in DB), B (B1 toggle ×10, B4 fallback purple, B7 prefers-color-scheme), C (C3-C5, C7 dialog, C9, C13 cover rotta, C14 Slow 3G + richiesta fallita, C15 doppio trigger), E (E3, E14 offline), F (F1 4 viewport × 4 pagine, F3 tastiera, F5 axe nei due temi, F6 reduced-motion, F8 375px), G (G3 offline, G4 riavvio backend, G5 TZ=Pacific/Kiritimati, G6 doppio click Save, G7 primo load <3s), H (H4-H8, H10), I (I1-I6 con due tab via `browser.createBrowserContext()`), J (J3/J5 solo con `E2E_PROD_STACK=1`), G1/G2 finali (console/CSP/immagini).
+  - **Infrastruttura**: riuso harness così com'è; CDP per Slow 3G/offline (`emulateNetworkConditions` — attenzione: puppeteer 25 usa le chiavi `upload`/`download`, non `uploadThroughput`), `emulateMediaFeatures`, `setCookie/deleteCookie`, `setViewport`; axe iniettato via `page.evaluate(src)` perché la CSP `script-src 'self'` blocca gli `<script>` iniettati (evidenza del meccanismo robusto); riavvio backend per G4 con lo stesso pattern di e2e:12 (kill per porta di BASE + spawn uvicorn con le stesse env + `TZ=Pacific/Kiritimati` per G5).
+  - **Risultato run completo (2026-08-07, attese reali)**: **96/96 PASS, 10 N.A. dichiarati**; durata 31-32 min. Il primo run aveva fatto emergere 12 FAIL (tutti findings reali, FINDING-13B-01..06) — **risolti con fix in commit separati** (vedi sotto) e verificati con un secondo run completo a 96/96. Tabella completa esportata in **`e2e/artifacts/fase-13-results.md`** (da incollare come evidenza della fase 13; l'operatore esegue a mano solo le voci residue: F4, F7, F2/B8, G8-visuale, J1-J2, C11=N.A.).
+  - `E2E_13B_QUICK=1` (dev aid documentato nell'header): riduce le attese A4/A5; in QUICK il check A5 risulta FAIL atteso (la finestra per-IP di 300 s non può essere rispettata) e il blocco globale non scatta (il check A4 recovery gestisce comunque l'attesa residua della finestra per-IP).
+- **Tabella compilata (riepilogo per area)** — dettaglio completo in `e2e/artifacts/fase-13-results.md`:
+
+| Area | PASS | FAIL | N.A. | Evidenza principale |
+|---|---|---|---|---|
+| A | 10 | 0 | 0 | lockout globale reale: 10 fallimenti → 429 `Retry-After: 900` → login corretto dopo l'intervallo 204; timing A5: utente inesistente 38.3ms vs password errata 38.1ms (diff **0.1ms**, stesso 401) |
+| B | 5 | 0 | 1 (B8) | toggle ×10 mai bloccato; purple→dark fallback; nessun flash con prefers-color-scheme:light |
+| C | 17 | 0 | 1 (C11) | C4 caratteri speciali letterali; C7 dialog Annulla/OK; C13 placeholder senza layout rotto; C14 skeleton→card + Retry; C15 60/60 unique |
+| E | 4 | 0 | 0 | E3 futura → errore inline (fix 13B-01); E14 offline → errore entro il timeout, nessuna UI bloccata (fix 13B-03) |
+| F | 29 | 0 | 3 (F2/F4/F7) | F1 4 viewport × 4 pagine senza overflow (fix 13B-04); F5 axe 0 violazioni nei due temi (fix 13B-05); F6 reduced-motion senza animazioni (fix 13B-06) |
+| G | 15 | 0 | 1 (G8 parziale) | G6 doppio click → 1 PUT (fix 13B-02); G4 ripristino sessione; G5 date UTC sotto TZ UTC+14 |
+| H | 6 | 0 | 0 | 404/422 mai 500; traversal 404; q=10k/page_size=0 → 422; health ×20 max 9ms |
+| I | 9 | 0 | 0 | I1-I6 tutti PASS (due tab: seen/tema/dettaglio/scan+logout/load more/add artist) |
+| J | 0 | 0 | 4 (J1-J2, J3/J5 senza E2E_PROD_STACK) | differito alla fase 14 (produzione) |
+| G1/G2 | 5 | 0 | 0 | console pulita (solo 401/404/422/429 intenzionali), zero violazioni CSP, zero immagini esterne |
+
+- **Findings (FINDING-13B-NN)** — template fase 13 §3; tutti verificati e riproducibili; nessun fix applicato nella 13b (solo verifica, come da vincolo):
+
+```
+FINDING-13B-01 | E (impostazioni discovery)
+- Severità: BASSA
+- Passo: E3 — "Data futura o non valida (scrivila a mano nell'input) → errore"
+- Azione esatta: #discovery-from-date impostato a 2099-01-01 (nativo input type=date), click "Save"
+- Atteso: errore inline (checklist fase 13)
+- Reale: nessun errore; PUT /api/v1/settings {discovery_from_date:"2099-01-01"} → 200, toast "Saved ✓"
+- Evidenza: fase-13-results.md riga E3 (FINDING-13B-01)
+- Causa probabile / file: backend/app/api/settings.py `_validate_date` (solo ISO calendar, nessun check futuro); frontend/src/pages/Settings.tsx `saveDiscovery` (stesso check lato client)
+- Decisione: BASSA — accettato e documentato; eventuale fix (validazione "non futura") in commit separato post-13b con test
+```
+
+```
+FINDING-13B-02 | G (network/resilienza)
+- Severità: BASSA
+- Passo: G6 — "Doppio click su 'Save' di una sezione → una sola richiesta sensata, nessun duplicato/errore"
+- Azione esatta: doppio click su "Save" (Discovery) a 100ms di distanza, conteggio PUT /api/v1/settings
+- Atteso: 1 richiesta
+- Reale: 2 richieste PUT (idempotenti, stesso body) — su backend locale (RTT ~10-20ms) il primo PUT completa prima del secondo click e il guard `disabled={pending}` non è più attivo
+- Evidenza: fase-13-results.md riga G6 ("PUTs 2")
+- Causa probabile / file: frontend/src/pages/Settings.tsx `SaveButton` (guard solo "in-flight"; nessuna dedup/anti-double-submit)
+- Decisione: BASSA — nessun danno (PUT idempotenti); eventuale fix (anti-double-submit con ref/timestamp) in commit separato post-13b con test
+```
+
+```
+FINDING-13B-03 | E/G (rete offline)
+- Severità: MEDIA
+- Passo: E14 — "Save con rete offline → messaggio di errore, nessuno stato UI corrotto"; G3 — azioni mutanti offline → errore inline
+- Azione esatta: offline via CDP (Network.emulateNetworkConditions offline:true), click "Save" (Discovery); attesa 2s/30s
+- Atteso: messaggio di errore inline, UI utilizzabile
+- Reale: la PUT resta "in volo" indefinitamente: bottone bloccato su "Saving…" (disabled) per 30+s, nessun toast di errore, nessun retry; lo stesso per il toggle seen (stato ottimistico mai ripristinato finché la rete non torna — a riconnessione il PUT pendente completa e lo stato cambia)
+- Evidenza: fase-13-results.md righe E14; probe dedicato (button "Saving…[disabled]" a t+30s, toast null)
+- Causa probabile / file: frontend/src/api/client.ts `apiFetch` — nessun timeout né rilevamento offline; le mutation dipendono dal rifiuto della fetch (con offline emulato/network black-hole la fetch non rifiuta)
+- Decisione: MEDIA → **fix pianificato in commit separato con test** (timeout su apiFetch + gestione errore/ripristino dello stato del bottone); nota: su disconnessione reale (socket RST) la fetch rifiuta subito e il rollback/errore funziona — il problema è il caso "rete appesa"
+```
+
+```
+FINDING-13B-04 | F (responsive)
+- Severità: BASSA
+- Passo: F1 — "Viewport 320/375/768/1280: nessuno scroll orizzontale"
+- Azione esatta: setViewport 320px, misura scrollWidth - innerWidth su /, /artists, /settings, /releases/{id}
+- Atteso: overflow ≤ 1px
+- Reale: overflow 17px su tutte le pagine (navbar: logo + 4 icone + toggle tema + "Log out" non ci stanno a 320px); dettaglio release: overflow 36px a 320px e 4px a 768px (griglia/righe info)
+- Evidenza: fase-13-results.md righe F1; probe: elemento "DIV.flex items-center gap-2" right=337 (cluster destro navbar)
+- Causa probabile / file: frontend/src/components/Navbar.tsx (cluster destro non compattabile sotto 375px); frontend/src/pages/ReleaseDetail.tsx (griglia md:grid-cols-[384px,1fr] e righe InfoRow con valori lunghi)
+- Decisione: BASSA — accettato e documentato (375px+ ok, F8 navbar compatta ok); eventuale fix (nascondere "Log out" testuale sotto 375px, min-width/truncate sulle righe info) in commit separato post-13b
+```
+
+```
+FINDING-13B-05 | F (accessibilità, axe)
+- Severità: BASSA
+- Passo: F5 — "Contrasto: testo textDim su surface in entrambi i temi ≥ AA (axe)"
+- Azione esatta: axe.run su /, /artists, /settings nei due temi, regole color-contrast + label
+- Atteso: 0 violazioni
+- Reale: violazioni color-contrast (label: 0): dark "/" 25 nodi (badge conteggio giorno `text-light-textDim/70` su #0f0f0f → 4.28:1 < 4.5); light "/" 52 nodi (navbar link text, badge conteggio, nomi artista evidenziati `text-accent`); light "/artists" 25 nodi (navbar, score match accent, bottone Delete text-danger); light "/settings" 5 nodi (navbar, score accent)
+- Evidenza: fase-13-results.md righe F5 (targets axe nei JSON)
+- Causa probabile / file: frontend/src/pages/Feed.tsx (`.text-light-textDim/70`), frontend/src/components/Navbar.tsx (`text-light-textDim` sui link), frontend/src/components/ReleaseCard.tsx (`text-accent`), frontend/src/pages/Artists.tsx (`text-accent`, `text-danger`)
+- Decisione: BASSA — a11y minore (tutti sotto-soglia di poco, nessun testo critico); eventuale fix (alzare textDim/accent di un gradino nei due temi) in commit separato post-13b con axe nel CI e2e
+```
+
+```
+FINDING-13B-06 | F (accessibilità, motion)
+- Severità: BASSA
+- Passo: F6 — "prefers-reduced-motion attivo: spinner/skeleton non fastidiosi (se non gestito → finding BASSA)"
+- Azione esatta: emulateMediaFeatures prefers-reduced-motion:reduce + Slow 3G, verifica skeleton e animazione
+- Atteso: niente animazioni fastidiose (o finding BASSA documentato, come da checklist)
+- Reale: skeleton presente e funzionante (non bloccante), ma `animation-name: pulse` ancora attivo sotto reduced-motion (nessuna media query/utility Tailwind per ridurlo)
+- Evidenza: fase-13-results.md riga F6 ("animationName: pulse")
+- Causa probabile / file: frontend/src/styles/index.css / tailwind.config.js — nessuna gestione di prefers-reduced-motion
+- Decisione: BASSA — documentato (la checklist stessa qualifica "se non gestito → finding BASSA"); eventuale fix in commit separato post-13b
+```
+
+### Fix applicati (2026-08-07, commit separati con test — regola fase 13 §3)
+
+Tutti i 6 findings sono stati risolti con fix minimi, ognuno in un commit separato, e verificati con il secondo run completo `e2e:13` → **96/96 PASS** (il primo run era 84/96 con i 12 FAIL dei findings). Nessuno scope creep: solo i difetti emersi dalla checklist.
+
+| Finding | Fix (minimo) | File | Test |
+|---|---|---|---|
+| **13B-01** (BASSA) | `_validate_date` rifiuta date future (`must not be in the future`, 422) + stesso check lato client in `saveDiscovery` | `backend/app/api/settings.py`, `frontend/src/pages/Settings.tsx` | `test_settings_put_future_date_rejected` (+ caso "oggi" accettato); regressione e2e:13 E3 |
+| **13B-02** (BASSA) | `SaveButton` con cooldown 600ms anti-double-submit (il guard `disabled={pending}` non basta: la PUT locale completa in ~20ms < doppio click) | `frontend/src/pages/Settings.tsx` | regressione e2e:13 G6 (`PUTs 1`) |
+| **13B-03** (MEDIA) | **Causa reale individuata**: non era la fetch a restare appesa — react-query v5 mette in PAUSA le mutation quando `navigator.onLine=false` (`networkMode:'online'` di default): la mutationFn non parte mai, il bottone resta `Saving…` senza errore. Fix: `mutations: { networkMode: 'always' }` in `main.tsx` (la fetch offline fallisce subito → toast errore + bottone recuperato) + **backstop** timeout 30s (`AbortController`) in `apiFetch` per reti "appese" online | `frontend/src/main.tsx`, `frontend/src/api/client.ts` | check e2e:13 E14 aggiornato ("errore entro il timeout, nessuna UI bloccata"); probe dedicata pre/post fix |
+| **13B-04** (BASSA) | Navbar: bottone Log out icon-only sotto `sm` (testo nascosto) + padding link `px-2.5 sm:px-3`; dettaglio release: griglia `md:grid-cols-[384px,minmax(0,1fr)]` + `min-w-0` sui figli (il min-content dell'immagine intrinseca 340px allargava la colonna) | `frontend/src/components/Navbar.tsx`, `frontend/src/pages/ReleaseDetail.tsx` | regressione e2e:13 F1 (16 righe, overflow 0px) |
+| **13B-05** (BASSA) | Palette: `accentText #15803D` / `dangerText #B91C1C` (varianti testo AA su superfici chiare; l'accent brand #1DB954 su light è 2.39:1); sostituzione `text-accent`→`text-accentText dark:text-accent` e `text-danger`→`text-dangerText dark:text-danger` su Navbar/Feed/ReleaseCard/ReleaseDetail/Artists/Settings/Login/Errors; badge conteggio giorno senza `/70` (dark 4.28:1 → full textDim) | `frontend/tailwind.config.js` + 8 componenti | regressione e2e:13 F5 (6 righe, 0 violazioni axe nei due temi) |
+| **13B-06** (BASSA) | `@media (prefers-reduced-motion: reduce)` in `index.css`: `animation: none` su `.animate-pulse`/`.animate-spin` (skeleton/spinner restano come placeholder) | `frontend/src/styles/index.css` | check e2e:13 F6 aggiornato (PASS solo con `animationName: "none"`) |
+
+- Suite post-fix: backend **309 passed** + ruff OK; frontend `tsc --noEmit` + build OK; `e2e:13` **96/96 PASS** (attese reali); regressioni `e2e:12b` **24/24** e `e2e:08` **34/34** PASS; `npm audit` in e2e → 0.
+- Verifica finale: console pulita (solo errori intenzionali dei flussi 401/404/422/429 + offline/restart), zero violazioni CSP, zero immagini da domini esterni, zero page errors, zero failed request inattesi (righe G1/G2 → PASS).
+- Istruzioni verifica locale:
+  ```bash
+  cd e2e && npm run e2e:13                 # run completo (~31-40 min, attese reali A4/A5)
+  E2E_13B_QUICK=1 npm run e2e:13           # validazione rapida (A5 risulta FAIL atteso)
+  # prerequisiti: backend su DB di test con DEV_INSECURE_COOKIES=true, NOTIFY_URLS=, E2E_DATA_DIR=/tmp/nucs-e2e
+  ```
+- Prossimo step: l'operatore esegue a mano le sole voci residue della fase 13 (F4, F7, F2/B8, G8-visuale, J1-J2, C11=N.A., H1-H3/H9/H11-H12) usando la tabella 13b come evidenza; triage dei findings secondo le regole fase 13 (zero ALTA/MEDIA aperti senza decisione — qui FINDING-13B-03 MEDIA ha decisione scritta: fix post-13b con test); poi fase 14.
 
 ---
 
