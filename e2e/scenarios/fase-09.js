@@ -113,19 +113,20 @@ async function main() {
       firstRow.slice(0, 80),
     )
 
-    // Search filters (debounce) — "avicii" exists in the test library
-    await setInput(page, 'input[aria-label="Search artist"]', 'avicii')
+    // Search filters (debounce) — "vasco" (Vasco Rossi, s.m4a) exists in the
+    // test library (the old "avicii" term matches no tag of the current seed)
+    await setInput(page, 'input[aria-label="Search artist"]', 'vasco')
     await page.waitForFunction(
       () => {
         const rows = [...document.querySelectorAll('table tbody tr')]
-        return rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('avicii'))
+        return rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('vasco'))
       },
       { timeout: 15000 },
     )
     const searchTexts = await page.evaluate(() =>
       [...document.querySelectorAll('table tbody tr')].map((r) => r.textContent.toLowerCase()),
     )
-    h.check('search "avicii" filters the list (debounce)', searchTexts.length > 0, `rows=${searchTexts.length}`)
+    h.check('search "vasco" filters the list (debounce)', searchTexts.length > 0, `rows=${searchTexts.length}`)
     await setInput(page, 'input[aria-label="Search artist"]', '')
     await page.waitForFunction(() => document.querySelectorAll('table tbody tr').length > 1, {
       timeout: 15000,
