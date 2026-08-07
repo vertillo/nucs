@@ -177,6 +177,9 @@ async function main() {
     const htmlDark = () => page.evaluate(() => document.documentElement.classList.contains('dark'))
     const bodyBg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor)
     await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
+    // the SPA mounts asynchronously (bundle + /me): click() does not wait for
+    // the element, so wait explicitly (14.6 was flaky right after domcontentloaded)
+    await page.waitForSelector(toggle, { timeout: 20000 })
     await page.click(toggle)
     await h.wait(2000)
     await page.reload({ waitUntil: 'domcontentloaded' })
