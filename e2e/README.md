@@ -17,8 +17,9 @@ cd e2e
 npm ci                       # installa puppeteer (pinnato) + package-lock.json
 ```
 
-Niente altre dipendenze: `puppeteer` è l'unico package e NON tocca
-`frontend/package.json` (l'app resta senza dipendenze extra).
+Niente altre dipendenze: `puppeteer` e `axe-core` (accessibilità, usato solo da
+e2e:13) sono gli unici package e NON toccano `frontend/package.json` (l'app
+resta senza dipendenze extra).
 
 ## Avvio dell'app sotto test
 
@@ -46,6 +47,7 @@ npm run e2e:09   # fase 09: artisti + impostazioni (browser, seed lungo)
 npm run e2e:11   # fase 11: login+tema+logout+security headers (browser, container)
 npm run e2e:12   # fase 12: DoD §14 automatizzabili (brute force, seed+feed+dettaglio, tema, backup, persistenza)
 npm run e2e:12b  # fase 12b: feed per giorno/seen/sync, dettaglio senza Favorite con tracklist+9 link, artisti (filtro unmatched/retry/delete), add-artist multi-provider, pagina errori, reset library
+npm run e2e:13   # fase 13b: sottoinsieme deterministico della verifica manuale (fase 13) — A4 lockout reale, A5 timing, tema, feed/settings/artisti, viewport, axe, offline, API adversarial, due tab, riavvio backend
 ```
 
 Variabili d'ambiente:
@@ -81,6 +83,25 @@ in-memory e per la prova di persistenza §14.10) usando le stesse env; il seed
 richiede rete MusicBrainz (~4-6 min). Il primo `pkill` colpisce SOLO la porta
 di `BASE`: se il backend gira su un'altra porta/container, passare
 `BASE`/`E2E_DATA_DIR` coerenti o non usare il riavvio automatico.
+
+### e2e:13 (fase 13b — sottoinsieme automatizzato della verifica manuale)
+
+Stesse env di e2e:12b (backend su DB di test, `DEV_INSECURE_COOKIES=true`,
+`NOTIFY_URLS=`, `MUSIC_LIBRARY_PATH` reale). Il seed fa full library scan +
+discovery (rete MusicBrainz, ~4-6 min). Lo scenario:
+
+- esegue le voci deterministiche della checklist fase 13 (vedi header di
+  `scenarios/fase-13.js`) e alla fine **riavvia il backend da solo** (G4, kill
+  per porta di BASE + spawn uvicorn con le stesse env + `TZ=Pacific/Kiritimati`
+  per G5): se il backend gira su un'altra porta/container, passare
+  `BASE`/`E2E_DATA_DIR` coerenti.
+- A4 richiede l'**attesa reale del lockout globale** (~15 min): il run completo
+  dura ~35-50 min. `E2E_13B_QUICK=1` riduce le attese (solo validazione).
+- usa `E2E_DATA_DIR` (default `/tmp/nucs-e2e`) per: rename cover su disco (C13),
+  sessione scaduta in DB (A11), audit log/backup (J3/J5, solo con
+  `E2E_PROD_STACK=1`).
+- esporta la checklist compilata in `artifacts/fase-13-results.md` (tabella
+  `area | PASS/FAIL/N.A. | evidenza` da incollare in STATO.md).
 
 ## Struttura
 
