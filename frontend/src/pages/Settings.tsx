@@ -72,11 +72,19 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 function SaveButton({ pending, onClick }: { pending: boolean; onClick: () => void }) {
+  // anti-double-submit (phase 13b finding 13B-02): the mutation can complete
+  // faster than a human double click, so the disabled-while-pending guard alone
+  // would let a second request through; keep the button disarmed briefly.
+  const [cooldown, setCooldown] = useState(false)
   return (
     <button
       type="button"
-      disabled={pending}
-      onClick={onClick}
+      disabled={pending || cooldown}
+      onClick={() => {
+        setCooldown(true)
+        onClick()
+        setTimeout(() => setCooldown(false), 600)
+      }}
       className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-accentHover active:bg-accentActive focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
     >
       {pending ? 'Saving…' : 'Save'}
@@ -92,7 +100,7 @@ const labelClass = 'mb-1 block text-sm font-medium text-light-textDim dark:text-
 function FieldError({ message }: { message?: string | null }) {
   if (!message) return null
   return (
-    <p role="alert" className="mt-1 text-sm text-danger">
+    <p role="alert" className="mt-1 text-sm text-dangerText dark:text-danger">
       {message}
     </p>
   )
@@ -270,7 +278,14 @@ export default function Settings() {
 
   function saveDiscovery() {
     const errors: { from?: string; types?: string } = {}
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(discovery.from) || Number.isNaN(new Date(discovery.from).getTime())) {
+    const fromDate = new Date(discovery.from)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(discovery.from) ||
+      Number.isNaN(fromDate.getTime()) ||
+      fromDate > today
+    ) {
       errors.from = 'Enter a valid date (YYYY-MM-DD).'
     }
     const selected: string[] = []
@@ -601,9 +616,9 @@ export default function Settings() {
                           <td className="px-2 py-2 text-light-textDim dark:text-dark-textDim">{durationOf(run)}</td>
                           <td className="px-2 py-2">
                             {run.status === 'ok' ? (
-                              <span className="font-medium text-accent">ok</span>
+                              <span className="font-medium text-accentText dark:text-accent">ok</span>
                             ) : (
-                              <span className="font-medium text-danger">error</span>
+                              <span className="font-medium text-dangerText dark:text-danger">error</span>
                             )}
                           </td>
                           <td className="px-2 py-2 text-light-textDim dark:text-dark-textDim">{keyStatOf(run)}</td>
@@ -806,7 +821,7 @@ export default function Settings() {
               </div>
               <FieldError message={passwordErrors.submit} />
               {passwordUpdated && (
-                <p role="status" className="text-sm font-medium text-accent">
+                <p role="status" className="text-sm font-medium text-accentText dark:text-accent">
                   Password updated. All other sessions have been revoked.
                 </p>
               )}
@@ -833,7 +848,7 @@ export default function Settings() {
                       onError: (error) => show(error.message, 'error'),
                     })
                   }
-                  className="rounded-full border border-danger px-3 py-1.5 text-sm font-medium text-danger transition-colors hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
+                  className="rounded-full border border-danger px-3 py-1.5 text-sm font-medium text-dangerText transition-colors dark:text-danger hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
                 >
                   {revokeOthers.isPending ? 'Revoking…' : 'Revoke other sessions'}
                 </button>
@@ -915,7 +930,7 @@ export default function Settings() {
               type="button"
               disabled={resetLibrary.isPending}
               onClick={handleResetLibrary}
-              className="rounded-full border border-danger px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
+              className="rounded-full border border-danger px-4 py-2 text-sm font-semibold text-dangerText transition-colors dark:text-danger hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
             >
               {resetLibrary.isPending ? 'Resetting…' : 'Reset library'}
             </button>
