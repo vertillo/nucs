@@ -124,6 +124,9 @@ Tutti i 6 findings sono stati risolti con fix minimi, ognuno in un commit separa
 | **13B-06** (BASSA) | `@media (prefers-reduced-motion: reduce)` in `index.css`: `animation: none` su `.animate-pulse`/`.animate-spin` (skeleton/spinner restano come placeholder) | `frontend/src/styles/index.css` | check e2e:13 F6 aggiornato (PASS solo con `animationName: "none"`) |
 
 - Suite post-fix: backend **309 passed** + ruff OK; frontend `tsc --noEmit` + build OK; `e2e:13` **96/96 PASS** (attese reali); regressioni `e2e:12b` **24/24** e `e2e:08` **34/34** PASS; `npm audit` in e2e → 0.
+- **Regressioni complete (tutte verdi, 2026-08-07)**: `e2e:06` 23/23, `e2e:07` 21/21, `e2e:08` 34/34, `e2e:09` **43/43**, `e2e:12` **33/33**, `e2e:12b` 24/24, `e2e:13` 96/96. Due fix di robustezza agli scenari esistenti (commit separati, nessun cambiamento app):
+  - `test(e2e): fase-12 14.6` — `page.click(toggle)` subito dopo `goto(domcontentloaded)` non attende il mount SPA (bundle + /me) → "No element found" flaky; aggiunto `waitForSelector(toggle)` esplicito. Riprodotto 2/2 prima, 33/33 dopo.
+  - `test(e2e): fase-09` — il termine "avicii" non esiste nei tag della libreria attuale (`/tmp/nucs-lib-test`: Vasco Rossi/AC/DC/Beyoncé/Jay-Z/The Carters/Various Artists, verificato con mutagen) → search aggiornata a "vasco" (artista reale e stabile del seed). 43/43 dopo.
 - Verifica finale: console pulita (solo errori intenzionali dei flussi 401/404/422/429 + offline/restart), zero violazioni CSP, zero immagini da domini esterni, zero page errors, zero failed request inattesi (righe G1/G2 → PASS).
 - Istruzioni verifica locale:
   ```bash
