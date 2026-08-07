@@ -8,6 +8,10 @@ export default {
         accent: '#1DB954',
         accentHover: '#1ED760',
         accentActive: '#169C46',
+        // text-safe accent/danger for LIGHT surfaces (phase 13b finding 13B-05):
+        // the brand green/red pass AA as text only against dark backgrounds
+        accentText: '#15803D',
+        dangerText: '#B91C1C',
         danger: '#E5484D',
         yt: '#FF0000',
         deezer: '#A238FF',

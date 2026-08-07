@@ -309,7 +309,7 @@ export default function Artists() {
                     {artist.mbid ? (
                       <span className="inline-flex items-center gap-1.5">
                         <span aria-hidden="true">✅</span>
-                        <span className="font-semibold text-accent">{artist.mb_match_score ?? ''}</span>
+                        <span className="font-semibold text-accentText dark:text-accent">{artist.mb_match_score ?? ''}</span>
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-2">
@@ -319,7 +319,7 @@ export default function Artists() {
                           type="button"
                           disabled={false}
                           onClick={() => setRetryArtist({ id: artist.id, name: artist.name })}
-                          className="rounded-full px-3 py-1 text-sm font-medium text-accent transition-colors hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:hover:bg-dark-surface2"
+                          className="rounded-full px-3 py-1 text-sm font-medium text-accentText transition-colors dark:text-accent hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:hover:bg-dark-surface2"
                         >
                           Retry
                         </button>
@@ -352,7 +352,7 @@ export default function Artists() {
                       title="Delete artist"
                       onClick={() => handleDelete(artist.id, artist.name)}
                       disabled={deleteArtist.isPending}
-                      className="rounded-full px-2 py-1 text-sm font-medium text-danger transition-colors hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
+                      className="rounded-full px-2 py-1 text-sm font-medium text-dangerText transition-colors dark:text-danger hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
                     >
                       Delete
                     </button>
@@ -375,7 +375,7 @@ export default function Artists() {
                       {artist.mbid ? (
                         <span className="inline-flex items-center gap-1">
                           <span aria-hidden="true">✅</span>
-                          <span className="font-semibold text-accent">{artist.mb_match_score ?? ''}</span>
+                          <span className="font-semibold text-accentText dark:text-accent">{artist.mb_match_score ?? ''}</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5">
@@ -385,7 +385,7 @@ export default function Artists() {
                             type="button"
                             disabled={false}
                             onClick={() => setRetryArtist({ id: artist.id, name: artist.name })}
-                            className="rounded-full px-2.5 py-0.5 text-sm font-medium text-accent transition-colors hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:hover:bg-dark-surface2"
+                            className="rounded-full px-2.5 py-0.5 text-sm font-medium text-accentText transition-colors dark:text-accent hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:hover:bg-dark-surface2"
                           >
                             Retry
                           </button>
@@ -422,7 +422,7 @@ export default function Artists() {
                       type="button"
                       onClick={() => handleDelete(artist.id, artist.name)}
                       disabled={deleteArtist.isPending}
-                      className="rounded-full px-2 py-0.5 text-xs font-medium text-danger transition-colors hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
+                      className="rounded-full px-2 py-0.5 text-xs font-medium text-dangerText transition-colors dark:text-danger hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
                     >
                       Delete
                     </button>
@@ -524,7 +524,7 @@ function AddArtistModal({
               className={inputClass}
             />
             {addError && (
-              <p role="alert" className="mt-1 text-sm text-danger">
+              <p role="alert" className="mt-1 text-sm text-dangerText dark:text-danger">
                 {addError}
               </p>
             )}
@@ -718,7 +718,7 @@ function RetryModal({
               className={inputClass}
             />
             {linkError && (
-              <p role="alert" className="mt-1 text-sm text-danger">
+              <p role="alert" className="mt-1 text-sm text-dangerText dark:text-danger">
                 {linkError}
               </p>
             )}

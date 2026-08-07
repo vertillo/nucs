@@ -72,7 +72,7 @@ function ArtistLine({ primaryArtist, tracked }: { primaryArtist: string; tracked
     if (idx >= 0) {
       if (idx > 0) parts.push(rest.slice(0, idx))
       parts.push(
-        <span key={t.id} className="font-medium text-accent">
+        <span key={t.id} className="font-medium text-accentText dark:text-accent">
           {t.name}
         </span>,
       )

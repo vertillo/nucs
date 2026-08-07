@@ -104,7 +104,7 @@ export default function Errors() {
             type="button"
             onClick={handleClear}
             disabled={clear.isPending || total === 0}
-            className="rounded-full border border-danger px-4 py-1.5 text-sm font-medium text-danger transition-colors hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
+            className="rounded-full border border-danger px-4 py-1.5 text-sm font-medium text-dangerText transition-colors dark:text-danger hover:bg-danger hover:text-light-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50"
           >
             {clear.isPending ? 'Clearing…' : 'Clear all'}
           </button>

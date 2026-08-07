@@ -50,7 +50,7 @@ function EmptyState() {
         Try running a scan from{' '}
         <Link
           to="/settings"
-          className="text-accent underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="text-accentText underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-accent"
         >
           Settings
         </Link>
@@ -220,7 +220,7 @@ export default function Feed() {
             <section key={group.day} className="mt-6">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-light-textDim dark:text-dark-textDim">
                 {group.day}
-                <span className="ml-2 normal-case text-light-textDim/70 dark:text-dark-textDim/70">
+                <span className="ml-2 normal-case text-light-textDim dark:text-dark-textDim">
                   {group.items.length} release{group.items.length === 1 ? '' : 's'}
                 </span>
               </h2>
