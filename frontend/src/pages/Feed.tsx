@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll'
 import {
+  usePurgeOrphans,
   useReleases,
   useSeenAll,
   useSetReleaseSeen,
@@ -11,7 +12,9 @@ import {
   type ReleaseType,
 } from '../api/releases'
 import { useScanStatus, useStartScan } from '../api/settings'
+import { useTrackedArtistsCount } from '../api/artists'
 import ReleaseCard from '../components/ReleaseCard'
+import Toast, { useToast } from '../components/Toast'
 
 const TYPE_CHIPS: { value: ReleaseType | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -59,6 +62,34 @@ function EmptyState() {
   )
 }
 
+function NoArtistsState() {
+  return (
+    <div className="flex flex-col items-center gap-3 py-16 text-center">
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        className="h-12 w-12 text-light-textDim dark:text-dark-textDim"
+      >
+        <path strokeLinecap="round" d="M17 20h5v-2a4 4 0 0 0-3-3.87M9 20H4v-2a4 4 0 0 1 3-3.87m6-1.13a4 4 0 1 0-3-0M17 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" />
+      </svg>
+      <p className="text-lg font-semibold text-light-text dark:text-dark-text">No tracked artists</p>
+      <p className="text-sm text-light-textDim dark:text-dark-textDim">
+        Run a library scan from{' '}
+        <Link
+          to="/settings"
+          className="text-accentText underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-accent"
+        >
+          Settings
+        </Link>{' '}
+        first — the Sync button only checks tracked artists for new releases.
+      </p>
+    </div>
+  )
+}
+
 function SyncIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-5 w-5">
@@ -92,23 +123,52 @@ function groupByDay(items: ReleaseListItem[]): { day: string; items: ReleaseList
 }
 
 export default function Feed() {
-  const [type, setType] = useState<ReleaseType | 'all'>('all')
-  const [unseenOnly, setUnseenOnly] = useState(false)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const { toast, show } = useToast()
+  // Phase 15: filters live in the URL so they survive navigation and back/forward.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawType = searchParams.get('type')
+  const type: ReleaseType | 'all' = TYPE_CHIPS.some((chip) => chip.value === rawType)
+    ? (rawType as ReleaseType | 'all')
+    : 'all'
+  const unseenOnly = searchParams.get('unseen') === '1'
+  const q = searchParams.get('q') ?? ''
+  const [searchInput, setSearchInput] = useState(q)
+
+  useEffect(() => setSearchInput(q), [q])
 
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300)
+    const timer = setTimeout(() => {
+      // Functional updater: merge against the LATEST params so filter changes
+      // (type/unseen) made within the debounce window are never overwritten.
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        if (searchInput.trim()) next.set('q', searchInput.trim())
+        else next.delete('q')
+        return next
+      }, { replace: true })
+    }, 300)
     return () => clearTimeout(timer)
-  }, [search])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput])
 
-  const filters: ReleaseFilters = { type, unseenOnly, q: debouncedSearch.trim() }
+  function updateParam(key: string, value: string | null) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (value === null || value === '') next.delete(key)
+      else next.set(key, value)
+      return next
+    }, { replace: true })
+  }
+
+  const filters: ReleaseFilters = { type, unseenOnly, q }
   const { data, isPending, isError, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useReleases(filters)
   const seenAll = useSeenAll()
   const setSeen = useSetReleaseSeen()
   const startScan = useStartScan()
   const status = useScanStatus()
+  const purgeOrphans = usePurgeOrphans()
+  const trackedArtists = useTrackedArtistsCount()
 
   const items = data?.pages.flatMap((page) => page.items) ?? []
   const total = data?.pages[0]?.total ?? 0
@@ -129,6 +189,21 @@ export default function Feed() {
     setSeen.mutate({ id: release.id, seen: !release.seen })
   }
 
+  function handlePurgeOrphans() {
+    if (!window.confirm('Remove all releases that no longer have an artist (from deleted artists)?')) return
+    purgeOrphans.mutate(undefined, {
+      onSuccess: (res) =>
+        show(
+          res.removed === 0
+            ? 'No releases without artists'
+            : `Removed ${res.removed} release${res.removed === 1 ? '' : 's'} without artists`,
+        ),
+      onError: (error) => show(error.message, 'error'),
+    })
+  }
+
+  const noTrackedArtists = trackedArtists.data === 0
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-light-text dark:text-dark-text">New releases</h1>
@@ -140,7 +215,7 @@ export default function Feed() {
               key={value}
               type="button"
               aria-pressed={type === value}
-              onClick={() => setType(value)}
+              onClick={() => updateParam('type', value === 'all' ? null : value)}
               className={`rounded-full px-3 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                 type === value
                   ? 'bg-accent text-black'
@@ -159,7 +234,7 @@ export default function Feed() {
             role="switch"
             aria-checked={unseenOnly}
             aria-label="Unseen only"
-            onClick={() => setUnseenOnly((v) => !v)}
+            onClick={() => updateParam('unseen', unseenOnly ? null : '1')}
             className={`relative h-5 w-9 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
               unseenOnly ? 'bg-accent' : 'bg-light-border dark:bg-dark-border'
             }`}
@@ -174,8 +249,8 @@ export default function Feed() {
 
         <input
           type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           placeholder="Search…"
           aria-label="Search"
           className="min-w-0 flex-1 rounded-full border border-light-border bg-light-surface px-4 py-1.5 text-sm text-light-text outline-none focus:ring-2 focus:ring-accent dark:border-dark-border dark:bg-dark-surface dark:text-dark-text sm:max-w-[220px]"
@@ -188,6 +263,16 @@ export default function Feed() {
           className="rounded-full px-3 py-1.5 text-sm text-light-textDim transition-colors hover:text-light-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:text-dark-textDim dark:hover:text-dark-text"
         >
           Mark all as seen
+        </button>
+
+        <button
+          type="button"
+          onClick={handlePurgeOrphans}
+          disabled={purgeOrphans.isPending}
+          title="Remove releases that lost their artist (deleted from the artists page)"
+          className="rounded-full px-3 py-1.5 text-sm text-light-textDim transition-colors hover:text-dangerText focus:outline-none focus-visible:ring-2 focus-visible:ring-danger disabled:opacity-50 dark:text-dark-textDim dark:hover:text-danger"
+        >
+          {purgeOrphans.isPending ? 'Removing…' : 'Remove releases without artists'}
         </button>
       </div>
 
@@ -212,7 +297,9 @@ export default function Feed() {
         </div>
       )}
 
-      {!isPending && !isError && items.length === 0 && <EmptyState />}
+      {!isPending && !isError && noTrackedArtists && <NoArtistsState />}
+
+      {!isPending && !isError && !noTrackedArtists && items.length === 0 && <EmptyState />}
 
       {!isPending && !isError && items.length > 0 && (
         <>
@@ -247,6 +334,8 @@ export default function Feed() {
       )}
 
       <SyncButton busy={status.data?.running != null} startScan={startScan} />
+
+      <Toast toast={toast} />
     </div>
   )
 }

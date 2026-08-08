@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -26,6 +26,7 @@ from app.models import Session as DbSession
 from app.schemas import ReleaseStatePatch, SeenAllRequest
 from app.security import get_setting
 from app.services import errors as error_service
+from app.services.audit import EVENT_RELEASES_PURGED, log_event
 from app.services.dates import parse_mb_date
 from app.services.names import normalize_name
 from app.services.providers import fetch_tracks_for
@@ -371,3 +372,30 @@ async def mark_all_seen(
             state.seen_at = now
     db.commit()
     return {"updated": len(release_ids)}
+
+
+@router.post("/purge-orphans")
+async def purge_orphan_releases(
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+) -> dict:
+    """Delete releases that lost every artist (phase 15).
+
+    When an artist is deleted the releases keep their rows but lose the
+    release_artists link; this endpoint removes such orphans (states and
+    tracklists cascade). Returns the number of removed releases.
+    """
+    orphan_ids = db.scalars(
+        select(Release.id).where(
+            ~select(ReleaseArtist.release_id).where(ReleaseArtist.release_id == Release.id).exists()
+        )
+    ).all()
+    if not orphan_ids:
+        return {"removed": 0}
+    db.execute(delete(ReleaseTrack).where(ReleaseTrack.release_id.in_(orphan_ids)))
+    db.execute(delete(ReleaseState).where(ReleaseState.release_id.in_(orphan_ids)))
+    db.execute(delete(ReleaseArtist).where(ReleaseArtist.release_id.in_(orphan_ids)))
+    db.execute(delete(Release).where(Release.id.in_(orphan_ids)))
+    log_event(db, EVENT_RELEASES_PURGED, None, {"purge_orphan_releases": len(orphan_ids)})
+    db.commit()
+    return {"removed": len(orphan_ids)}

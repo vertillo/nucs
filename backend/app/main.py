@@ -6,7 +6,7 @@ import logging
 import sys
 from collections.abc import Iterable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from ipaddress import IPv4Network, IPv6Network
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -250,7 +250,9 @@ def seed_settings_if_empty() -> None:
         if exists is not None:
             return
         today = datetime.now(UTC).date()
-        defaults = _DEFAULT_SETTINGS | {"discovery_from_date": (today - timedelta(days=30)).isoformat()}
+        # Phase 15: the default discovery window covers the whole current year
+        # (recent releases like Ye's BULLY official run are found out of the box).
+        defaults = _DEFAULT_SETTINGS | {"discovery_from_date": today.replace(month=1, day=1).isoformat()}
         settings = get_settings()
         seeded_from_env: list[str] = []
         if settings.notify_urls:

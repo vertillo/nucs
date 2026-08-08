@@ -37,6 +37,11 @@ class Artist(Base):
     provider_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    @property
+    def is_matched(self) -> bool:
+        """Matched on MusicBrainz or linked to any provider (phase 15)."""
+        return self.mbid is not None or self.provider != "manual"
+
 
 class Release(Base):
     __tablename__ = "releases"

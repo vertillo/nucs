@@ -43,8 +43,8 @@ from app.services.covers import fetch_cover, save_cover_response
 from app.services.dates import parse_mb_date, release_in_range
 from app.services.links import build_search_links
 from app.services.musicbrainz import MBError, get_client
-from app.services.names import normalize_name
-from app.services.providers import PROVIDER_MB, get_provider
+from app.services.names import is_trivial_artist, normalize_name
+from app.services.providers import PROVIDER_DISCOGS, PROVIDER_MB, get_provider, providers_for_name_search
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,11 @@ _MAX_FEAT_RECORDINGS_PER_ARTIST = 2000
 _PIPELINE_CONCURRENCY = 2
 _DEDUP_DATE_WINDOW_DAYS = 7
 
-_DEFAULT_DISCOVERY_LOOKBACK_DAYS = 30
+# Phase 15: cross-provider discovery (artists tracked on MB only): the artist
+# name plus up to 2 non-trivial aliases are searched on the other providers so
+# versions that only exist there (e.g. Deezer-only "BULLY - DELUXE") surface.
+_MAX_CROSS_PROVIDER_QUERY_NAMES = 3
+
 _DEFAULT_RELEASE_TYPES = "album,single,ep"
 _ALLOWED_TYPES = frozenset({"album", "single", "ep", "other"})
 
@@ -79,7 +83,9 @@ def _discovery_from_date(db: Session) -> date:
         return date.fromisoformat(raw)
     except ValueError:
         logger.warning("invalid discovery_from_date %r, using default", raw)
-        return date.today() - timedelta(days=_DEFAULT_DISCOVERY_LOOKBACK_DAYS)
+        # Phase 15: the default window covers the whole current year, so recent
+        # releases (e.g. Ye's BULLY official run) are not missed out of the box.
+        return date.today().replace(month=1, day=1)
 
 
 def _allowed_types(db: Session) -> set[str]:
@@ -118,9 +124,14 @@ def _role_for(artist: Artist, credit_phrase: str) -> str:
     return ROLE_PRIMARY if name and credit.startswith(name) else ROLE_FEATURED
 
 
-def _find_existing_release(db: Session, candidate) -> Release | None:
+def _find_existing_release(db: Session, candidate, *, same_artist: Artist | None = None) -> Release | None:
     """Find an existing release for one candidate: by rgid, then by
-    (provider, provider_id), then by normalized title+artist+date window."""
+    (provider, provider_id), then by normalized title+artist within a date
+    window. When ``same_artist`` is given (cross-provider candidates, phase 15)
+    the dedup is by normalized TITLE only, among the releases linked to that
+    artist: the candidate is the same artist by construction and provider
+    artist credits may differ ("Ye" on MB vs "Kanye West" on Deezer), while
+    regional dates may be far apart."""
     if candidate.rgid:
         row = db.scalar(select(Release).where(Release.rgid == candidate.rgid))
         if row is not None:
@@ -134,8 +145,21 @@ def _find_existing_release(db: Session, candidate) -> Release | None:
         if row is not None:
             return row
     norm_title = normalize_name(candidate.title)
+    if not norm_title:
+        return None
+    if same_artist is not None:
+        rows = db.scalars(
+            select(Release)
+            .join(ReleaseArtist, ReleaseArtist.release_id == Release.id)
+            .where(ReleaseArtist.artist_id == same_artist.id)
+            .order_by(Release.id)
+        ).all()
+        for row in rows:
+            if normalize_name(row.title) == norm_title:
+                return row
+        return None
     norm_artist = normalize_name(candidate.primary_artist)
-    if not norm_title or not norm_artist:
+    if not norm_artist:
         return None
     parsed = parse_mb_date(candidate.first_release_date)
     if parsed is not None:
@@ -251,12 +275,16 @@ async def _process_candidate(
     role: str | None = None,
     new_keys: list[tuple[str, str]] | None = None,
     new_release_ids: list[int] | None = None,
+    same_artist_dedup: Artist | None = None,
 ) -> str | None:
     """Filter one release candidate (type/date/official) and upsert it.
 
     Returns the release date when accepted, else None. ``role`` overrides the
     credit-phrase heuristic (level 2 always featured). Newly created releases
     are appended to ``new_keys`` (provider identity) and ``new_release_ids``.
+    ``same_artist_dedup`` (phase 15) dedups cross-provider candidates by
+    normalized title within the tracked artist's releases (provider credits
+    and dates may differ).
     """
     title = candidate.title.strip()
     if not title:
@@ -266,25 +294,42 @@ async def _process_candidate(
     if not first_release_date:
         stats["skipped_no_date"] += 1
         return None
+
+    existing = _find_existing_release(db, candidate, same_artist=same_artist_dedup)
+    details = None
+    if existing is None and candidate.provider == PROVIDER_MB:
+        provider = get_provider(PROVIDER_MB)
+        official_filter = _official_filter_enabled(db)
+        in_range = release_in_range(first_release_date, discovery_from)
+        # Phase 15: a release group is accepted when an OFFICIAL release falls
+        # inside the window, even when the group's first-release-date is older
+        # (reissues, e.g. Ye's BULLY: withdrawn 2025 release, official 2026
+        # run). Only groups older than the window are rescued; future-dated
+        # groups are never turned into accepted releases.
+        is_reissue = not in_range and first_release_date < discovery_from.isoformat()
+        if official_filter or is_reissue:
+            details = await provider.release_group_details(candidate.rgid, _contact_email(db), stats=stats)
+        if details is not None:
+            if official_filter and not provider.has_official_release(details):
+                stats["skipped_not_official"] += 1
+                logger.info(
+                    "skipping release-group %s (no official release): %s",
+                    candidate.rgid,
+                    title,
+                )
+                return None
+            official_date = provider.earliest_official_release_date(details)
+            if official_date and is_reissue and release_in_range(official_date, discovery_from):
+                first_release_date = official_date
+                candidate.first_release_date = official_date
+        elif not in_range:
+            # Details failed and the group is outside the window: nothing to rescue.
+            return None
     if not release_in_range(first_release_date, discovery_from):
         return None
     if candidate.type not in allowed_types:
         stats["skipped_type"] += 1
         return None
-
-    existing = _find_existing_release(db, candidate)
-    details = None
-    if existing is None and candidate.provider == PROVIDER_MB and _official_filter_enabled(db):
-        provider = get_provider(PROVIDER_MB)
-        details = await provider.release_group_details(candidate.rgid, _contact_email(db), stats=stats)
-        if details is not None and not provider.has_official_release(details):
-            stats["skipped_not_official"] += 1
-            logger.info(
-                "skipping release-group %s (no official release): %s",
-                candidate.rgid,
-                title,
-            )
-            return None
 
     if existing is None:
         row, created = _create_release(db, candidate)
@@ -308,6 +353,88 @@ async def _process_candidate(
     effective_role = role if role is not None else _role_for(artist, candidate.primary_artist)
     _add_release_artist(db, row.id, artist.id, effective_role)
     return first_release_date
+
+
+async def _cross_provider_query_names(db: Session, artist: Artist) -> list[str]:
+    """Search names for the cross-provider step: the artist name plus up to 2
+    non-trivial MB aliases (phase 15). Aliases let "Ye" reach Deezer's
+    "Kanye West" (id 230) and find the Deezer-only "BULLY - DELUXE"."""
+    names = [artist.name]
+    if artist.mbid:
+        try:
+            client = await get_client(_contact_email(db))
+            data = await client.get_artist(artist.mbid, inc="aliases")
+        except Exception:
+            data = {}
+        seen = {normalize_name(artist.name)}
+        for alias in data.get("aliases") or []:
+            if len(names) >= _MAX_CROSS_PROVIDER_QUERY_NAMES:
+                break
+            alias_name = (alias.get("name") or "").strip()
+            if not alias_name or is_trivial_artist(alias_name):
+                continue
+            normalized = normalize_name(alias_name)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            names.append(alias_name)
+    return names
+
+
+async def _best_cross_provider_candidate(provider, query_names: list[str], db) -> object | None:
+    """Best provider hit whose normalized name equals one of the query names.
+
+    Phase 15 review fix: NO blind first-hit fallback — a provider only
+    contributes cross-provider candidates when a query name (artist name or
+    alias) matches a provider artist exactly after normalization, so a wrong
+    artist is never linked (e.g. Deezer "Y.E" must not stand in for "Ye").
+    """
+    best = None
+    for query in query_names:
+        if provider.name == PROVIDER_DISCOGS:
+            rows = await provider.search_artist(query, db=db)
+        else:
+            rows = await provider.search_artist(query)
+        for row in rows:
+            if normalize_name(row.name) == normalize_name(query):
+                if best is None or (row.score or 0) > (best.score or 0):
+                    best = row
+                break
+    return best
+
+
+async def _cross_provider_candidates(db: Session, artist: Artist, from_date, stats: dict) -> list:
+    """Releases of the other name-searchable providers for an MB-tracked artist.
+
+    Every candidate is processed with role=ROLE_PRIMARY (same artist) and
+    deduplicated against the artist's existing releases by normalized title
+    (see ``same_artist_dedup``). Every provider step is best-effort: a failure
+    just yields no extra candidates.
+    """
+    candidates: list = []
+    query_names = await _cross_provider_query_names(db, artist)
+    for provider in providers_for_name_search():
+        if provider.name == PROVIDER_MB:
+            continue
+        try:
+            candidate = await _best_cross_provider_candidate(provider, query_names, db)
+            if candidate is None or not candidate.provider_id:
+                continue
+            snapshot = Artist(
+                name=candidate.name,
+                normalized_name=normalize_name(candidate.name),
+                source="manual",
+                provider=candidate.provider,
+                provider_id=candidate.provider_id,
+            )
+            rows = await provider.fetch_releases(snapshot, from_date, db=db)
+        except Exception:
+            logger.debug("cross-provider discovery failed for provider %s", provider.name)
+            rows = []
+        if rows:
+            candidates.extend(rows)
+            stats["cross_provider_candidates"] += len(rows)
+    return candidates
 
 
 async def _level1_artist(
@@ -348,6 +475,28 @@ async def _level1_artist(
         db.commit()
         if seen and (latest_seen is None or seen > latest_seen):
             latest_seen = seen
+    if provider.name == PROVIDER_MB:
+        # Phase 15: also look for the same artist's releases on the other
+        # providers (Deezer/iTunes/Discogs) via name+aliases, so versions that
+        # only exist there (e.g. "BULLY - DELUXE") reach the feed. Candidates
+        # are deduped by title within this artist's releases (their provider
+        # credit may differ, e.g. "Kanye West" vs "Ye").
+        for candidate in await _cross_provider_candidates(db, artist, from_date, stats):
+            seen = await _process_candidate(
+                db,
+                artist,
+                candidate,
+                discovery_from,
+                allowed_types,
+                stats,
+                role=ROLE_PRIMARY,
+                new_keys=new_keys,
+                new_release_ids=new_release_ids,
+                same_artist_dedup=artist,
+            )
+            db.commit()
+            if seen and (latest_seen is None or seen > latest_seen):
+                latest_seen = seen
     artist.last_release_check = latest_seen
 
 
@@ -640,6 +789,7 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         "skipped_no_date": 0,
         "skipped_type": 0,
         "skipped_not_official": 0,
+        "cross_provider_candidates": 0,
         "api_calls": 0,
         "covers_fetched": 0,
         "links_resolved": 0,

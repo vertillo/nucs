@@ -444,11 +444,180 @@ async def test_match_all_pending_stats(match_db, monkeypatch):
                     mb_match_score=90,
                 ),
                 Artist(name="Ignored", normalized_name="ignored", source="tag_artist", ignored=1),
+                # Phase 15: provider-linked artists are never MB-matched in bulk.
+                Artist(
+                    name="Linked",
+                    normalized_name="linked",
+                    source="manual",
+                    provider="deezer",
+                    provider_id="7",
+                ),
             ]
         )
         db.commit()
         stats = await mb_matching.match_all_pending(db, limit=100)
         assert stats == {"processed": 3, "matched": 1, "split": 1, "unmatched": 1}
+
+
+async def test_match_artist_article_stripping_fallback(match_db, monkeypatch):
+    """'The Levellers' has no MB entry: the article-less variant 'Levellers'
+    must be searched and win (phase 15)."""
+    _install_search(
+        monkeypatch,
+        {
+            "The Levellers": [],
+            "Levellers": [{"mbid": "mb-levellers", "name": "Levellers", "score": 100}],
+        },
+    )
+    with get_session_factory()() as db:
+        row = Artist(name="The Levellers", normalized_name="the levellers", source="tag_artist")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is True
+        db.refresh(row)
+        assert row.mbid == "mb-levellers"
+        assert row.mb_match_score == 100
+
+
+async def test_match_artist_article_variant_not_searched_when_full_name_matches(match_db, monkeypatch):
+    """Phase 15 review fix: a >=90 hit on the full name short-circuits the
+    article-less variant, saving one rate-limited MusicBrainz request."""
+    calls: list[str] = []
+
+    async def _search(self, name, limit=5):
+        calls.append(name)
+        return [{"mbid": "mb-tw", "name": "The Weeknd", "score": 100}] if name == "The Weeknd" else []
+
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _search)
+    with get_session_factory()() as db:
+        row = Artist(name="The Weeknd", normalized_name="the weeknd", source="tag_artist")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is True
+        db.refresh(row)
+        assert row.mbid == "mb-tw"
+        assert calls == ["The Weeknd"]
+
+
+async def test_match_artist_article_variants_apply_to_split_parts(match_db, monkeypatch):
+    """Split parts get the same article-less fallback ('with The X' style names)."""
+    _install_search(
+        monkeypatch,
+        {
+            "AA feat. The Levellers": [],
+            "AA": [{"mbid": "mb-aa", "name": "AA", "score": 99}],
+            "The Levellers": [],
+            "Levellers": [{"mbid": "mb-levellers", "name": "Levellers", "score": 98}],
+        },
+    )
+    with get_session_factory()() as db:
+        row = Artist(
+            name="AA feat. The Levellers",
+            normalized_name="aa feat the levellers",
+            source="tag_artist",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is True
+        db.refresh(row)
+        assert row.ignored == 1 and row.mbid is None
+        child = db.scalar(select(Artist).where(Artist.normalized_name == "the levellers"))
+        assert child is not None and child.mbid == "mb-levellers"
+
+
+async def test_split_deniz_koyu_and_amba_shepherd_parts():
+    """Phase 15 regression: the real library name 'Deniz Koyu & Amba Shepherd'
+    must split into both parts so Amba Shepherd is tracked as an artist."""
+    parts = mb_matching.split_soft("Deniz Koyu & Amba Shepherd")
+    assert parts == ["Deniz Koyu", "Amba Shepherd"]
+
+
+async def test_match_deniz_koyu_and_amba_shepherd_creates_both_children(match_db, monkeypatch):
+    """Phase 15 regression: matching the real library artist creates both
+    children (Deniz Koyu AND Amba Shepherd) and ignores the parent."""
+    _install_search(
+        monkeypatch,
+        {
+            "Deniz Koyu & Amba Shepherd": [],
+            "Deniz Koyu": [{"mbid": "mb-dk", "name": "Deniz Koyu", "score": 100}],
+            "Amba Shepherd": [{"mbid": "mb-as", "name": "Amba Shepherd", "score": 100}],
+        },
+    )
+    with get_session_factory()() as db:
+        row = Artist(
+            name="Deniz Koyu & Amba Shepherd",
+            normalized_name="deniz koyu amba shepherd",
+            source="tag_artist",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is True
+        db.refresh(row)
+        assert row.ignored == 1 and row.mbid is None
+        deniz = db.scalar(select(Artist).where(Artist.normalized_name == "deniz koyu"))
+        amba = db.scalar(select(Artist).where(Artist.normalized_name == "amba shepherd"))
+        assert deniz is not None and deniz.mbid == "mb-dk" and deniz.source == "tag_artist"
+        assert amba is not None and amba.mbid == "mb-as" and amba.source == "tag_artist"
+
+
+async def test_split_recovery_after_partial_mberror(match_db, monkeypatch):
+    """Phase 15 review fix: when a split part fails with an MB error the parent
+    stays pending (the committed child is kept) and the next run completes the
+    split idempotently."""
+    monkeypatch.setattr(mb_matching, "match_all_pending", REAL_MATCH_ALL_PENDING)
+    _install_search(
+        monkeypatch,
+        {
+            "Deniz Koyu & Amba Shepherd": [{"mbid": "m", "name": "Deniz Koyu & Amba Shepherd", "score": 5}],
+            "Deniz Koyu": [{"mbid": "mb-dk", "name": "Deniz Koyu", "score": 100}],
+            "Amba Shepherd": [{"mbid": "mb-as", "name": "Amba Shepherd", "score": 100}],
+        },
+    )
+    canned = MusicBrainzClient.search_artist
+    calls = {"n": 0}
+
+    async def _flaky(self, name, limit=5):
+        calls["n"] += 1
+        # Run 1 hits "Amba Shepherd" as the 3rd search (full name, Deniz Koyu,
+        # Amba Shepherd): that one raises; run 2 (6th search) succeeds.
+        if name == "Amba Shepherd" and calls["n"] <= 3:
+            raise MBError("musicbrainz hiccup")
+        return await canned(self, name, limit=limit)
+
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _flaky)
+    with get_session_factory()() as db:
+        db.add(
+            Artist(
+                name="Deniz Koyu & Amba Shepherd",
+                normalized_name="deniz koyu amba shepherd",
+                source="tag_artist",
+            )
+        )
+        db.commit()
+
+    # Run 1: the second split part fails -> parent stays pending, first child kept.
+    with get_session_factory()() as db:
+        stats = await mb_matching.match_all_pending(db, limit=100)
+    assert stats == {"processed": 1, "matched": 0, "split": 0, "unmatched": 1}
+    with get_session_factory()() as db:
+        parent = db.scalar(select(Artist).where(Artist.normalized_name == "deniz koyu amba shepherd"))
+        assert parent.mbid is None and parent.ignored == 0
+        deniz = db.scalar(select(Artist).where(Artist.normalized_name == "deniz koyu"))
+        assert deniz is not None and deniz.mbid == "mb-dk"
+
+    # Run 2: the retry completes the split and ignores the parent.
+    with get_session_factory()() as db:
+        stats = await mb_matching.match_all_pending(db, limit=100)
+    assert stats == {"processed": 1, "matched": 0, "split": 1, "unmatched": 0}
+    with get_session_factory()() as db:
+        parent = db.scalar(select(Artist).where(Artist.normalized_name == "deniz koyu amba shepherd"))
+        assert parent.ignored == 1 and parent.mbid is None
+        amba = db.scalar(select(Artist).where(Artist.normalized_name == "amba shepherd"))
+        assert amba is not None and amba.mbid == "mb-as"
 
 
 async def test_match_all_pending_respects_limit(match_db, monkeypatch):
@@ -668,6 +837,42 @@ async def test_api_artists_q_escapes_like_wildcards(client):
     assert search["total"] == 1 and search["items"][0]["name"] == "100% Rap"
     underscore = (await client.get("/api/v1/artists", params={"q": "100_"})).json()
     assert underscore["total"] == 0
+
+
+async def test_api_artists_sort_and_unmatched_total(client):
+    await _login(client)
+    with get_session_factory()() as db:
+        db.add_all(
+            [
+                Artist(name="Beyonce", normalized_name="beyonce", source="tag_artist"),
+                Artist(name="AC/DC", normalized_name="ac dc", source="tag_artist"),
+                Artist(
+                    name="Radiohead",
+                    normalized_name="radiohead",
+                    source="manual",
+                    mbid="mb-rh",
+                    mb_match_score=95,
+                ),
+                Artist(
+                    name="Zed",
+                    normalized_name="zed",
+                    source="manual",
+                    provider="itunes",
+                    provider_id="9",
+                ),
+            ]
+        )
+        db.commit()
+    asc = (await client.get("/api/v1/artists", params={"sort": "name_asc"})).json()
+    assert [item["name"] for item in asc["items"]] == ["AC/DC", "Beyonce", "Radiohead", "Zed"]
+    desc = (await client.get("/api/v1/artists", params={"sort": "name_desc"})).json()
+    assert [item["name"] for item in desc["items"]] == ["Zed", "Radiohead", "Beyonce", "AC/DC"]
+    # unmatched_total: manual artists without mbid only (Beyonce and AC/DC).
+    assert asc["unmatched_total"] == 2
+    # unmatched_total respects the q filter.
+    filtered = (await client.get("/api/v1/artists", params={"q": "be"})).json()
+    assert filtered["total"] == 1
+    assert filtered["unmatched_total"] == 1
 
 
 # --- Auto-match after library scan (decision recorded in STATO.md) ------------

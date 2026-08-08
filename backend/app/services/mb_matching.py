@@ -33,6 +33,24 @@ MATCH_PART_SCORE = 85
 # mandatory surrounding spaces (never "&" attached, never "/").
 _SOFT_SEPARATORS = (" featuring ", " feat. ", " ft. ", " & ", ", ", " vs ", " with ", " con ")
 
+# Leading articles stripped for a fallback search variant (phase 15): MB has
+# "Levellers" but no "The Levellers", so the full-name search finds nothing.
+_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+
+
+def _strip_article(name: str) -> str:
+    """Strip one leading article ("The ", "A ", "An ") from an artist name."""
+    return _ARTICLE_RE.sub("", name, count=1).strip()
+
+
+def _search_variants(name: str) -> list[str]:
+    """Name variants tried by the matcher: the full name, then the article-less form."""
+    variants = [name]
+    stripped = _strip_article(name)
+    if stripped and stripped != name:
+        variants.append(stripped)
+    return variants
+
 
 def split_soft(name: str) -> list[str]:
     """Split a multi-artist name on the first soft separator present.
@@ -59,6 +77,25 @@ def _contact_email(db: Session) -> str | None:
 def _best(results: list[dict]) -> dict | None:
     """Best-scoring result of a search (MusicBrainz already sorts by score)."""
     return max(results, key=lambda result: result["score"]) if results else None
+
+
+async def _best_match(client, name: str) -> dict | None:
+    """Best-scoring hit across the name variants (article-less fallback).
+
+    A variant scoring >= MATCH_FULL_SCORE short-circuits: the article-less
+    variant could only tie or lose to a perfect hit, so skipping it saves one
+    rate-limited request per article-prefixed name ("The Weeknd", "An X").
+    """
+    best = None
+    for variant in _search_variants(name):
+        candidate = _best(await client.search_artist(variant, limit=5))
+        if candidate is None:
+            continue
+        if best is None or candidate["score"] > best["score"]:
+            best = candidate
+        if best["score"] >= MATCH_FULL_SCORE:
+            break
+    return best
 
 
 def _upsert_child(db: Session, name: str, source: str, mbid: str, score: int) -> bool:
@@ -95,7 +132,7 @@ async def match_artist(db: Session, artist_row: Artist) -> bool:
     if artist_row.mbid is not None:
         return True
     client = await get_client(_contact_email(db))
-    best = _best(await client.search_artist(artist_row.name, limit=5))
+    best = await _best_match(client, artist_row.name)
     if best is not None and best["score"] >= MATCH_FULL_SCORE:
         artist_row.mbid = best["mbid"]
         artist_row.mb_match_score = best["score"]
@@ -104,7 +141,7 @@ async def match_artist(db: Session, artist_row: Artist) -> bool:
     parts = split_soft(artist_row.name)
     matched_any = False
     for part in parts:
-        part_best = _best(await client.search_artist(part, limit=5))
+        part_best = await _best_match(client, part)
         if part_best is not None and part_best["score"] >= MATCH_PART_SCORE:
             if not _upsert_child(db, part, artist_row.source, part_best["mbid"], part_best["score"]):
                 return False
@@ -128,7 +165,16 @@ async def match_all_pending(db: Session, limit: int = 100) -> dict:
     continues.
     """
     rows = db.scalars(
-        select(Artist).where(Artist.mbid.is_(None), Artist.ignored == 0).order_by(Artist.id).limit(limit)
+        select(Artist)
+        .where(
+            Artist.mbid.is_(None),
+            Artist.ignored == 0,
+            # Phase 15: never force an MB match on artists already linked to
+            # another provider (their provider is authoritative).
+            Artist.provider == "manual",
+        )
+        .order_by(Artist.id)
+        .limit(limit)
     ).all()
     stats = {"processed": 0, "matched": 0, "split": 0, "unmatched": 0}
     for row in rows:

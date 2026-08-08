@@ -33,7 +33,7 @@ from app.schemas import ArtistCreate, ArtistLink, ArtistPatch
 from app.services import mb_matching
 from app.services.musicbrainz import MBError
 from app.services.names import is_trivial_artist, normalize_name
-from app.services.providers import parse_track_url, search_artists_everywhere
+from app.services.providers import get_provider, parse_track_url, search_artists_everywhere
 
 router = APIRouter(prefix="/api/v1/artists", tags=["artists"])
 
@@ -97,9 +97,22 @@ def _artist_item(row: Artist, releases_count: int = 0, source_files: list[str] |
         "mb_match_score": row.mb_match_score,
         "ignored": row.ignored,
         "releases_count": releases_count,
-        # Only useful for unmatched artists; linked ones always return [].
+        # Only useful for unmatched artists; matched ones always return [].
         "source_files": source_files if source_files is not None else [],
     }
+
+
+def _base_filters(ignored: str, q: str) -> list:
+    """Common list filters: ignored flag and optional name search."""
+    filters = []
+    if ignored == "yes":
+        filters.append(Artist.ignored == 1)
+    elif ignored == "no":
+        filters.append(Artist.ignored == 0)
+    if q:
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        filters.append(Artist.name.ilike(f"%{escaped}%", escape="\\"))
+    return filters
 
 
 @router.get("")
@@ -107,24 +120,30 @@ async def list_artists(
     ignored: str = Query(default="all", pattern="^(all|yes|no)$"),
     matched: str = Query(default="all", pattern="^(all|no)$"),
     q: str = Query(default="", max_length=200),
+    sort: str = Query(default="name_asc", pattern="^(name_asc|name_desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=_DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
 ) -> dict:
-    """List artists with filters; ordered by name ASC (spec 10)."""
-    query = select(Artist)
-    if ignored == "yes":
-        query = query.where(Artist.ignored == 1)
-    elif ignored == "no":
-        query = query.where(Artist.ignored == 0)
+    """List artists with filters; default order is name ASC (spec 10)."""
+    filters = _base_filters(ignored, q)
     if matched == "no":
-        query = query.where(Artist.mbid.is_(None))
-    if q:
-        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        query = query.where(Artist.name.ilike(f"%{escaped}%", escape="\\"))
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    rows = db.scalars(query.order_by(Artist.name.asc()).offset((page - 1) * page_size).limit(page_size)).all()
+        filters += [Artist.mbid.is_(None), Artist.provider == "manual"]
+    total = db.scalar(select(func.count()).select_from(select(Artist).where(*filters).subquery())) or 0
+    # Phase 15: "unmatched" = no MB id AND not linked to any provider.
+    unmatched_total = (
+        db.scalar(
+            select(func.count()).select_from(
+                select(Artist).where(*filters, Artist.mbid.is_(None), Artist.provider == "manual").subquery()
+            )
+        )
+        or 0
+    )
+    order = Artist.name.asc() if sort == "name_asc" else Artist.name.desc()
+    rows = db.scalars(
+        select(Artist).where(*filters).order_by(order).offset((page - 1) * page_size).limit(page_size)
+    ).all()
     counts = _releases_counts(db, [row.id for row in rows])
     files = _source_files_for(db, [row.id for row in rows])
     return {
@@ -132,14 +151,43 @@ async def list_artists(
             _artist_item(
                 row,
                 counts.get(row.id, 0),
-                files.get(row.id, []) if row.mbid is None else [],
+                files.get(row.id, []) if not row.is_matched else [],
             )
             for row in rows
         ],
         "total": total,
+        "unmatched_total": unmatched_total,
         "page": page,
         "page_size": page_size,
     }
+
+
+@router.get("/lookup")
+async def lookup_artist(
+    provider: str = Query(max_length=20),
+    provider_id: str = Query(max_length=200),
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+) -> dict:
+    """Provider-side details of one candidate (phase 15: the match picker panel).
+
+    mb -> aliases/disambiguation; deezer -> album/fan counts + picture;
+    itunes -> genre + link; discogs (token only) -> profile. Never raises:
+    unavailable details return a 422 with a clear message.
+    """
+    if provider not in _KNOWN_PROVIDERS:
+        raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
+    adapter = get_provider(provider)
+    details_fn = getattr(adapter, "artist_details", None)
+    if details_fn is None:
+        raise HTTPException(status_code=422, detail=f"Details not available for provider {provider}")
+    details = await details_fn(provider_id, db=db)
+    if details is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Details not available for this {provider} artist — pick it or open the provider page.",
+        )
+    return details
 
 
 @router.get("/search")
@@ -199,28 +247,61 @@ async def add_artist(
 
     Without provider info the artist is created unlinked and matched in the
     background (previous behavior). With ``provider``/``provider_id`` (from the
-    search picker or a track-by-URL flow) the artist is created already linked.
+    search picker) or a ``url`` (track-by-URL, phase 15) the artist is created
+    already linked; the URL is parsed locally and never fetched server-side.
+    A URL-only add resolves the canonical name from the provider (mb/deezer/
+    itunes); the other providers require an explicit name.
     """
-    name = payload.name.strip()
-    normalized = normalize_name(name)
+    name = (payload.name or "").strip()
+    provider = payload.provider
+    provider_id = (payload.provider_id or "").strip() or None
+    external_url = _valid_external_url(payload.external_url)
+    url = (payload.url or "").strip() or None
+    if url:
+        if provider or provider_id:
+            raise HTTPException(status_code=422, detail="Provide either a URL or a provider pair, not both")
+        parsed = parse_track_url(url)
+        if parsed is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Unsupported URL: use a MusicBrainz, Deezer, Apple Music/iTunes, "
+                    "Discogs, SoundCloud or Beatport artist page"
+                ),
+            )
+        provider, provider_id = parsed
+        external_url = _valid_external_url(url)
+    normalized = normalize_name(name) if name else ""
+    if not normalized:
+        if provider is None:
+            raise HTTPException(status_code=400, detail="Invalid artist name")
+        resolve = getattr(get_provider(provider), "resolve_artist_name", None)
+        if resolve is None:
+            raise HTTPException(status_code=422, detail="Provide an artist name for this provider")
+        resolved = await resolve(provider_id)
+        if not resolved:
+            raise HTTPException(
+                status_code=422, detail="Could not resolve the artist name — provide it explicitly"
+            )
+        name = resolved
+        normalized = normalize_name(name)
     if not normalized or is_trivial_artist(name):
         raise HTTPException(status_code=400, detail="Invalid artist name")
     exists = db.scalar(select(Artist).where(Artist.normalized_name == normalized))
     if exists is not None:
         raise HTTPException(status_code=400, detail="Artist already exists")
     row = Artist(name=name, normalized_name=normalized, source="manual", provider="manual")
-    if payload.provider:
-        if payload.provider not in _KNOWN_PROVIDERS:
-            raise HTTPException(status_code=422, detail=f"Unknown provider: {payload.provider}")
-        provider_id = (payload.provider_id or "").strip()
+    if provider:
+        if provider not in _KNOWN_PROVIDERS:
+            raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
         if not provider_id:
             raise HTTPException(status_code=422, detail="provider_id is required when a provider is set")
         if len(provider_id) > 200:
             raise HTTPException(status_code=422, detail="provider_id too long")
-        row.provider = payload.provider
+        row.provider = provider
         row.provider_id = provider_id
-        row.external_url = _valid_external_url(payload.external_url)
-        if payload.provider == "mb":
+        row.external_url = external_url
+        if provider == "mb":
             if not _MBID_RE.fullmatch(provider_id):
                 raise HTTPException(status_code=422, detail="Invalid MusicBrainz artist id")
             row.mbid = provider_id
@@ -260,22 +341,50 @@ async def rematch_artist(
 ) -> dict:
     """Re-run the MusicBrainz match for one artist (phase 12b: with candidates).
 
-    Returns ``matched``/``mbid`` as before, plus:
-    - ``candidates``: every name-searchable provider's top hits for the name
-      (used by the retry picker modal);
-    - ``split``: the automatic soft-split suggestion of mb_matching.
+    Phase 15 semantics:
+    - ``matched`` is True only when the artist now carries an ``mbid``;
+    - a split (name broken into matched parts, parent ignored) is reported via
+      ``split_parts`` and the artist itself stays unmatched;
+    - an artist that is already ignored without an mbid (split parent or
+      manually ignored) is reported via ``resolved_split`` and never re-searched.
     """
     row = db.get(Artist, artist_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
+    if row.ignored and row.mbid is None:
+        # Resolved split parent (or manually ignored): do not re-run the MB
+        # search; the picker candidates stay available for manual linking.
+        candidates = await search_artists_everywhere(row.name, db=db)
+        return {
+            "matched": False,
+            "mbid": None,
+            "resolved_split": True,
+            "split_parts": [],
+            "split": [],
+            "candidates": [
+                {
+                    "name": candidate.name,
+                    "provider": candidate.provider,
+                    "provider_id": candidate.provider_id,
+                    "mbid": candidate.mbid,
+                    "score": candidate.score,
+                    "url": candidate.url,
+                }
+                for candidate in candidates
+            ],
+        }
     try:
         matched = await mb_matching.match_artist(db, row)
     except MBError as exc:
         raise HTTPException(status_code=503, detail="MusicBrainz is unavailable") from exc
+    split_parts = mb_matching.split_soft(row.name) if matched and row.mbid is None else []
     candidates = await search_artists_everywhere(row.name, db=db)
     return {
-        "matched": matched,
+        "matched": row.mbid is not None,
         "mbid": row.mbid,
+        "resolved_split": False,
+        "split_parts": split_parts,
+        "split": split_parts,
         "candidates": [
             {
                 "name": candidate.name,
@@ -287,7 +396,6 @@ async def rematch_artist(
             }
             for candidate in candidates
         ],
-        "split": mb_matching.split_soft(row.name),
     }
 
 

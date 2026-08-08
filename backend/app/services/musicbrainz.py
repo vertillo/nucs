@@ -148,6 +148,10 @@ class MusicBrainzClient:
         """Release-group details: artist-credit, primary-type, secondary-types, first-release-date."""
         return await self._get(f"release-group/{rgid}", {"inc": "artist-credits"})
 
+    async def get_artist(self, mbid: str, inc: str = "aliases") -> dict:
+        """One artist with optional inc resources (aliases, tags, ...)."""
+        return await self._get(f"artist/{mbid}", {"inc": inc})
+
     async def get_release_group_with_releases(self, rgid: str) -> dict:
         """Release-group lookup including its releases (status, date, id) — used by
         the phase-12b official-status filter and the tracklist resolution."""

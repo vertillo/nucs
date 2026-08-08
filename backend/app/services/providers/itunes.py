@@ -124,6 +124,35 @@ class ItunesProvider(Provider):
             )
         return candidates
 
+    async def resolve_artist_name(self, provider_id: str) -> str | None:
+        """The artist's canonical name for an iTunes artist id (phase 15)."""
+        try:
+            data = await _get("lookup", {"id": provider_id})
+        except Exception:
+            return None
+        for item in data.get("results") or []:
+            if item.get("wrapperType") == "musicArtist":
+                return (item.get("artistName") or "").strip() or None
+        return None
+
+    async def artist_details(self, provider_id: str, *, db=None) -> dict | None:
+        """Rich artist info (genre, link) for the match picker."""
+        try:
+            data = await _get("lookup", {"id": provider_id})
+        except Exception:
+            return None
+        for item in data.get("results") or []:
+            if item.get("wrapperType") != "musicArtist":
+                continue
+            return {
+                "provider": PROVIDER_ITUNES,
+                "provider_id": provider_id,
+                "name": item.get("artistName") or "",
+                "genre": item.get("primaryGenreName") or "",
+                "url": item.get("artistLinkUrl") or "",
+            }
+        return None
+
     async def fetch_releases(self, artist: Artist, from_date: date, *, db=None) -> list[ReleaseCandidate]:
         if not artist.provider_id:
             return []

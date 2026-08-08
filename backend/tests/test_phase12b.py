@@ -51,6 +51,21 @@ def test_parse_track_url_accepts_provider_pages():
     assert parse_track_url("https://www.discogs.com/artist/123-Bob") == ("discogs", "123")
     assert parse_track_url("https://soundcloud.com/deadmau5") == ("soundcloud", "deadmau5")
     assert parse_track_url("https://www.beatport.com/artist/deadmau5/12345") == ("beatport", "12345")
+    # Locale-prefixed artist pages (phase 15): the locale segment is stripped.
+    assert parse_track_url("https://www.deezer.com/it/artist/265213582") == ("deezer", "265213582")
+    assert parse_track_url("https://www.deezer.com/de/artist/265213582") == ("deezer", "265213582")
+    assert parse_track_url("https://www.deezer.com/en-US/artist/265213582") == ("deezer", "265213582")
+    assert parse_track_url("https://itunes.apple.com/it/artist/1714710847") == ("itunes", "1714710847")
+    assert parse_track_url("https://music.apple.com/fr/artist/1714710847") == ("itunes", "1714710847")
+    # Query parameters/fragments do not affect the parsed id (path-only matching).
+    assert parse_track_url("https://www.deezer.com/it/artist/265213582?utm_source=newsletter") == (
+        "deezer",
+        "265213582",
+    )
+    assert parse_track_url("https://music.apple.com/it/artist/1714710847?l=it#page") == (
+        "itunes",
+        "1714710847",
+    )
 
 
 def test_parse_track_url_rejects_everything_else():
@@ -124,6 +139,89 @@ async def test_add_artist_with_invalid_provider_id_rejected(client):
     assert response.status_code == 422
 
 
+# --- POST /artists by URL (phase 15) -------------------------------------------
+
+
+async def test_add_artist_by_url_with_name(client, monkeypatch):
+    await _login(client)
+    from app.services.musicbrainz import MusicBrainzClient
+
+    async def _no_search(self, name, limit=5):
+        return []
+
+    # The created artist (no mbid) is matched in the background: keep it offline.
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _no_search)
+    response = await client.post(
+        "/api/v1/artists",
+        json={
+            "name": "Pepp 'O Red",
+            "url": "https://www.deezer.com/it/artist/265213582",
+        },
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["provider"] == "deezer"
+    assert body["provider_id"] == "265213582"
+    assert body["external_url"] == "https://www.deezer.com/it/artist/265213582"
+    assert body["mbid"] is None
+
+
+async def test_add_artist_by_url_resolves_name_from_deezer(client, monkeypatch):
+    await _login(client)
+
+    async def _resolve(provider_id):
+        return "Pepp 'O Red"
+
+    import app.services.providers.deezer as deezer_provider
+    from app.services.musicbrainz import MusicBrainzClient
+
+    async def _no_search(self, name, limit=5):
+        return []
+
+    # The created artist (no mbid) is matched in the background: keep it offline.
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _no_search)
+    monkeypatch.setattr(deezer_provider.provider, "resolve_artist_name", _resolve)
+    response = await client.post(
+        "/api/v1/artists",
+        json={"url": "https://www.deezer.com/it/artist/265213582"},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["name"] == "Pepp 'O Red"
+    assert body["provider"] == "deezer"
+    assert body["provider_id"] == "265213582"
+
+
+async def test_add_artist_by_url_rejects_unsupported_or_conflicting(client):
+    await _login(client)
+    bad = await client.post(
+        "/api/v1/artists",
+        json={"url": "https://example.com/artist/1"},
+        headers=API_HEADERS,
+    )
+    assert bad.status_code == 422
+    assert "Unsupported URL" in bad.json()["detail"]
+    conflict = await client.post(
+        "/api/v1/artists",
+        json={"name": "X", "url": "https://www.deezer.com/artist/1", "provider": "deezer"},
+        headers=API_HEADERS,
+    )
+    assert conflict.status_code == 422
+
+
+async def test_add_artist_by_url_requires_name_for_soundcloud(client):
+    await _login(client)
+    response = await client.post(
+        "/api/v1/artists",
+        json={"url": "https://soundcloud.com/deadmau5"},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 422
+    assert "Provide an artist name" in response.json()["detail"]
+
+
 # --- POST /artists/{id}/link: URL and provider pair, never fetched -------------
 
 
@@ -154,13 +252,22 @@ async def test_link_artist_by_provider_pair_from_picker(client):
         db.add(row)
         db.commit()
         artist_id = row.id
+    # The frontend picker sends the candidate URL alongside the pair (phase 15):
+    # external_url must be stored so the artist name can link to the match page.
     response = await client.post(
         f"/api/v1/artists/{artist_id}/link",
-        json={"provider": "deezer", "provider_id": "2785371"},
+        json={
+            "provider": "deezer",
+            "provider_id": "2785371",
+            "url": "https://www.deezer.com/artist/2785371",
+        },
         headers=API_HEADERS,
     )
     assert response.status_code == 200
-    assert response.json()["provider"] == "deezer"
+    body = response.json()
+    assert body["provider"] == "deezer"
+    assert body["provider_id"] == "2785371"
+    assert body["external_url"] == "https://www.deezer.com/artist/2785371"
 
 
 async def test_link_artist_rejects_foreign_url(client):
@@ -520,17 +627,107 @@ async def test_artists_unmatched_filter_and_source_files(client):
         db.flush()
         db.add(Artist(name="Solo", normalized_name="solo", source="tag_artist"))
         db.flush()
+        db.add(
+            Artist(
+                name="DeezerLinked",
+                normalized_name="deezerlinked",
+                source="manual",
+                provider="deezer",
+                provider_id="42",
+            )
+        )
+        db.flush()
         db.add(ArtistFile(artist_id=matched.id, path="/music/a.flac"))
         db.commit()
     response = await client.get("/api/v1/artists", params={"matched": "no"})
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["name"] == "Solo"
+    # unmatched_total counts manual+mbid-less artists only (provider-linked are matched).
+    assert body["unmatched_total"] == 1
     # matched artists never return source_files; unmatched do
     all_response = await client.get("/api/v1/artists")
     by_name = {item["name"]: item for item in all_response.json()["items"]}
     assert by_name["Matchato"]["source_files"] == []
+    assert by_name["DeezerLinked"]["source_files"] == []
     assert by_name["Solo"]["source_files"] == []
+
+
+# --- GET /artists/lookup: match-picker details (phase 15) ---------------------
+
+
+async def test_lookup_artist_mb_returns_aliases(client, monkeypatch):
+    await _login(client)
+    import app.services.providers.musicbrainz as mb_provider_module
+
+    async def _details(provider_id, *, db=None):
+        return {
+            "provider": "mb",
+            "provider_id": provider_id,
+            "name": "Ye",
+            "disambiguation": "formerly Kanye West",
+            "type": "Person",
+            "country": "US",
+            "begin": "1977-06-08",
+            "end": "",
+            "aliases": ["Kanye West", "Yeezy"],
+        }
+
+    monkeypatch.setattr(mb_provider_module.provider, "artist_details", _details)
+    response = await client.get(
+        "/api/v1/artists/lookup",
+        params={"provider": "mb", "provider_id": "11111111-1111-1111-1111-111111111111"},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Ye"
+    assert body["aliases"] == ["Kanye West", "Yeezy"]
+    assert body["disambiguation"] == "formerly Kanye West"
+
+
+async def test_lookup_artist_deezer_returns_album_count(client, monkeypatch):
+    await _login(client)
+    import app.services.providers.deezer as deezer_provider_module
+
+    async def _details(provider_id, *, db=None):
+        return {
+            "provider": "deezer",
+            "provider_id": provider_id,
+            "name": "Kanye West",
+            "nb_album": 72,
+            "nb_fan": 12345678,
+            "picture": "https://e-cdns-images.dzcdn.net/images/artist/x.jpg",
+            "url": f"https://www.deezer.com/artist/{provider_id}",
+        }
+
+    monkeypatch.setattr(deezer_provider_module.provider, "artist_details", _details)
+    response = await client.get(
+        "/api/v1/artists/lookup",
+        params={"provider": "deezer", "provider_id": "230"},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nb_album"] == 72
+    assert body["name"] == "Kanye West"
+
+
+async def test_lookup_artist_unavailable_or_unknown(client):
+    await _login(client)
+    unknown = await client.get(
+        "/api/v1/artists/lookup",
+        params={"provider": "nope", "provider_id": "1"},
+        headers=API_HEADERS,
+    )
+    assert unknown.status_code == 422
+    beatport = await client.get(
+        "/api/v1/artists/lookup",
+        params={"provider": "beatport", "provider_id": "12345"},
+        headers=API_HEADERS,
+    )
+    assert beatport.status_code == 422
+    assert "not available" in beatport.json()["detail"]
 
 
 # --- Rematch returns multi-provider candidates + split -------------------------
@@ -562,8 +759,86 @@ async def test_rematch_returns_candidates_and_split(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["matched"] is False
-    assert body["split"] == ["Adrenalize", "Festuca"]
+    assert body["mbid"] is None
+    assert body["resolved_split"] is False
+    # no split happened in this run (the artist was not matched): no split_parts
+    assert body["split_parts"] == []
     assert [c["name"] for c in body["candidates"]] == ["Adrenalize", "Festuca"]
+
+
+async def test_rematch_reports_split_parts_when_name_is_split(client, monkeypatch):
+    """A split resolves the parent (ignored, still mbid-less): the response must
+    say so via split_parts and matched=False (no fake 'matched on MB')."""
+    await _login(client)
+
+    async def _split_match(db, artist_row):
+        from app.models import Artist as ArtistModel
+        from app.services.names import normalize_name
+
+        db.add(
+            ArtistModel(
+                name="Festuca",
+                normalized_name=normalize_name("Festuca"),
+                source="tag_artist",
+                mbid="mb-f",
+                mb_match_score=99,
+            )
+        )
+        artist_row.ignored = 1
+        db.commit()
+        return True
+
+    import app.api.artists as artists_api
+
+    async def _no_candidates(name, db=None):
+        return []
+
+    monkeypatch.setattr(artists_api.mb_matching, "match_artist", _split_match)
+    monkeypatch.setattr(artists_api, "search_artists_everywhere", _no_candidates)
+    with get_session_factory()() as db:
+        row = Artist(name="Adrenalize & Festuca", normalized_name="adrenalize festuca", source="tag_artist")
+        db.add(row)
+        db.commit()
+        artist_id = row.id
+    response = await client.post(f"/api/v1/artists/{artist_id}/rematch", headers=API_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matched"] is False
+    assert body["mbid"] is None
+    assert body["split_parts"] == ["Adrenalize", "Festuca"]
+
+
+async def test_rematch_on_resolved_split_parent_never_searches(client, monkeypatch):
+    """An ignored artist without mbid is already resolved: the retry must not
+    re-run the MusicBrainz search and reports resolved_split."""
+    await _login(client)
+
+    async def _boom_match(db, artist_row):
+        raise AssertionError("match must not run on a resolved split parent")
+
+    import app.api.artists as artists_api
+
+    async def _no_candidates(name, db=None):
+        return []
+
+    monkeypatch.setattr(artists_api.mb_matching, "match_artist", _boom_match)
+    monkeypatch.setattr(artists_api, "search_artists_everywhere", _no_candidates)
+    with get_session_factory()() as db:
+        row = Artist(
+            name="Adrenalize & Festuca",
+            normalized_name="adrenalize festuca",
+            source="tag_artist",
+            ignored=1,
+        )
+        db.add(row)
+        db.commit()
+        artist_id = row.id
+    response = await client.post(f"/api/v1/artists/{artist_id}/rematch", headers=API_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matched"] is False
+    assert body["resolved_split"] is True
+    assert body["split_parts"] == []
 
 
 # --- Scan progress is exposed --------------------------------------------------

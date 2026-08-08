@@ -157,6 +157,26 @@ class DiscogsProvider(Provider):
             )
         return candidates
 
+    async def artist_details(self, provider_id: str, *, db=None) -> dict | None:
+        """Rich artist info (profile, image, uri) for the match picker (needs token)."""
+        token = _token_of(db) if db is not None else None
+        if not token:
+            return None
+        try:
+            data = await _get(token, f"artists/{provider_id}", {})
+        except Exception:
+            return None
+        if not data.get("id"):
+            return None
+        return {
+            "provider": PROVIDER_DISCOGS,
+            "provider_id": provider_id,
+            "name": data.get("name") or "",
+            "profile": (data.get("profile") or "")[:400],
+            "image": (data.get("images") or [{}])[0].get("uri") or "",
+            "url": data.get("uri") or "",
+        }
+
 
 async def close_client() -> None:
     global _http

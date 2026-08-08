@@ -16,10 +16,14 @@ class PasswordChangeRequest(BaseModel):
 
 
 class ArtistCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    """Add-artist payload (phase 15: ``url`` allows tracking by URL, like the
+    retry flow; the URL is parsed locally, never fetched server-side)."""
+
+    name: str | None = Field(default=None, max_length=200)
     provider: str | None = Field(default=None, max_length=20)
     provider_id: str | None = Field(default=None, max_length=200)
     external_url: str | None = Field(default=None, max_length=500)
+    url: str | None = Field(default=None, max_length=500)
 
 
 class ArtistLink(BaseModel):

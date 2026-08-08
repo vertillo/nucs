@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { get, post } from './client'
+import { apiFetch, get, post } from './client'
 
 export type ReleaseType = 'album' | 'single' | 'ep' | 'other'
 export type ArtistRole = 'primary' | 'featured' | 'contributor'
@@ -133,6 +133,22 @@ export function useSeenAll() {
     mutationFn: () => post('/api/v1/releases/seen-all', {}),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['releases'] })
+    },
+  })
+}
+
+/** Delete releases that lost every artist (phase 15). */
+export function usePurgeOrphans() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ removed: number }>('/api/v1/releases/purge-orphans', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['releases'] })
+      queryClient.invalidateQueries({ queryKey: ['releases-count'] })
     },
   })
 }

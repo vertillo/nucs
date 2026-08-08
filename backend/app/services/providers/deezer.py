@@ -50,6 +50,33 @@ class DeezerProvider(Provider):
             )
         return candidates
 
+    async def resolve_artist_name(self, provider_id: str) -> str | None:
+        """The artist's canonical name for a Deezer id (phase 15)."""
+        try:
+            data = await deezer_http._search(f"artist/{provider_id}", {})
+        except Exception:
+            return None
+        name = (data.get("name") or "").strip()
+        return name or None
+
+    async def artist_details(self, provider_id: str, *, db=None) -> dict | None:
+        """Rich artist info (album/fan counts, picture) for the match picker."""
+        try:
+            data = await deezer_http._search(f"artist/{provider_id}", {})
+        except Exception:
+            return None
+        if not data.get("id"):
+            return None
+        return {
+            "provider": PROVIDER_DEEZER,
+            "provider_id": provider_id,
+            "name": data.get("name") or "",
+            "nb_album": data.get("nb_album"),
+            "nb_fan": data.get("nb_fan"),
+            "picture": data.get("picture_xl") or data.get("picture_big") or data.get("picture") or "",
+            "url": f"https://www.deezer.com/artist/{provider_id}",
+        }
+
     async def fetch_releases(self, artist: Artist, from_date: date, *, db=None) -> list[ReleaseCandidate]:
         if not artist.provider_id:
             return []

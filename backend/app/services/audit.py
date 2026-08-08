@@ -20,6 +20,7 @@ EVENT_PW_CHANGE = "password_change"
 EVENT_PW_FAIL = "password_fail"
 EVENT_SETTINGS_CHANGE = "settings_change"
 EVENT_SCAN_RUN = "scan_run"
+EVENT_RELEASES_PURGED = "releases_purged"
 
 _SENSITIVE_MARKERS = ("password", "passwd", "token", "secret", "cookie", "authorization")
 

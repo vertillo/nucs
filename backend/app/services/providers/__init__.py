@@ -99,6 +99,16 @@ _DISCOGS_ARTIST_RE = re.compile(r"^/artist/(\d+)")
 _SOUNDCLOUD_USER_RE = re.compile(r"^/([^/]+)/?$")
 _BEATPORT_ARTIST_RE = re.compile(r"^/artist/[^/]+/(\d+)")
 
+# Deezer/iTunes serve locale-prefixed paths ("/it/artist/…", "/de/artist/…",
+# "/en-US/artist/…"): the locale segment is stripped before matching (phase 15).
+_LOCALE_SEGMENT_RE = re.compile(r"^/[a-z]{2}(?:-[A-Z]{2})?/(artist/.+)$")
+
+
+def _strip_locale(path: str) -> str:
+    """Drop a leading locale segment when the remainder is an artist path."""
+    match = _LOCALE_SEGMENT_RE.match(path)
+    return "/" + match.group(1) if match else path
+
 
 def parse_track_url(raw: str) -> tuple[str, str] | None:
     """Parse a provider artist URL into (provider, provider_id); None when invalid.
@@ -119,6 +129,8 @@ def parse_track_url(raw: str) -> tuple[str, str] | None:
     if provider is None:
         return None
     path = parsed.path
+    if provider in (PROVIDER_DEEZER, PROVIDER_ITUNES):
+        path = _strip_locale(path)
     if provider == PROVIDER_MB:
         match = _MB_ARTIST_RE.match(path)
         return (PROVIDER_MB, match.group(1)) if match else None

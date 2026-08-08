@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 import pytest
@@ -22,11 +22,19 @@ import app.services.library_scan as library_scan_module
 import app.services.musicbrainz as musicbrainz
 from app.db import get_session_factory
 from app.main import run_migrations, seed_settings_if_empty
-from app.models import Artist, Release, ReleaseArtist, ScanRun, SeenRecording
+from app.models import Artist, Release, ReleaseArtist, ScanRun, SeenRecording, Setting
 from app.security import set_setting
 from app.services.musicbrainz import MBError, MusicBrainzClient
 
 _DISCOVERY_FROM = "2024-01-01"
+
+# Phase 15: the MB provider widens the search window by ~2 years so reissue
+# groups (old first release, recent official releases) are still returned.
+_WIDE_FROM = (date.fromisoformat(_DISCOVERY_FROM) - timedelta(days=730)).isoformat()
+
+# The conftest autouse guard replaces the cross-provider step with a no-op;
+# the dedicated tests opt back into the real implementation.
+REAL_CROSS_PROVIDER = discovery._cross_provider_candidates
 
 
 @pytest.fixture
@@ -314,8 +322,8 @@ async def test_level1_paginates_all_results(disc_db, monkeypatch):
     assert stats["api_calls"] == 2
     assert stats["releases_new"] == 150
     assert [(mbid, _, limit, offset) for mbid, _, limit, offset in fake.search_calls] == [
-        ("mb-mio", _DISCOVERY_FROM, 100, 0),
-        ("mb-mio", _DISCOVERY_FROM, 100, 100),
+        ("mb-mio", _WIDE_FROM, 100, 0),
+        ("mb-mio", _WIDE_FROM, 100, 100),
     ]
     with get_session_factory()() as db:
         assert len(db.scalars(select(Release)).all()) == 150
@@ -352,8 +360,10 @@ async def test_level1_cursor_moves_from_after_first_run(disc_db, monkeypatch):
 
     first_from = fake.search_calls[0][1]
     second_from = fake.search_calls[1][1]
-    assert first_from == _DISCOVERY_FROM
-    assert second_from == "2024-08-08"  # 2024-08-15 minus the 7-day overlap window
+    assert first_from == _WIDE_FROM
+    # 2024-08-15 minus the 7-day overlap window, then widened by 730 days.
+    expected_second = (date.fromisoformat("2024-08-08") - timedelta(days=730)).isoformat()
+    assert second_from == expected_second
 
 
 async def test_cursor_from_date_partial_widens_to_last_possible_day(disc_db):
@@ -558,6 +568,359 @@ async def test_tracks_stored_from_deezer_candidates(disc_db, monkeypatch):
             (1, "Pezzo Uno", 180),
             (2, "Pezzo Due", None),
         ]
+
+
+async def test_level1_future_dated_release_skipped(disc_db, monkeypatch):
+    """A future-dated group is never rescued into an accepted release."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-future", "Not Yet Out", "Album", "2999-01-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+    assert stats["releases_new"] == 0
+    with get_session_factory()() as db:
+        assert db.scalar(select(Release).where(Release.rgid == "rg-future")) is None
+
+
+async def test_level1_reissue_group_rescued_via_official_release(disc_db, monkeypatch):
+    """Phase 15: a group whose first release is older than the window but which
+    has official releases inside it (reissue, e.g. Ye's BULLY) is accepted with
+    the earliest official release date."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [[_rg("rg-reissue", "BULLY", "Album", "2023-03-24", _credit(("Mio", "")))]]
+    fake.search_counts["mb-mio"] = 1
+
+    from app.services.providers.musicbrainz import provider as mb_provider
+
+    async def _reissue_details(rgid, email=None, stats=None):
+        return {
+            "releases": [
+                {"id": "rel-old", "date": "2023-03-24", "status": "withdrawn"},
+                {"id": "rel-official", "date": "2024-03-24", "status": "official"},
+            ]
+        }
+
+    monkeypatch.setattr(mb_provider, "release_group_details", _reissue_details)
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.rgid == "rg-reissue"))
+        assert row is not None
+        assert row.first_release_date == "2024-03-24"
+        assert row.mb_release_id == "rel-official"
+
+
+async def test_level1_reissue_group_without_official_release_skipped(disc_db, monkeypatch):
+    """A group older than the window whose official releases are also old is not
+    rescued into the window."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [[_rg("rg-old", "Old Album", "Album", "2010-01-01", _credit(("Mio", "")))]]
+    fake.search_counts["mb-mio"] = 1
+
+    from app.services.providers.musicbrainz import provider as mb_provider
+
+    async def _old_details(rgid, email=None, stats=None):
+        return {"releases": [{"id": "rel-2010", "date": "2010-06-01", "status": "official"}]}
+
+    monkeypatch.setattr(mb_provider, "release_group_details", _old_details)
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+    assert stats["releases_new"] == 0
+
+
+async def test_discovery_from_date_defaults_to_start_of_current_year(app_env):
+    run_migrations()
+    with get_session_factory()() as db:
+        from sqlalchemy import delete as sa_delete
+
+        db.execute(sa_delete(Setting).where(Setting.key == "discovery_from_date"))
+        db.commit()
+        assert discovery._discovery_from_date(db) == date.today().replace(month=1, day=1)
+
+
+# --- Level 1: cross-provider discovery (phase 15) ------------------------------
+
+
+async def test_level1_cross_provider_finds_deezer_only_release(disc_db, monkeypatch):
+    """An MB-tracked artist (Ye) is also searched on Deezer via its MB alias
+    "Kanye West": the Deezer-only "BULLY - DELUXE" reaches the feed with role
+    primary (phase 15)."""
+    from app.services.providers.base import ArtistCandidate, ReleaseCandidate
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    monkeypatch.setattr(discovery, "_cross_provider_candidates", REAL_CROSS_PROVIDER)
+    _seed_artists(("Ye", "mb-ye"))
+
+    class _AliasClient:
+        async def get_artist(self, mbid, inc="aliases"):
+            return {"name": "Ye", "aliases": [{"name": "Kanye West"}, {"name": "Ye"}, {"name": "Yeezy"}]}
+
+    async def _alias_client(email=None):
+        return _AliasClient()
+
+    monkeypatch.setattr(discovery, "get_client", _alias_client)
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def search_artist(self, name):
+            if name == "Kanye West":
+                return [
+                    ArtistCandidate(
+                        name="Kanye West",
+                        provider="deezer",
+                        provider_id="230",
+                        url="https://www.deezer.com/artist/230",
+                    )
+                ]
+            return []
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="BULLY - DELUXE",
+                    primary_artist="Kanye West",
+                    type="album",
+                    first_release_date="2024-07-01",
+                    provider="deezer",
+                    provider_id="777",
+                    urls={"deezer": "https://www.deezer.com/album/777"},
+                )
+            ]
+
+    monkeypatch.setattr(discovery, "providers_for_name_search", lambda: [_FakeDeezerProvider()])
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["cross_provider_candidates"] == 1
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.provider_id == "777"))
+        assert row is not None
+        assert row.provider == "deezer"
+        assert row.title == "BULLY - DELUXE"
+        assert row.first_release_date == "2024-07-01"
+        ye = db.scalar(select(Artist).where(Artist.mbid == "mb-ye"))
+        role = db.scalar(
+            select(ReleaseArtist.role).where(
+                ReleaseArtist.release_id == row.id, ReleaseArtist.artist_id == ye.id
+            )
+        )
+        assert role == "primary"
+
+
+async def test_level1_cross_provider_dedups_against_mb_release(disc_db, monkeypatch):
+    """The same release found by MB and Deezer stays ONE row (provider stays mb)."""
+    from app.services.providers.base import ArtistCandidate, ReleaseCandidate
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    monkeypatch.setattr(discovery, "_cross_provider_candidates", REAL_CROSS_PROVIDER)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [[_rg("rg-album", "Album A", "Album", "2024-06-01", _credit(("Mio", "")))]]
+    fake.search_counts["mb-mio"] = 1
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def search_artist(self, name):
+            return [ArtistCandidate(name="Mio", provider="deezer", provider_id="9")]
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="Album A",
+                    primary_artist="Mio",
+                    type="album",
+                    first_release_date="2024-06-02",
+                    provider="deezer",
+                    provider_id="888",
+                    urls={"deezer": "https://www.deezer.com/album/888"},
+                )
+            ]
+
+    monkeypatch.setattr(discovery, "providers_for_name_search", lambda: [_FakeDeezerProvider()])
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        rows = db.scalars(select(Release)).all()
+        assert len(rows) == 1
+        assert rows[0].rgid == "rg-album"
+        assert rows[0].provider == "mb"
+        assert rows[0].deezer_url == "https://www.deezer.com/album/888"
+
+
+async def test_level1_cross_provider_dedups_regardless_of_date(disc_db, monkeypatch):
+    """Phase 15 review fix: cross-provider candidates dedup by title+artist
+    WITHOUT the 7-day date window — regional dates may differ by more."""
+    from app.services.providers.base import ArtistCandidate, ReleaseCandidate
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    monkeypatch.setattr(discovery, "_cross_provider_candidates", REAL_CROSS_PROVIDER)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [[_rg("rg-album", "Album A", "Album", "2024-01-01", _credit(("Mio", "")))]]
+    fake.search_counts["mb-mio"] = 1
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def search_artist(self, name):
+            return [ArtistCandidate(name="Mio", provider="deezer", provider_id="9")]
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="Album A",
+                    primary_artist="Mio",
+                    type="album",
+                    first_release_date="2024-09-01",
+                    provider="deezer",
+                    provider_id="999",
+                )
+            ]
+
+    monkeypatch.setattr(discovery, "providers_for_name_search", lambda: [_FakeDeezerProvider()])
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        rows = db.scalars(select(Release)).all()
+        assert len(rows) == 1
+        assert rows[0].rgid == "rg-album"
+        assert rows[0].provider == "mb"
+        # the provider id of the (deduped) Deezer copy is not created
+        assert db.scalar(select(Release).where(Release.provider_id == "999")) is None
+
+
+async def test_level1_cross_provider_dedups_despite_artist_credit_mismatch(disc_db, monkeypatch):
+    """Phase 15 review fix: the same release found by MB (credit 'Ye') and
+    Deezer (credit 'Kanye West') becomes ONE row — dedup is by normalized
+    title within the tracked artist's releases, not by artist credit."""
+    from app.services.providers.base import ArtistCandidate, ReleaseCandidate
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    monkeypatch.setattr(discovery, "_cross_provider_candidates", REAL_CROSS_PROVIDER)
+    _seed_artists(("Ye", "mb-ye"))
+    fake.search_pages["mb-ye"] = [[_rg("rg-bully", "BULLY", "Album", "2024-03-24", _credit(("Ye", "")))]]
+    fake.search_counts["mb-ye"] = 1
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def search_artist(self, name):
+            return [ArtistCandidate(name="Kanye West", provider="deezer", provider_id="230")]
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="BULLY",
+                    primary_artist="Kanye West",
+                    type="album",
+                    first_release_date="2024-03-24",
+                    provider="deezer",
+                    provider_id="777",
+                    urls={"deezer": "https://www.deezer.com/album/777"},
+                )
+            ]
+
+    monkeypatch.setattr(discovery, "providers_for_name_search", lambda: [_FakeDeezerProvider()])
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        rows = db.scalars(select(Release)).all()
+        assert len(rows) == 1
+        assert rows[0].rgid == "rg-bully"
+        assert rows[0].provider == "mb"
+        assert rows[0].primary_artist == "Ye"
+        assert db.scalar(select(Release).where(Release.provider_id == "777")) is None
+
+
+async def test_level1_cross_provider_requires_exact_name_match(disc_db, monkeypatch):
+    """Phase 15 review fix: without an exact normalized name match the provider
+    contributes nothing — a wrong artist (Deezer 'Y.E') is never used for 'Ye'."""
+    from app.services.providers.base import ArtistCandidate
+
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    monkeypatch.setattr(discovery, "_cross_provider_candidates", REAL_CROSS_PROVIDER)
+    _seed_artists(("Ye", "mb-ye"))
+
+    class _FakeDeezerProvider:
+        name = "deezer"
+
+        async def search_artist(self, name):
+            return [ArtistCandidate(name="Y.E", provider="deezer", provider_id="7924770")]
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            raise AssertionError("fetch_releases must not run without an exact name match")
+
+    monkeypatch.setattr(discovery, "providers_for_name_search", lambda: [_FakeDeezerProvider()])
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["cross_provider_candidates"] == 0
+    assert stats["releases_new"] == 0
+    with get_session_factory()() as db:
+        assert db.scalar(select(Release)) is None
+
+
+async def test_level1_cross_provider_survives_provider_failure(disc_db, monkeypatch):
+    """Phase 15 review fix: a provider raising mid-cross-search never aborts the
+    discovery run; the other artist rows are still processed."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    monkeypatch.setattr(discovery, "_cross_provider_candidates", REAL_CROSS_PROVIDER)
+    _seed_artists(("Mio", "mb-mio"))
+
+    class _BoomDeezerProvider:
+        name = "deezer"
+
+        async def search_artist(self, name):
+            raise RuntimeError("deezer is down")
+
+    class _FineItunesProvider:
+        name = "itunes"
+
+        async def search_artist(self, name):
+            return []
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return []
+
+    monkeypatch.setattr(
+        discovery,
+        "providers_for_name_search",
+        lambda: [_BoomDeezerProvider(), _FineItunesProvider()],
+    )
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    assert stats["artists_processed"] == 1
+    assert stats["cross_provider_candidates"] == 0
+    assert stats["releases_new"] == 0
 
 
 # --- Level 2 ------------------------------------------------------------------

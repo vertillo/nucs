@@ -3,13 +3,16 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError } from '../api/client'
 import {
   useAddArtist,
+  useArtistLookup,
   useArtistSearch,
   useArtists,
   useDeleteArtist,
   useLinkArtist,
   useRematchArtist,
   useSetArtistIgnored,
+  type AddArtistPayload,
   type ArtistCandidate,
+  type ArtistItem,
   type ArtistSource,
 } from '../api/artists'
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll'
@@ -70,9 +73,116 @@ function shortPath(path: string): string {
   return parts.length > 2 ? `…/${parts[parts.length - 2]}/${parts[parts.length - 1]}` : path
 }
 
+/** The provider page where the artist's match was found (phase 15). */
+function providerUrl(artist: ArtistItem): string | null {
+  if (artist.external_url) return artist.external_url
+  if (artist.mbid) return `https://musicbrainz.org/artist/${artist.mbid}`
+  switch (artist.provider) {
+    case 'deezer':
+      return artist.provider_id ? `https://www.deezer.com/artist/${artist.provider_id}` : null
+    case 'itunes':
+      return artist.provider_id ? `https://music.apple.com/artist/${artist.provider_id}` : null
+    case 'discogs':
+      return artist.provider_id ? `https://www.discogs.com/artist/${artist.provider_id}` : null
+    case 'soundcloud':
+      return artist.provider_id ? `https://soundcloud.com/${artist.provider_id}` : null
+    case 'beatport':
+      return artist.provider_id ? `https://www.beatport.com/artist/${artist.provider_id}` : null
+    default:
+      return null
+  }
+}
+
+/** "Match" cell: MusicBrainz, a provider link, Unmatched (+Retry) or Split. */
+function MatchCell({
+  artist,
+  onRetry,
+}: {
+  artist: ArtistItem
+  onRetry: (artist: { id: number; name: string }) => void
+}) {
+  const url = providerUrl(artist)
+  if (artist.mbid) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true">✅</span>
+        <span className="font-semibold text-accentText dark:text-accent">{artist.mb_match_score ?? ''}</span>
+        <a
+          href={`https://musicbrainz.org/artist/${artist.mbid}`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs font-medium text-light-textDim underline-offset-2 hover:underline dark:text-dark-textDim"
+        >
+          MusicBrainz ↗
+        </a>
+      </span>
+    )
+  }
+  if (artist.provider !== 'manual') {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true">✅</span>
+        <span className="font-semibold text-accentText dark:text-accent">
+          {PROVIDER_LABEL[artist.provider] ?? artist.provider}
+        </span>
+        {url && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs font-medium text-light-textDim underline-offset-2 hover:underline dark:text-dark-textDim"
+          >
+            open ↗
+          </a>
+        )}
+      </span>
+    )
+  }
+  if (artist.ignored) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true">✂️</span>
+        <span className="text-light-textDim dark:text-dark-textDim">Split</span>
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span aria-hidden="true">⚠️</span>
+      <span className="text-light-textDim dark:text-dark-textDim">Unmatched</span>
+      <button
+        type="button"
+        onClick={() => onRetry({ id: artist.id, name: artist.name })}
+        className="rounded-full px-3 py-1 text-sm font-medium text-accentText transition-colors dark:text-accent hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:hover:bg-dark-surface2"
+      >
+        Retry
+      </button>
+    </span>
+  )
+}
+
+/** Artist name, linked to the provider page when the artist is matched. */
+function ArtistName({ artist }: { artist: ArtistItem }) {
+  const url = providerUrl(artist)
+  const label = <span className="font-medium text-light-text dark:text-dark-text">{artist.name}</span>
+  if (!url) return label
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      title={url}
+      className="font-medium text-light-text underline-offset-2 hover:text-accentText hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-text dark:hover:text-accent"
+    >
+      {artist.name}
+    </a>
+  )
+}
+
 export default function Artists() {
   const [ignored, setIgnored] = useState<'all' | 'yes' | 'no'>('all')
   const [matched, setMatched] = useState<'all' | 'no'>('all')
+  const [sort, setSort] = useState<'name_asc' | 'name_desc'>('name_asc')
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
@@ -101,6 +211,7 @@ export default function Artists() {
     ignored,
     matched,
     q: debouncedSearch.trim(),
+    sort,
   })
   const setIgnore = useSetArtistIgnored()
   const addArtist = useAddArtist()
@@ -109,6 +220,7 @@ export default function Artists() {
 
   const items = data?.pages.flatMap((page) => page.items) ?? []
   const total = data?.pages[0]?.total ?? 0
+  const unmatchedTotal = data?.pages[0]?.unmatched_total ?? 0
 
   const sentinelRef = useRef<HTMLDivElement>(null)
   useInfiniteScroll(sentinelRef, !!hasNextPage, isFetchingNextPage, () => {
@@ -147,35 +259,39 @@ export default function Artists() {
     )
   }
 
-  function handleAddFallback() {
-    const name = addQuery.trim()
-    if (!name) {
-      setAddError('Enter an artist name.')
+  function handleAddWithUrl(name: string, urlValue: string) {
+    const payload: AddArtistPayload = {}
+    if (name.trim()) payload.name = name.trim()
+    if (urlValue.trim()) payload.url = urlValue.trim()
+    if (!payload.name && !payload.url) {
+      setAddError('Enter an artist name or a URL.')
       return
     }
     setAddError(null)
-    addArtist.mutate(
-      { name },
-      {
-        onSuccess: () => {
-          setModalOpen(false)
-          show('Artist added')
-        },
-        onError: (error) => {
-          if (error instanceof ApiError && error.status === 400) {
-            setAddError(error.message)
-          } else {
-            setAddError('Something went wrong. Try again.')
-          }
-        },
+    addArtist.mutate(payload, {
+      onSuccess: () => {
+        setModalOpen(false)
+        show('Artist added')
       },
-    )
+      onError: (error) => {
+        if (error instanceof ApiError && (error.status === 400 || error.status === 422)) {
+          setAddError(error.message)
+        } else {
+          setAddError('Something went wrong. Try again.')
+        }
+      },
+    })
   }
 
   function handlePickCandidate(candidate: ArtistCandidate) {
     if (!retryArtist) return
     linkArtist.mutate(
-      { id: retryArtist.id, provider: candidate.provider, provider_id: candidate.provider_id ?? undefined },
+      {
+        id: retryArtist.id,
+        provider: candidate.provider,
+        provider_id: candidate.provider_id ?? undefined,
+        url: candidate.url ?? undefined,
+      },
       {
         onSuccess: () => {
           setRetryArtist(null)
@@ -225,18 +341,26 @@ export default function Artists() {
         <label className="sr-only" htmlFor="artist-matched-filter">
           Match filter
         </label>
-        <select
-          id="artist-matched-filter"
-          value={matched}
-          onChange={(e) => setMatched(e.target.value as 'all' | 'no')}
-          className="rounded-full border border-light-border bg-light-surface px-3 py-1.5 text-sm text-light-text outline-none focus:ring-2 focus:ring-accent dark:border-dark-border dark:bg-dark-surface dark:text-dark-text"
-        >
-          {MATCHED_OPTIONS.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            id="artist-matched-filter"
+            value={matched}
+            onChange={(e) => setMatched(e.target.value as 'all' | 'no')}
+            className="rounded-full border border-light-border bg-light-surface px-3 py-1.5 text-sm text-light-text outline-none focus:ring-2 focus:ring-accent dark:border-dark-border dark:bg-dark-surface dark:text-dark-text"
+          >
+            {MATCHED_OPTIONS.map(({ value, label }) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <span
+            title="Artists without a match"
+            className="rounded-full bg-light-surface2 px-2.5 py-1 text-xs font-semibold text-light-textDim dark:bg-dark-surface2 dark:text-dark-textDim"
+          >
+            {unmatchedTotal} unmatched
+          </span>
+        </div>
         <button
           type="button"
           onClick={openModal}
@@ -276,9 +400,19 @@ export default function Artists() {
           <table className="mt-6 hidden w-full border-collapse md:table">
             <thead>
               <tr className="border-b border-light-border text-left text-xs uppercase tracking-wide text-light-textDim dark:border-dark-border dark:text-dark-textDim">
-                <th className="px-4 py-2 font-medium">Name</th>
+                <th className="px-4 py-2 font-medium">
+                  <button
+                    type="button"
+                    aria-sort={sort === 'name_asc' ? 'ascending' : 'descending'}
+                    onClick={() => setSort(sort === 'name_asc' ? 'name_desc' : 'name_asc')}
+                    className="inline-flex items-center gap-1 uppercase tracking-wide text-light-textDim transition-colors hover:text-light-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-textDim dark:hover:text-dark-text"
+                  >
+                    Name
+                    <span aria-hidden="true">{sort === 'name_asc' ? '▲' : '▼'}</span>
+                  </button>
+                </th>
                 <th className="px-4 py-2 font-medium">Source</th>
-                <th className="px-4 py-2 font-medium">MB match</th>
+                <th className="px-4 py-2 font-medium">Match</th>
                 <th className="px-4 py-2 font-medium">Releases</th>
                 <th className="px-4 py-2 font-medium">Ignore</th>
                 <th className="px-4 py-2 font-medium" />
@@ -288,8 +422,8 @@ export default function Artists() {
               {items.map((artist) => (
                 <tr key={artist.id} className="border-b border-light-border dark:border-dark-border">
                   <td className="px-4 py-3">
-                    <p className="font-medium text-light-text dark:text-dark-text">{artist.name}</p>
-                    {artist.mbid == null && artist.source_files.length > 0 && (
+                    <ArtistName artist={artist} />
+                    {artist.mbid == null && artist.provider === 'manual' && artist.source_files.length > 0 && (
                       <p className="mt-0.5 text-xs text-light-textDim dark:text-dark-textDim">
                         {artist.source_files.map(shortPath).join(' · ')}
                       </p>
@@ -306,25 +440,7 @@ export default function Artists() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    {artist.mbid ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span aria-hidden="true">✅</span>
-                        <span className="font-semibold text-accentText dark:text-accent">{artist.mb_match_score ?? ''}</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-2">
-                        <span aria-hidden="true">⚠️</span>
-                        <span className="text-light-textDim dark:text-dark-textDim">Unmatched</span>
-                        <button
-                          type="button"
-                          disabled={false}
-                          onClick={() => setRetryArtist({ id: artist.id, name: artist.name })}
-                          className="rounded-full px-3 py-1 text-sm font-medium text-accentText transition-colors dark:text-accent hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:hover:bg-dark-surface2"
-                        >
-                          Retry
-                        </button>
-                      </span>
-                    )}
+                    <MatchCell artist={artist} onRetry={setRetryArtist} />
                   </td>
                   <td className="px-4 py-3 text-light-textDim dark:text-dark-textDim">{artist.releases_count}</td>
                   <td className="px-4 py-3">
@@ -367,35 +483,17 @@ export default function Artists() {
               <li key={artist.id} className="rounded-2xl bg-light-surface p-4 dark:bg-dark-surface">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate font-medium text-light-text dark:text-dark-text">{artist.name}</p>
+                    <ArtistName artist={artist} />
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
                       <span className="rounded-full bg-light-surface2 px-2 py-0.5 text-xs font-medium text-light-textDim dark:bg-dark-surface2 dark:text-dark-textDim">
                         {SOURCE_LABEL[artist.source]}
                       </span>
-                      {artist.mbid ? (
-                        <span className="inline-flex items-center gap-1">
-                          <span aria-hidden="true">✅</span>
-                          <span className="font-semibold text-accentText dark:text-accent">{artist.mb_match_score ?? ''}</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5">
-                          <span aria-hidden="true">⚠️</span>
-                          <span className="text-light-textDim dark:text-dark-textDim">Unmatched</span>
-                          <button
-                            type="button"
-                            disabled={false}
-                            onClick={() => setRetryArtist({ id: artist.id, name: artist.name })}
-                            className="rounded-full px-2.5 py-0.5 text-sm font-medium text-accentText transition-colors dark:text-accent hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:hover:bg-dark-surface2"
-                          >
-                            Retry
-                          </button>
-                        </span>
-                      )}
+                      <MatchCell artist={artist} onRetry={setRetryArtist} />
                     </div>
                     <p className="mt-1 text-sm text-light-textDim dark:text-dark-textDim">
                       {artist.releases_count} release{artist.releases_count === 1 ? '' : 's'}
                     </p>
-                    {artist.mbid == null && artist.source_files.length > 0 && (
+                    {artist.mbid == null && artist.provider === 'manual' && artist.source_files.length > 0 && (
                       <p className="mt-1 text-xs text-light-textDim dark:text-dark-textDim">
                         {artist.source_files.map(shortPath).join(' · ')}
                       </p>
@@ -446,7 +544,11 @@ export default function Artists() {
         </>
       )}
 
-      {modalOpen && <AddArtistModal {...{ addQuery, setAddQuery, addError, nameInput, handleAddCandidate, handleAddFallback, addArtist, setModalOpen }} />}
+      {modalOpen && (
+        <AddArtistModal
+          {...{ addQuery, setAddQuery, addError, nameInput, handleAddCandidate, handleAddWithUrl, addArtist, setModalOpen }}
+        />
+      )}
 
       {retryArtist && (
         <RetryModal
@@ -463,13 +565,113 @@ export default function Artists() {
   )
 }
 
+/** One candidate row; clicking opens the match-details panel. */
+function CandidateRow({
+  candidate,
+  onClick,
+  disabled,
+}: {
+  candidate: ArtistCandidate
+  onClick: () => void
+  disabled: boolean
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="flex w-full items-center justify-between gap-3 rounded-xl bg-light-bg px-3 py-2 text-left text-sm transition-colors hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:bg-dark-bg dark:hover:bg-dark-surface2"
+    >
+      <span className="min-w-0 truncate font-medium text-light-text dark:text-dark-text">{candidate.name}</span>
+      <span className="shrink-0 text-xs text-light-textDim dark:text-dark-textDim">
+        {PROVIDER_LABEL[candidate.provider] ?? candidate.provider}
+        {candidate.score != null ? ` · ${candidate.score}` : ''}
+      </span>
+    </button>
+  )
+}
+
+/** Provider-side details of one candidate with a pick/back action (phase 15). */
+function CandidateDetailsPanel({
+  candidate,
+  onPick,
+  onBack,
+  pickLabel,
+  picking,
+}: {
+  candidate: ArtistCandidate
+  onPick: () => void
+  onBack: () => void
+  pickLabel: string
+  picking: boolean
+}) {
+  const lookup = useArtistLookup(candidate)
+  const details = lookup.data
+  return (
+    <div className="rounded-xl bg-light-bg p-3 dark:bg-dark-bg">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold text-light-text dark:text-dark-text">{details?.name ?? candidate.name}</p>
+          <p className="text-xs text-light-textDim dark:text-dark-textDim">
+            {PROVIDER_LABEL[candidate.provider] ?? candidate.provider}
+            {candidate.score != null ? ` · score ${candidate.score}` : ''}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onBack}
+          className="shrink-0 text-sm text-light-textDim transition-colors hover:text-light-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:text-dark-textDim dark:hover:text-dark-text"
+        >
+          ← Back
+        </button>
+      </div>
+      {lookup.isPending && (
+        <p className="mt-2 text-xs text-light-textDim dark:text-dark-textDim">Loading details…</p>
+      )}
+      {details && (
+        <div className="mt-2 space-y-1 text-xs text-light-textDim dark:text-dark-textDim">
+          {details.disambiguation && <p>Disambiguation: {details.disambiguation}</p>}
+          {details.type && <p>Type: {details.type}</p>}
+          {details.country && <p>Country: {details.country}</p>}
+          {details.begin && (
+            <p>
+              Active: {details.begin}
+              {details.end ? ` – ${details.end}` : ' – present'}
+            </p>
+          )}
+          {details.genre && <p>Genre: {details.genre}</p>}
+          {details.nb_album != null && (
+            <p>
+              {details.nb_album} albums
+              {details.nb_fan != null ? ` · ${details.nb_fan.toLocaleString()} fans` : ''}
+            </p>
+          )}
+          {details.aliases && details.aliases.length > 0 && <p>Aliases: {details.aliases.join(', ')}</p>}
+          {details.profile && <p className="line-clamp-3">{details.profile}</p>}
+        </div>
+      )}
+      {lookup.isError && <p className="mt-2 text-xs text-dangerText dark:text-danger">Details unavailable.</p>}
+      <div className="mt-3 flex justify-end">
+        <button
+          type="button"
+          disabled={picking}
+          onClick={onPick}
+          className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-accentHover active:bg-accentActive focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+        >
+          {picking ? 'Working…' : pickLabel}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function AddArtistModal({
   addQuery,
   setAddQuery,
   addError,
   nameInput,
   handleAddCandidate,
-  handleAddFallback,
+  handleAddWithUrl,
   addArtist,
   setModalOpen,
 }: {
@@ -478,11 +680,13 @@ function AddArtistModal({
   addError: string | null
   nameInput: React.RefObject<HTMLInputElement | null>
   handleAddCandidate: (candidate: ArtistCandidate) => void
-  handleAddFallback: () => void
+  handleAddWithUrl: (name: string, url: string) => void
   addArtist: ReturnType<typeof useAddArtist>
   setModalOpen: (open: boolean) => void
 }) {
   const [debounced, setDebounced] = useState('')
+  const [url, setUrl] = useState('')
+  const [selected, setSelected] = useState<ArtistCandidate | null>(null)
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(addQuery), 400)
     return () => clearTimeout(timer)
@@ -504,7 +708,7 @@ function AddArtistModal({
       >
         <h2 className="text-lg font-semibold text-light-text dark:text-dark-text">Add artist</h2>
         <p className="mt-1 text-sm text-light-textDim dark:text-dark-textDim">
-          Search across MusicBrainz, Deezer, Apple Music and Discogs, then pick the right artist.
+          Search across MusicBrainz, Deezer, Apple Music and Discogs, then pick the right artist — or track one by URL.
         </p>
         <div className="mt-4 space-y-4">
           <div>
@@ -519,7 +723,10 @@ function AddArtistModal({
               id="add-artist-query"
               type="search"
               value={addQuery}
-              onChange={(e) => setAddQuery(e.target.value)}
+              onChange={(e) => {
+                setAddQuery(e.target.value)
+                setSelected(null)
+              }}
               placeholder="Search…"
               className={inputClass}
             />
@@ -533,24 +740,15 @@ function AddArtistModal({
           {debounced.trim().length >= 2 && search.isPending && (
             <p className="text-sm text-light-textDim dark:text-dark-textDim">Searching…</p>
           )}
-          {debounced.trim().length >= 2 && !search.isPending && candidates.length > 0 && (
-            <div className="max-h-64 space-y-1 overflow-y-auto">
+          {debounced.trim().length >= 2 && !search.isPending && candidates.length > 0 && !selected && (
+            <div className="max-h-56 space-y-1 overflow-y-auto">
               {candidates.map((candidate, index) => (
-                <button
+                <CandidateRow
                   key={`${candidate.provider}-${candidate.provider_id ?? index}`}
-                  type="button"
+                  candidate={candidate}
                   disabled={addArtist.isPending}
-                  onClick={() => handleAddCandidate(candidate)}
-                  className="flex w-full items-center justify-between gap-3 rounded-xl bg-light-bg px-3 py-2 text-left text-sm transition-colors hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:bg-dark-bg dark:hover:bg-dark-surface2"
-                >
-                  <span className="min-w-0 truncate font-medium text-light-text dark:text-dark-text">
-                    {candidate.name}
-                  </span>
-                  <span className="shrink-0 text-xs text-light-textDim dark:text-dark-textDim">
-                    {PROVIDER_LABEL[candidate.provider] ?? candidate.provider}
-                    {candidate.score != null ? ` · ${candidate.score}` : ''}
-                  </span>
-                </button>
+                  onClick={() => setSelected(candidate)}
+                />
               ))}
             </div>
           )}
@@ -559,6 +757,32 @@ function AddArtistModal({
               No matches found — you can add the name anyway (it will be matched later or tracked by URL).
             </p>
           )}
+          {selected && (
+            <CandidateDetailsPanel
+              candidate={selected}
+              onBack={() => setSelected(null)}
+              onPick={() => handleAddCandidate(selected)}
+              pickLabel="Track this artist"
+              picking={addArtist.isPending}
+            />
+          )}
+
+          <div>
+            <label
+              htmlFor="add-artist-url"
+              className="mb-1 block text-sm font-medium text-light-textDim dark:text-dark-textDim"
+            >
+              Track by URL (optional: MusicBrainz, Deezer, Apple Music, Discogs, SoundCloud, Beatport)
+            </label>
+            <input
+              id="add-artist-url"
+              type="text"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://www.deezer.com/it/artist/265213582"
+              className={inputClass}
+            />
+          </div>
 
           <div className="flex justify-end gap-2">
             <button
@@ -571,10 +795,10 @@ function AddArtistModal({
             <button
               type="button"
               disabled={addArtist.isPending}
-              onClick={handleAddFallback}
+              onClick={() => handleAddWithUrl(addQuery, url)}
               className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-accentHover active:bg-accentActive focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
             >
-              {addArtist.isPending ? 'Adding…' : 'Add by name'}
+              {addArtist.isPending ? 'Adding…' : 'Add artist'}
             </button>
           </div>
         </div>
@@ -598,9 +822,17 @@ function RetryModal({
 }) {
   const [url, setUrl] = useState('')
   const [linkError, setLinkError] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [selected, setSelected] = useState<ArtistCandidate | null>(null)
   const rematch = useRematchArtist()
   const link = useLinkArtist()
   const urlInput = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 400)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
 
   useEffect(() => {
     urlInput.current?.focus()
@@ -613,12 +845,20 @@ function RetryModal({
 
   const result = rematch.data
   const candidates = result?.candidates ?? []
+  const freeSearch = useArtistSearch(debouncedQuery)
+  const freeCandidates = freeSearch.data?.items ?? []
 
   function handleRetry() {
     rematch.mutate(artistId, {
       onSuccess: (res) => {
         if (res.matched) {
           show('Matched on MusicBrainz')
+          onMatched()
+        } else if (res.resolved_split) {
+          show('Artist already resolved via split')
+          onMatched()
+        } else if (res.split_parts.length > 0) {
+          show(`Name split into ${res.split_parts.join(' + ')} (artist ignored)`)
           onMatched()
         }
       },
@@ -654,51 +894,93 @@ function RetryModal({
       >
         <h2 className="text-lg font-semibold text-light-text dark:text-dark-text">Match artist</h2>
         <p className="mt-1 text-sm text-light-textDim dark:text-dark-textDim">
-          Candidates found by name across providers, or track the artist by URL.
+          Search any name across providers, run the MusicBrainz match again, or track the artist by URL.
         </p>
 
         <div className="mt-4 space-y-3">
           <button
             type="button"
-            disabled={false}
             onClick={handleRetry}
             className="rounded-full bg-light-surface2 px-4 py-2 text-sm font-medium text-light-text transition-colors hover:bg-light-border focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:bg-dark-surface2 dark:text-dark-text dark:hover:bg-dark-border"
           >
             {rematch.isPending ? 'Searching…' : 'Search again by name'}
           </button>
 
-          {rematch.data?.split && rematch.data.split.length > 0 && (
+          {rematch.data?.split_parts && rematch.data.split_parts.length > 0 && (
             <p className="text-sm text-light-textDim dark:text-dark-textDim">
-              Possible split: {rematch.data.split.join(' + ')}
+              Possible split: {rematch.data.split_parts.join(' + ')}
+            </p>
+          )}
+          {rematch.data?.resolved_split && (
+            <p className="text-sm text-light-textDim dark:text-dark-textDim">
+              This name was already resolved into parts (artist ignored).
             </p>
           )}
 
-          {candidates.length > 0 ? (
-            <div className="max-h-56 space-y-1 overflow-y-auto">
-              {candidates.map((candidate, index) => (
-                <button
-                  key={`${candidate.provider}-${candidate.provider_id ?? index}`}
-                  type="button"
-                  disabled={link.isPending}
-                  onClick={() => onPickCandidate(candidate)}
-                  className="flex w-full items-center justify-between gap-3 rounded-xl bg-light-bg px-3 py-2 text-left text-sm transition-colors hover:bg-light-surface2 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:bg-dark-bg dark:hover:bg-dark-surface2"
-                >
-                  <span className="min-w-0 truncate font-medium text-light-text dark:text-dark-text">
-                    {candidate.name}
-                  </span>
-                  <span className="shrink-0 text-xs text-light-textDim dark:text-dark-textDim">
-                    {PROVIDER_LABEL[candidate.provider] ?? candidate.provider}
-                    {candidate.score != null ? ` · ${candidate.score}` : ''}
-                  </span>
-                </button>
-              ))}
-            </div>
+          {selected ? (
+            <CandidateDetailsPanel
+              candidate={selected}
+              onBack={() => setSelected(null)}
+              onPick={() => onPickCandidate(selected)}
+              pickLabel="Link artist"
+              picking={link.isPending}
+            />
           ) : (
-            !rematch.isPending && (
-              <p className="text-sm text-light-textDim dark:text-dark-textDim">
-                No candidates yet — run a search or link an artist URL below.
-              </p>
-            )
+            <>
+              <div>
+                <label
+                  htmlFor="retry-artist-search"
+                  className="mb-1 block text-sm font-medium text-light-textDim dark:text-dark-textDim"
+                >
+                  Search a name (not necessarily the artist's own)
+                </label>
+                <input
+                  id="retry-artist-search"
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search…"
+                  className={inputClass}
+                />
+                {debouncedQuery.trim().length >= 2 && freeSearch.isPending && (
+                  <p className="mt-1 text-sm text-light-textDim dark:text-dark-textDim">Searching…</p>
+                )}
+                {debouncedQuery.trim().length >= 2 && !freeSearch.isPending && freeCandidates.length > 0 && (
+                  <div className="mt-1 max-h-44 space-y-1 overflow-y-auto">
+                    {freeCandidates.map((candidate, index) => (
+                      <CandidateRow
+                        key={`${candidate.provider}-${candidate.provider_id ?? index}`}
+                        candidate={candidate}
+                        disabled={link.isPending}
+                        onClick={() => setSelected(candidate)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {debouncedQuery.trim().length >= 2 && !freeSearch.isPending && freeCandidates.length === 0 && (
+                  <p className="mt-1 text-sm text-light-textDim dark:text-dark-textDim">No matches found.</p>
+                )}
+              </div>
+
+              {candidates.length > 0 ? (
+                <div className="max-h-44 space-y-1 overflow-y-auto">
+                  {candidates.map((candidate, index) => (
+                    <CandidateRow
+                      key={`${candidate.provider}-${candidate.provider_id ?? index}`}
+                      candidate={candidate}
+                      disabled={link.isPending}
+                      onClick={() => setSelected(candidate)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                !rematch.isPending && (
+                  <p className="text-sm text-light-textDim dark:text-dark-textDim">
+                    No candidates yet — run a search or link an artist URL below.
+                  </p>
+                )
+              )}
+            </>
           )}
 
           <div>

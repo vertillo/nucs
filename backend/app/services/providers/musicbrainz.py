@@ -11,7 +11,7 @@ accepted only when at least one of its releases has status ``official``
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from app.models import Artist
 from app.services import errors as error_service
@@ -47,6 +47,35 @@ class MusicBrainzProvider(Provider):
             for item in results
         ]
 
+    async def resolve_artist_name(self, provider_id: str) -> str | None:
+        """The artist's canonical name for a MusicBrainz id (phase 15)."""
+        try:
+            client = await get_client()
+            data = await client.get_artist(provider_id)
+        except MBError:
+            return None
+        return (data.get("name") or "").strip() or None
+
+    async def artist_details(self, provider_id: str, *, db=None) -> dict | None:
+        """Rich artist info (aliases/disambiguation) for the match picker (phase 15)."""
+        try:
+            client = await get_client()
+            data = await client.get_artist(provider_id, inc="aliases")
+        except MBError:
+            return None
+        life_span = data.get("life-span") or {}
+        return {
+            "provider": PROVIDER_MB,
+            "provider_id": provider_id,
+            "name": data.get("name") or "",
+            "disambiguation": data.get("disambiguation") or "",
+            "type": data.get("type") or "",
+            "country": data.get("country") or "",
+            "begin": life_span.get("begin") or "",
+            "end": life_span.get("end") or "",
+            "aliases": [alias.get("name") for alias in (data.get("aliases") or []) if alias.get("name")][:20],
+        }
+
     async def fetch_releases(
         self,
         artist: Artist,
@@ -65,12 +94,17 @@ class MusicBrainzProvider(Provider):
             return []
         client = await get_client(email)
         candidates: list[ReleaseCandidate] = []
+        # Phase 15: widen the search window ~2 years so release groups whose
+        # first release is old but which have official releases inside the
+        # discovery window (reissues) are still returned; discovery re-checks
+        # the official release dates before accepting them.
+        wide_from = from_date - timedelta(days=730)
         offset = 0
         while True:
             if stats is not None:
                 stats["api_calls"] += 1
             data = await client.search_release_groups(
-                artist.mbid, from_date.isoformat(), limit=100, offset=offset
+                artist.mbid, wide_from.isoformat(), limit=100, offset=offset
             )
             groups = data.get("release-groups") or []
             for group in groups:
@@ -114,19 +148,29 @@ class MusicBrainzProvider(Provider):
             return None
 
     def has_official_release(self, details: dict) -> bool:
-        for release in details.get("releases") or []:
-            if (release.get("status") or "").strip().lower() in _OFFICIAL_STATUSES:
-                return True
-        return False
+        return any(
+            (release.get("status") or "").strip().lower() in _OFFICIAL_STATUSES
+            for release in (details.get("releases") or [])
+        )
 
-    def earliest_official_release_id(self, details: dict) -> str | None:
-        """The release id of the oldest official release (used for tracklists)."""
-        candidates = [
-            (release.get("date") or "", release.get("id"))
+    def _official_releases(self, details: dict) -> list[tuple[str, str]]:
+        """(date, release_id) pairs of the official releases, oldest date first."""
+        entries = [
+            (release.get("date") or "", release.get("id") or "")
             for release in (details.get("releases") or [])
             if (release.get("status") or "").strip().lower() in _OFFICIAL_STATUSES and release.get("id")
         ]
-        return min(candidates)[1] if candidates else None
+        return sorted(entries)
+
+    def earliest_official_release_id(self, details: dict) -> str | None:
+        """The release id of the oldest official release (used for tracklists)."""
+        entries = self._official_releases(details)
+        return entries[0][1] if entries else None
+
+    def earliest_official_release_date(self, details: dict) -> str | None:
+        """The date of the oldest official release (phase 15: reissue rescue)."""
+        entries = self._official_releases(details)
+        return entries[0][0] if entries and entries[0][0] else None
 
     async def fetch_tracks(self, provider_id: str, *, email: str | None = None) -> list[TrackCandidate]:
         """Tracklist of one MusicBrainz release (media -> tracks), best effort."""

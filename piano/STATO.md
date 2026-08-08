@@ -6,12 +6,26 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **13 (in corso)** — verifica manuale delle voci residue (F4, F7, F2/B8, G8-visuale, J1-J2, C11=N.A.) con la tabella 13b come evidenza; **13b COMPLETATA E MERGIATA** (2026-08-07, branch `fase-13b-automazione-verifica` → main, fast-forward `ba07cc6`)
-- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, `e2e:13` 96/96 + findings 13B-01..06 risolti, regressioni complete verdi)
-- Prossima: **fase 14** (produzione) dopo la 13 residua
+- Fase corrente: **15 (completata)** — correzioni dai 15 finding dell'uso manuale; review della verifica (8.1) e review finale (8.2) eseguite: **Approvato con riserve, riserve risolte**; backend **338 passed**, ruff pulito, `tsc --noEmit` + build ok. Doc: `piano/fasi/fase-15-correzioni-utente.md`. Resta solo la checklist manuale §7 a cura dell'operatore.
+- Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, `e2e:13` 96/96 + findings 13B-01..06 risolti, regressioni complete verdi), **13** (verifica manuale, voci residue da fase 14), **15** (2026-08-08, branch corrente)
+- Prossima: **fase 14** (produzione) / **fase 16** (rifiniture riserve bassa gravità della 15, se richieste)
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
 
 ---
+
+## FASE 15 — Correzioni dal feedback manuale (bugfix) — 2026-08-08
+- Doc di fase: `piano/fasi/fase-15-correzioni-utente.md` (contiene anche i prompt di review 8.1/8.2 e gli esiti §9/§9.1). Nessun test E2E browser: verifica automatica = pytest + ruff + tsc/build; verifica funzionale = checklist manuale §7 (a cura dell'operatore).
+- Cosa è stato fatto (mappatura ai 15 finding utente):
+  - **Semantica "matched" multi-provider** (F1, F3, F5, F7, F8, F13b): matched = `mbid` valorizzato **oppure** artista linkato a un provider (`Artist.is_matched`); filtro `matched=no` e `match_all_pending` escludono gli artisti provider-linked; `rematch` con semantica esplicita (`matched`/`split_parts`/`resolved_split`) e guard sui padri splittati (nessuna ricerca MB); toast Retry coerenti (mai falso "Matched on MusicBrainz").
+  - **Matching migliorato**: fallback senza articolo ("The Levellers" → "Levellers", verificato su scan reale) con short-circuit ≥90 (1 richiesta MB risparmiata); split "Deniz Koyu & Amba Shepherd" → entrambi i figli creati e matchati (verifica reale: Amba Shepherd mbid `6875d5ba…`); recovery idempotente dello split dopo MBError parziale.
+  - **UI artisti**: colonna "MB match" → **"Match"** (MB·score / provider / Unmatched+Retry / Split), nome artista linkato alla pagina del provider (url dal picker), ordinamento `sort=name_asc|name_desc`, badge `unmatched_total`, Add Artist con **URL** (locale-aware, risoluzione nome da mb/deezer/itunes), pannello **dettaglio candidato** (`GET /artists/lookup`: aliases/disambiguation/album-fan/genere) in Add e Retry, Retry con **ricerca libera per nome**.
+  - **URL parsing**: prefissi locale per Deezer/iTunes (`/it/artist/…`, `/de/…`, `/en-US/…`) + test con query param/fragment.
+  - **Feed**: pulsante "Remove releases without artists" (`POST /releases/purge-orphans` + evento audit dedicato `releases_purged`), messaggio guida "Nessun artista tracciato" post-reset, filtri nei **query param URL** (sopravvivono a navigazione e back/forward; updater funzionale di `setSearchParams` per evitare la race col debounce).
+  - **Discovery**: default `discovery_from_date` → inizio anno (seed e fallback); finestra MB +730gg con **rescue reissue** (gruppo accettato se una release officiale è nella finestra, data = prima release officiale, mai gruppi futuri); **cross-provider** per artisti MB via nome + fino a 2 alias (es. "Ye" → "Kanye West" → Deezer 230 → "BULLY - DELUXE"), dedup per titolo normalizzato entro le release dell'artista tracciato (gestisce credit diversi "Ye"/"Kanye West"), nessun fallback cieco sul primo risultato, failure-tolerant per provider down.
+- **Review**: 8.1 (verifica) → "Sì con riserve", 8 riserve risolte (dedup oltre finestra, race debounce, fallback cieco, external_url picker, provider down, URL con query param, purge condivisa, recovery split). 8.2 (review finale) → "Approvato con riserve", 2 fix (dedup per titolo entro l'artista, short-circuit articolo) + riserve bassa gravità documentate e rimandate (evento audit purge — **risolto**, trattino cosmetico — **risolto**; STATO.md — **questo file**).
+- Test: backend **338 passed** (309 → 338; nuovi: sort/unmatched_total, rematch split/resolved, URL locale, add-by-URL, lookup, purge orfane + condivisa, reissue x3, cross-provider x6, fallback articolo + short-circuit, split recovery, Amba Shepherd), ruff check+format OK; frontend `tsc --noEmit` + build OK.
+- Verifica manuale residua (checklist §7 del doc di fase): **12 voci a cura dell'operatore** (toast Retry, sort/badge, scan Levellers/Pepp 'O Red, pannello KSI, colonna Match Deezer, add-by-URL, retry ricerca libera, link nome, split Amba Shepherd, reset+sync, filtri feed, Ye Bully/Bully Deluxe).
+
 
 ## FASE 13b — Automazione del sottoinsieme deterministico della verifica manuale (e2e:13) — 2026-08-07
 - Branch: `fase-13b-automazione-verifica` — doc di fase: `piano/fasi/fase-13b-automazione-verifica-manuale.md`

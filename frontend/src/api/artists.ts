@@ -21,6 +21,7 @@ export interface ArtistItem {
 export interface ArtistsResponse {
   items: ArtistItem[]
   total: number
+  unmatched_total: number
   page: number
   page_size: number
 }
@@ -29,6 +30,7 @@ export interface ArtistFilters {
   ignored: 'all' | 'yes' | 'no'
   matched: 'all' | 'no'
   q: string
+  sort: 'name_asc' | 'name_desc'
 }
 
 export interface ArtistCandidate {
@@ -43,8 +45,9 @@ export interface ArtistCandidate {
 export interface RematchResult {
   matched: boolean
   mbid: string | null
+  resolved_split: boolean
+  split_parts: string[]
   candidates: ArtistCandidate[]
-  split: string[]
 }
 
 function buildUrl(filters: ArtistFilters, page: number): string {
@@ -53,6 +56,7 @@ function buildUrl(filters: ArtistFilters, page: number): string {
   if (filters.ignored !== 'all') params.set('ignored', filters.ignored)
   if (filters.matched !== 'all') params.set('matched', filters.matched)
   if (filters.q) params.set('q', filters.q)
+  if (filters.sort !== 'name_asc') params.set('sort', filters.sort)
   return `/api/v1/artists?${params.toString()}`
 }
 
@@ -87,11 +91,12 @@ export function useArtistSearch(q: string) {
 }
 
 export interface AddArtistPayload {
-  name: string
+  name?: string
   provider?: ArtistProvider
   provider_id?: string
   mbid?: string | null
   external_url?: string | null
+  url?: string
 }
 
 export function useAddArtist() {
@@ -103,6 +108,39 @@ export function useAddArtist() {
       queryClient.invalidateQueries({ queryKey: ['artists'] })
       queryClient.invalidateQueries({ queryKey: ['artists-count'] })
     },
+  })
+}
+
+export interface ArtistDetails {
+  provider: ArtistProvider
+  provider_id: string
+  name: string
+  disambiguation?: string
+  type?: string
+  country?: string
+  begin?: string
+  end?: string
+  aliases?: string[]
+  nb_album?: number
+  nb_fan?: number
+  picture?: string
+  genre?: string
+  url?: string
+  profile?: string
+}
+
+/** Provider-side details of one candidate (match picker panel, phase 15). */
+export function useArtistLookup(candidate: ArtistCandidate | null) {
+  return useQuery<ArtistDetails>({
+    queryKey: ['artist-lookup', candidate?.provider, candidate?.provider_id],
+    queryFn: () =>
+      get<ArtistDetails>(
+        `/api/v1/artists/lookup?provider=${encodeURIComponent(candidate?.provider ?? '')}&provider_id=${encodeURIComponent(
+          candidate?.provider_id ?? '',
+        )}`,
+      ),
+    enabled: !!candidate && !!candidate.provider_id,
+    retry: false,
   })
 }
 

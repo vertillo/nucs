@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from app.db import get_session_factory
 from app.models import Artist, Release, ReleaseArtist, ReleaseState
 
@@ -322,3 +324,73 @@ async def test_api_seen_all_rejects_unknown_fields(client):
         "/api/v1/releases/seen-all", json={"from": "2024-06-01", "evil": True}, headers=API_HEADERS
     )
     assert response.status_code == 422
+
+
+async def test_api_purge_orphans_removes_releases_without_artists(client):
+    """Releases that lost their artist (artist deleted) are removed; releases
+    still linked to an artist stay (phase 15)."""
+    seed = _seed()
+    await _login(client)
+    with get_session_factory()() as db:
+        orphan = Release(
+            rgid="rg-orphan",
+            title="Orphan Release",
+            primary_artist="Nobody",
+            type="single",
+            first_release_date="2024-10-01",
+        )
+        db.add(orphan)
+        db.flush()
+        orphan_id = orphan.id
+        db.add(ReleaseState(release_id=orphan_id, seen=1))
+        db.commit()
+
+    before = (await client.get("/api/v1/releases")).json()
+    assert before["total"] == 5  # rg-3 is hidden, excluded from the default list
+
+    response = await client.post("/api/v1/releases/purge-orphans", headers=API_HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {"removed": 1}
+
+    after = (await client.get("/api/v1/releases")).json()
+    assert after["total"] == 4
+    assert all(item["id"] in seed["ids"] for item in after["items"])
+
+    again = await client.post("/api/v1/releases/purge-orphans", headers=API_HEADERS)
+    assert again.json() == {"removed": 0}
+
+
+async def test_api_purge_orphans_keeps_releases_shared_between_artists(client):
+    """A release still linked to ANY artist survives the purge (phase 15)."""
+    seed = _seed()
+    await _login(client)
+    with get_session_factory()() as db:
+        second = Artist(name="Secondo", normalized_name="secondo", source="tag_artist")
+        db.add(second)
+        db.flush()
+        shared = Release(
+            rgid="rg-shared",
+            title="Shared Album",
+            primary_artist="Mio & Secondo",
+            type="album",
+            first_release_date="2024-11-01",
+        )
+        db.add(shared)
+        db.flush()
+        db.add(
+            ReleaseArtist(release_id=seed["ids"][0], artist_id=second.id, role="featured"),
+        )
+        db.add(ReleaseArtist(release_id=shared.id, artist_id=seed["artist_id"], role="primary"))
+        db.add(ReleaseArtist(release_id=shared.id, artist_id=second.id, role="primary"))
+        db.commit()
+
+    response = await client.post("/api/v1/releases/purge-orphans", headers=API_HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {"removed": 0}
+    with get_session_factory()() as db:
+        assert db.scalar(select(Release).where(Release.rgid == "rg-shared")) is not None
+
+
+async def test_api_purge_orphans_requires_auth(client):
+    response = await client.post("/api/v1/releases/purge-orphans", headers=API_HEADERS)
+    assert response.status_code == 401
