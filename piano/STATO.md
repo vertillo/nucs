@@ -6,7 +6,7 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **15 (completata)** — correzioni dai 15 finding dell'uso manuale; review della verifica (8.1) e review finale (8.2) eseguite: **Approvato con riserve, riserve risolte**; backend **338 passed**, ruff pulito, `tsc --noEmit` + build ok. Doc: `piano/fasi/fase-15-correzioni-utente.md`. Resta solo la checklist manuale §7 a cura dell'operatore.
+- Fase corrente: **15 (completata e committata su main `b6dc720`)** — correzioni dai 15 finding dell'uso manuale; review della verifica (8.1) e review finale (8.2) eseguite: **Approvato con riserve, riserve risolte**; backend **338 passed**, ruff pulito, `tsc --noEmit` + build ok. Doc: `piano/fasi/fase-15-correzioni-utente.md`. Resta solo la checklist manuale §7 a cura dell'operatore (12 voci).
 - Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, `e2e:13` 96/96 + findings 13B-01..06 risolti, regressioni complete verdi), **13** (verifica manuale, voci residue da fase 14), **15** (2026-08-08, branch corrente)
 - Prossima: **fase 14** (produzione) / **fase 16** (rifiniture riserve bassa gravità della 15, se richieste)
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
