@@ -136,28 +136,32 @@ export default function Feed() {
 
   useEffect(() => setSearchInput(q), [q])
 
+  // react-router v6's functional setSearchParams updater receives the params
+  // of the render that created the callback closure, not the latest ones: a
+  // debounced writer would therefore OVERWRITE filter changes made within the
+  // debounce window (phase-15 race). Track the latest params in a ref and
+  // merge against it explicitly instead.
+  const searchParamsRef = useRef(searchParams)
+  useEffect(() => {
+    searchParamsRef.current = searchParams
+  }, [searchParams])
+
   useEffect(() => {
     const timer = setTimeout(() => {
-      // Functional updater: merge against the LATEST params so filter changes
-      // (type/unseen) made within the debounce window are never overwritten.
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev)
-        if (searchInput.trim()) next.set('q', searchInput.trim())
-        else next.delete('q')
-        return next
-      }, { replace: true })
+      const next = new URLSearchParams(searchParamsRef.current)
+      if (searchInput.trim()) next.set('q', searchInput.trim())
+      else next.delete('q')
+      setSearchParams(next, { replace: true })
     }, 300)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchInput])
 
   function updateParam(key: string, value: string | null) {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev)
-      if (value === null || value === '') next.delete(key)
-      else next.set(key, value)
-      return next
-    }, { replace: true })
+    const next = new URLSearchParams(searchParamsRef.current)
+    if (value === null || value === '') next.delete(key)
+    else next.set(key, value)
+    setSearchParams(next, { replace: true })
   }
 
   const filters: ReleaseFilters = { type, unseenOnly, q }
