@@ -86,7 +86,7 @@ FINDING-13-<NN> | <area>
 - [ ] **C2.** Chip filtri All / Albums / Singles / EPs → i conteggi visibili corrispondono al DB (`?type=...` via API).
 - [ ] **C3.** Combinazione: Singles + "Unseen only" + testo di ricerca → risultato coerente.
 - [ ] **C4.** Ricerca con caratteri speciali: `%`, `_`, `\`, `"`, `'` → nessun errore, risultati letterali; stringa inesistente → empty state.
-- [ ] **C5.** Empty state corretto: "No new releases" + hint + link a Settings.
+- [ ] **C5.** Empty state corretto: **"No new releases"** + hint + link a Settings (con artisti tracciati); con **zero artisti tracciati** (post-reset) → **"No tracked artists"** + hint "Run a library scan from Settings" + link a `/settings` (fase 15, WI-8). *(C5-no-tracked automatizzato da e2e:15)*
 - [ ] **C6.** "Load more" fino alla fine → bottone sparisce/disabilitato; **conta le card**: nessun duplicato con `total`.
 - [ ] **C7.** "Mark all as seen": clicca **Annulla** nel confirm → nulla cambia; poi **OK** → pallini spariti; "Unseen only" → empty state.
 - [ ] **C8.** Card → dettaglio → **Back del browser** → la card non ha più il pallino (seen).
@@ -97,19 +97,26 @@ FINDING-13-<NN> | <area>
 - [ ] **C13.** Copertina rotta (forza un rgid senza file via API o rinomina un file in `covers/`) → placeholder, nessun layout rotto.
 - [ ] **C14.** Throttle Slow 3G in DevTools → skeleton visibile, poi card; se una richiesta fallisce → messaggio + "Retry".
 - [ ] **C15.** "Load more" con rete lenta → nessuna card duplicata per doppio trigger.
+- [ ] **C16.** **Purge release orfane** (fase 15, WI-7): cancella un artista con release → le sue release **restano nel feed** (documentato); bottone "Remove releases without artists" → **Annulla** nel confirm → nulla cambia; **OK** → toast "Removed N releases without artists" (o "No releases without artists" se 0) e le release orfane spariscono dal feed (verifica con API `GET /releases/{id}` → 404); ripeti il purge → 0 rimosse (idempotente); audit log ha eventi `releases_purged`. *(automatizzato da e2e:15)*
+- [ ] **C17.** **Filtri feed nei query param** (fase 15, WI-9): imposta ricerca + tipo + "Unseen only" → l'URL mostra `?q=…&type=…&unseen=1`; vai su Artisti e torna (back del browser) → input e filtri ripristinati; back/forward mantengono i filtri. *(automatizzato da e2e:15)*
+- [ ] **C18.** **Race debounce filtri** (fase 15, review): digita nel campo ricerca e **entro ~300 ms** cambia il filtro tipo → al debounce il filtro tipo resta attivo (URL con entrambi i parametri), non viene sovrascritto. *(automatizzato da e2e:15)*
 
-### Area D — Artisti (fase 09)
+### Area D — Artisti (fase 09 + fase 15)
 
-- [ ] **D1.** Lista popolata: badge sorgente corretti (Artist / Album artist / Featuring / Contributor / Manual), stato match ✅ + score oppure ⚠️ "Unmatched".
+- [ ] **D1.** Lista popolata: badge sorgente corretti (Artist / Album artist / Featuring / Contributor / Remixer / Manual). Colonna **"Match"** (fase 15, WI-1) con 4 stati: **(a)** mbid → ✅ + score + link "MusicBrainz ↗"; **(b)** provider ≠ manual → ✅ + label provider (Deezer/Apple Music/Discogs/…) + link "open ↗"; **(c)** attivo senza match → ⚠️ "Unmatched" + bottone Retry; **(d)** ignorato senza mbid (padre splittato) → ✂️ "Split" **senza Retry**. Nome artista **cliccabile** (nuova tab) solo quando matched → pagina del match (MB o provider) (WI-1, F11). *(render 4 stati + link nome automatizzati da e2e:15)*
 - [ ] **D2.** Search: nome completo, frammento, caratteri speciali, inesistente → filtro corretto, nessun errore.
-- [ ] **D3.** Filtro All / Active / Ignored coerente.
-- [ ] **D4.** "+ Add artist": nome nuovo → appare in lista; **duplicato** (anche case-insensitive) → errore inline; nome vuoto / banale (`a`, `Various Artists`) → errore; nome con virgolette/unicode → ok o errore pulito.
+- [ ] **D3.** Filtro All / Active / Ignored coerente; filtro "Unmatched only" → solo righe Unmatched **o Split** (mai provider/MB) (fase 15: `matched=no` = mbid null **e** provider manual). *(automatizzato da e2e:15)*
+- [ ] **D4.** "+ Add artist" (fase 15, WI-4/WI-5): **(a)** ricerca nome → righe candidate per provider → **click sul candidato → pannello "Dettaglio match"** (nome, disambiguation/alias/genere/paese, conteggio album per Deezer, link pagina esterna, bottone "Track this artist"; "← Back" torna alla lista); **(b)** "Add artist" con solo nome → creato e matchato in background; **(c)** campo "Track by URL (opzionale)": URL Deezer locale (`/it/artist/…`) → artista creato **già linkato** con nome risolto dal provider; URL non supportato → errore inline; nome vuoto con URL di un provider senza risoluzione (SoundCloud/Discogs/Beatport) → errore chiaro; URL **+** coppia provider/id → 422; **(d)** duplicato (anche case-insensitive) → errore inline; nome vuoto / banale (`a`, `Various Artists`) → errore; nome con virgolette/unicode → ok o errore pulito. *(pannello candidato + add-by-URL + errori automatizzati da e2e:15)*
 - [ ] **D5.** Match in background: dopo ~5-10 s un reload → l'artista ha `mbid` (o "Unmatched") — mai errore bloccante.
-- [ ] **D6.** "Retry" su un Unmatched, **due volte di fila** → nessun errore; il secondo click è accodato senza crash.
+- [ ] **D6.** "Retry" su un Unmatched (fase 15, WI-1/WI-6): **(a)** "Search again by name" su un nome non matchabile → **nessun** toast falso "Matched on MusicBrainz", la modale resta aperta; **(b)** su un nome che matcha → toast "Matched on MusicBrainz" e modale chiusa; **(c)** su un nome splittabile → toast "Name split into X + Y (artist ignored)"; **(d)** la UI non offre Retry sulle righe "Split" (il toast "Artist already resolved via split" del backend è verificabile via API `POST /artists/{id}/rematch` → `resolved_split: true` — *(automatizzato da e2e:15, API)*); **(e)** ricerca libera "Search a name (not necessarily the artist's own)" → righe candidate → click → pannello dettaglio → "Link artist" → toast "Artist matched" e `external_url` salvato (verifica API); **(f)** "Track by URL" nel modal (stessi formati di D4c); **(g)** Retry due volte di fila → nessun errore. *(a/e/g automatizzati da e2e:15)*
 - [ ] **D7.** Toggle "Ignore" **×5 rapido** → stato finale coerente col server (verifica con reload e con API).
-- [ ] **D8.** Ignora un artista che ha release: nessun errore; documenta (le release esistenti restano nel feed, la discovery futura non le aggiorna più — comportamento atteso, annota se lo vedi diverso).
+- [ ] **D8.** Ignora un artista che ha release: nessun errore; **la riga passa allo stato "Split"** (ignorato senza mbid, fase 15) e le release esistenti restano nel feed (la discovery futura non le aggiorna più — comportamento atteso); se le release restano orfane (artista **cancellato**) → pulizia con "Remove releases without artists" (vedi C16).
 - [ ] **D9.** Paginazione "Load more" senza duplicati.
 - [ ] **D10.** Mobile 375px: la tabella diventa lista di card usabile.
+- [ ] **D11.** **Sort per nome** (fase 15, WI-2): click sull'header "Name" (freccia ▲/▼, `aria-sort`) → alterna asc/desc; ordine coerente con `GET /artists?sort=name_desc`; accanto al filtro c'è il **badge "{N} unmatched"** coerente con `unmatched_total` dell'API. *(automatizzato da e2e:15)*
+- [ ] **D12.** **Add by URL end-to-end**: `https://www.deezer.com/it/artist/265213582` → artista creato, colonna Match = "Deezer", nome linkato a `deezer.com/artist/265213582`; stesso flusso con un URL MusicBrainz (mbid). *(automatizzato da e2e:15, con skip-note se Deezer giù)*
+- [ ] **D13.** **Nome artista linkato** (fase 15, F11): per un artista matched, il nome nella tabella è un link `target="_blank"` con `rel="noreferrer"` verso la pagina del match (MB per gli mbid, provider per gli altri); per gli Unmatched/Split il nome NON è linkato. *(automatizzato da e2e:15)*
+- [ ] **D14.** **Split reale da scan**: la riga del padre splittato (es. "Deniz Koyu & Amba Shepherd") mostra "Split"; i figli sono tracciati e matchati (vedi fase 15 §7 voce 9 — manuale, richiede la libreria reale).
 
 ### Area E — Impostazioni (fase 09)
 

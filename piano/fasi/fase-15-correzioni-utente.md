@@ -4,7 +4,7 @@ File: `piano/fasi/fase-15-correzioni-utente.md`
 
 ## 1. Contesto e obiettivi
 
-Correzione dei 15 finding emersi dall'uso manuale dell'app. Nessun test E2E browser: la verifica automatica è backend `pytest` + `ruff` + frontend `tsc --noEmit`/`npm run build`; la verifica funzionale la fa l'utente a mano (checklist §7).
+Correzione dei 15 finding emersi dall'uso manuale dell'app. Verifica automatica: backend `pytest` + `ruff` + frontend `tsc --noEmit`/`npm run build`, **più lo scenario browser `e2e:15`** (`e2e/scenarios/fase-15.js`, introdotto dopo la fase — automatizza le voci deterministiche della checklist §7); la verifica funzionale residua la fa l'utente a mano (checklist §7 aggiornata).
 
 ## 2. Decisioni utente (registrate)
 
@@ -150,7 +150,7 @@ Helper backend `is_matched(row)` = `mbid is not None or provider != "manual"`.
 - **Repro** (manuale, DB temporaneo `DATA_DIR=/tmp/...`): scan libreria reale + matching → verificare creazione figli "Deniz Koyu" e "Amba Shepherd" (MB score 100, verificato) e padre "Deniz Koyu & Amba Shepherd" → ignored. Se non riprodotto (es. MBError a metà split), correggere: lo split è già idempotente e ripetuto alla run successiva — documentare.
 - **Test di regressione**: `test_mb_matching.py` — `split_soft("Deniz Koyu & Amba Shepherd")` → entrambe le parti; `match_artist` con stub MB crea entrambi i figli e marca il padre ignored.
 
-## 5. Test automatici (no E2E browser)
+## 5. Test automatici (pytest + e2e:15)
 
 **Aggiornamenti a test esistenti** (nuova semantica matched):
 - `test_phase12b.py`: `test_artists_unmatched_filter_and_source_files` (predicato `provider='manual'`), `test_rematch_returns_candidates_and_split` (nuova shape risposta), `test_parse_track_url_accepts_provider_pages` (casi locale).
@@ -193,18 +193,26 @@ Helper backend `is_matched(row)` = `mbid is not None or provider != "manual"`.
 
 ## 7. Checklist verifica manuale (a cura dell'utente)
 
-1. Retry → "Search again by name" su artista non matchabile → toast corretto, nessun falso "Matched on MusicBrainz"; su padre splittato → "già risolto via split".
-2. Tabella artisti: click su "Name" alterna asc/desc; badge conteggio non-matchati.
-3. Scan libreria: "The Levellers" matchato (articolo); "Pepp 'O Red" resta attivo/unmatched; i padri splittati mostrano "Split".
-4. Add Artist "KSI": click sul candidato MB → pannello dettaglio (disambiguation/alias) → track del corretto.
-5. Artista su Deezer → colonna "Match" mostra Deezer (mai "Unmatched"/"MB match").
-6. Add Artist con URL `https://www.deezer.com/it/artist/265213582` → artista creato e linkato (nome risolto).
-7. Retry: ricerca libera per nome → link del candidato scelto.
-8. Nome artista cliccabile → pagina del provider.
-9. Scan: "Deniz Koyu & Amba Shepherd" splittato → "Amba Shepherd" tracciata e matchata.
-10. Reset libreria → feed con messaggio guida; scan da Impostazioni → feed popolato; Pepp 'O Red (Deezer) mostra "Deezer" e "Panama" appare nel feed.
-11. Ricerca nel feed → vai su Artisti → torna → input preservato (e back/forward).
-12. Ye: "Bully" nel feed (data 2026-03-24, prima release officiale) e "BULLY - DELUXE" via cross-provider Deezer.
+> **Aggiornata dopo l'introduzione di `e2e:15`** (nuovo scenario `e2e/scenarios/fase-15.js`,
+> 2026-08-08): le voci marcate **"AUTOMATICO"** sono verificate dallo scenario (tabella in
+> `e2e/artifacts/fase-15-results.md`, da incollare in STATO.md) e NON vanno rieseguite a
+> mano; le voci senza marcatura restano manuali (richiedono dati reali/provider live non
+> deterministici). La checklist manuale completa aggiornata ai nuovi flussi è la **fase 13**
+> (`piano/fasi/fase-13-verifica-manuale-completa.md`, aree C e D: C16-C18, D1, D3-D4, D6,
+> D8, D11-D14).
+
+1. Retry → "Search again by name" su artista non matchabile → toast corretto, nessun falso "Matched on MusicBrainz"; su padre splittato → "già risolto via split" (UI: i padri splittati non mostrano Retry — il toast è verificabile via API). **AUTOMATICO** (e2e:15 ART 15-12, API 15-6)
+2. Tabella artisti: click su "Name" alterna asc/desc; badge conteggio non-matchati. **AUTOMATICO** (e2e:15 ART 15-8/15-9)
+3. Scan libreria: "The Levellers" matchato (articolo); "Pepp 'O Red" resta attivo/unmatched; i padri splittati mostrano "Split". **MANUALE** (richiede i file reali in `music/`)
+4. Add Artist "KSI": click sul candidato MB → pannello dettaglio (disambiguation/alias) → track del corretto. **AUTOMATICO** (e2e:15 ART 15-16, con skip-note se i provider sono giù)
+5. Artista su Deezer → colonna "Match" mostra Deezer (mai "Unmatched"/"MB match"). **AUTOMATICO** (e2e:15 ART 15-17)
+6. Add Artist con URL `https://www.deezer.com/it/artist/265213582` → artista creato e linkato (nome risolto). **AUTOMATICO** (e2e:15 ART 15-17 + API 15-3; fallback name+URL se Deezer irraggiungibile)
+7. Retry: ricerca libera per nome → link del candidato scelto. **AUTOMATICO** (e2e:15 ART 15-13, con skip-note se i provider sono giù)
+8. Nome artista cliccabile → pagina del provider. **AUTOMATICO** (e2e:15 ART 15-7/15-10/15-17)
+9. Scan: "Deniz Koyu & Amba Shepherd" splittato → "Amba Shepherd" tracciata e matchata. **MANUALE** (richiede la libreria reale; regressione coperta da pytest `test_mb_matching.py`)
+10. Reset libreria → feed con messaggio guida; scan da Impostazioni → feed popolato; Pepp 'O Red (Deezer) mostra "Deezer" e "Panama" appare nel feed. Reset + messaggio guida **AUTOMATICO** (e2e:15 FEED 15-23); scan da Impostazioni e dati reali **MANUALI**
+11. Ricerca nel feed → vai su Artisti → torna → input preservato (e back/forward). **AUTOMATICO** (e2e:15 FEED 15-18/15-19/15-20, incl. race del debounce)
+12. Ye: "Bully" nel feed (data 2026-03-24, prima release officiale) e "BULLY - DELUXE" via cross-provider Deezer. **MANUALE** (richiede l'artista reale "Ye" in libreria; logica coperta da pytest `test_discovery.py`)
 
 ## 8. Prompt per la review (verifica + review finale)
 

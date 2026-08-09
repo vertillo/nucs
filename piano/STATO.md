@@ -6,10 +6,37 @@
 
 ## Riepilogo rapido
 
-- Fase corrente: **15 (completata e committata su main `b6dc720`)** — correzioni dai 15 finding dell'uso manuale; review della verifica (8.1) e review finale (8.2) eseguite: **Approvato con riserve, riserve risolte**; backend **338 passed**, ruff pulito, `tsc --noEmit` + build ok. Doc: `piano/fasi/fase-15-correzioni-utente.md`. Resta solo la checklist manuale §7 a cura dell'operatore (12 voci).
+- Fase corrente: **15 e2e completata (post-fase)** — nuovo scenario browser `e2e:15` (**40/40 PASS**) che automatizza le voci deterministiche della checklist §7 della fase 15; fix ai flussi e2e esistenti (e2e:09 43/43, e2e:12b 24/24, e2e:13 QUICK 95/96 con l'unico FAIL atteso A5 in QUICK); **2 bug reali dell'app trovati e fixati con test** (match MB forzato su artisti linkati a un provider; race debounce filtri feed con react-router v6); checklist manuale fase 13 aggiornata ai nuovi flussi (C16-C18, D11-D14).
 - Fasi completate: 00-12, **12b** (2026-08-07, review AVANZATO + fix, mergiata su main `c80fd2d`), **13b** (2026-08-07, `e2e:13` 96/96 + findings 13B-01..06 risolti, regressioni complete verdi), **13** (verifica manuale, voci residue da fase 14), **15** (2026-08-08, branch corrente)
 - Prossima: **fase 14** (produzione) / **fase 16** (rifiniture riserve bassa gravità della 15, se richieste)
 - Fase 14 (verifica di produzione): `piano/fasi/fase-14-verifica-produzione.md`
+
+---
+
+## FASE 15 — Automazione browser post-fase: e2e:15 + fix flussi esistenti + 2 bug app — 2026-08-09
+- Nuovo scenario **`e2e/scenarios/fase-15.js`** + script `e2e:15` (riga in `e2e/README.md`): automatizza la verifica browser dei casi d'uso della fase 15, seed identico a e2e:12b. **40/40 PASS** — copertura:
+  - **API**: `sort=name_asc|name_desc` + `unmatched_total` (coerente col filtro `matched=no`, semantica multi-provider); `POST /artists {url}` Deezer locale (`/it/artist/6253` → Eluveitie risolto da provider, linkato, `external_url` salvato); URL non supportato → 422; url+provider → 422; SoundCloud senza nome → 422 (nessuna risoluzione); `GET /artists/lookup` (mb con aliases, discogs senza token → 422); `rematch` su artista ignorato → `resolved_split` (nessuna ricerca MB); `purge-orphans` idempotente + audit `releases_purged`.
+  - **Artists UI**: colonna Match a 4 stati (MB·score·link / provider "open" / Unmatched+Retry / Split senza Retry), nome linkato `target=_blank rel=noreferrer` alla pagina del provider, badge "{N} unmatched", sort con `aria-sort`, Add by URL (UI, Deezer locale, fallback name+URL se il provider è giù), errore inline URL non supportato, pannello dettaglio candidato (Add + Retry, "Track this artist"/"Link artist" + Back), Retry: nessun falso "Matched on MusicBrainz" su nome non matchabile, ricerca libera → link con `external_url` persistito (toast "Artist matched").
+  - **Feed UI**: filtri nei query param (`?q&type&unseen`) sopravvivono a navigazione/back/forward e alla race col debounce (type entro 300ms dalla digitazione); "Remove releases without artists" (confirm + toast "Removed N…" + totali coerenti + release orfana 404 + audit); stato "No tracked artists" post-reset (WI-8); cleanliness console/CSP/immagini finali.
+  - Le voci live-provider (risoluzione nome Deezer, ricerca candidati) degradano a N.A. documentate se il provider è irraggiungibile (pattern skip-note di 12b).
+- **Fix ai flussi e2e esistenti (fase 15 ha rinominato/cambiato l'UI)**:
+  - `e2e:09` — bottone "Add by name" → **"Add artist"** (2 punti, oggi crashava lo scenario); termine di ricerca artisti "vasco" → **"avicii"** (la libreria di test ricreata da `music/` non contiene Vasco Rossi).
+  - `e2e:13` (I6) — stesso rename del bottone (causava il crash dell'intero scenario).
+  - `e2e:12b` — check post-reset: il feed ora mostra lo stato guida **"No tracked artists"** (con link a Settings) al posto del vuoto "No new releases".
+  - **Libreria di test ricreata**: `/tmp/nucs-lib-test` (8 file curati copiati da `music/` — Avicii, Pepp 'O Red, Deniz Koyu & Amba Shepherd, Ye, Mika/Walden, PiKi, Headhunterz, Justin Timberlake) per mantenere il seed veloce (libreria completa di 42 file → discovery ~30-60 min per il cross-provider; la 13b/12b era basata su una libreria ormai cancellata).
+- **2 bug reali dell'app trovati dalla verifica e fixati (commit separati, con test)**:
+  1. **`add_artist` forzava il match MusicBrainz in background anche per artisti già linkati a un provider** (`backend/app/api/artists.py`: `if row.mbid is None` → crea_task) — contraddice la semantica fase 15 (WI-1: mai forzare il match MB sui provider-linked) e rompeva il rendering "Deezer" della colonna Match (il mbid vinceva). Fix: `if row.mbid is None and row.provider == "manual"`. Test: `test_api_add_provider_linked_artist_skips_background_mb_match`.
+  2. **Race debounce filtri feed non risolta dal "fix" fase 15**: `setSearchParams` con updater funzionale in react-router **v6** riceve i parametri della render che ha creato la closure (non quelli correnti) → il debounce della ricerca sovrascriveva `type`/`unseen` cambiati entro 300 ms (riprodotto deterministicamente). Fix in `frontend/src/pages/Feed.tsx`: merge esplicito contro un ref dei parametri correnti (`searchParamsRef`), sia nel debounce sia in `updateParam`. Regressione: check e2e:15 FEED 15-20 (`?type=ep&q=beyonce`).
+- **Checklist manuale fase 13 aggiornata** (`piano/fasi/fase-13-verifica-manuale-completa.md` — il vincolo 13b "non modificare" è superseduto da questa richiesta): C5 (due empty state), C16 (purge-orphans), C17 (filtri nei query param), C18 (race debounce); D1 (colonna Match 4 stati + nome linkato), D3-D4 (filtro + add by URL/pannello candidato), D6 (toast Retry + ricerca libera), D8 (ignore → Split), nuovi D11-D14 (sort+badge, add-by-URL, nome linkato, split da scan). Le voci automatizzate da e2e:15 sono marcate; restano manuali quelle che richiedono dati reali (scan Levellers/Pepp 'O Red, split Amba Shepherd, cross-provider Ye/Bully). §7 di `fase-15-correzioni-utente.md` aggiornata col mapping automatico/manuale (AUTOMATICO/MANUALE per voce).
+- **Esiti run (2026-08-09)**: `e2e:15` **40/40 PASS**; regressioni `e2e:09` **43/43**, `e2e:12b` **24/24**, `e2e:13` QUICK **95/96** (unico FAIL = A5, atteso per design in QUICK); backend **339 passed** (338 + nuovo test), ruff check+format OK; frontend `tsc --noEmit` + build OK (dist ricompilata con il fix Feed). Tabella esportata in `e2e/artifacts/fase-15-results.md`.
+- Istruzioni verifica locale (ogni scenario su DB fresco):
+  ```bash
+  # backend (una volta): backend su DB test con DEV_INSECURE_COOKIES=true, NOTIFY_URLS=, MUSIC_LIBRARY_PATH=/tmp/nucs-lib-test
+  cd e2e && npm run e2e:15    # 40/40 (~12-15 min, seed incluso)
+  npm run e2e:09 && npm run e2e:12b
+  E2E_13B_QUICK=1 npm run e2e:13   # 95/96 (A5 FAIL atteso in QUICK)
+  ```
+- Prossimo step: riesecuzione della checklist manuale fase 13 sulle voci residue (quelle marcate MANUALE) e fase 14.
 
 ---
 
