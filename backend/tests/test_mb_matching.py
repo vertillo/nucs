@@ -752,6 +752,31 @@ async def test_api_add_artist_202_and_background_match(client, monkeypatch):
     assert row is not None and row.mbid == "mb-rh" and row.mb_match_score == 100
 
 
+async def test_api_add_provider_linked_artist_skips_background_mb_match(client, monkeypatch):
+    """Phase 15 semantics: an artist linked to a provider is never force-matched
+    to MusicBrainz in the background — even when the MB search would succeed —
+    so the "Match" cell keeps showing the chosen provider."""
+    _install_search(monkeypatch, {"Radiohead": [{"mbid": "mb-rh", "name": "Radiohead", "score": 100}]})
+    await _login(client)
+
+    response = await client.post(
+        "/api/v1/artists",
+        json={"name": "Radiohead", "provider": "deezer", "provider_id": "1234"},
+        headers=API_HEADERS,
+    )
+    assert response.status_code == 202
+    artist = response.json()
+    assert artist["provider"] == "deezer" and artist["provider_id"] == "1234"
+    assert artist["mbid"] is None
+
+    # the background task would set mbid if it ran; it must NOT for linked artists
+    await asyncio.sleep(0.3)
+    with get_session_factory()() as db:
+        row = db.scalar(select(Artist).where(Artist.normalized_name == "radiohead"))
+    assert row is not None
+    assert row.mbid is None and row.provider == "deezer" and row.mb_match_score is None
+
+
 async def test_api_patch_ignored_and_404(client):
     with get_session_factory()() as db:
         row = Artist(name="ABBA", normalized_name="abba", source="tag_artist")

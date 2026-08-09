@@ -312,7 +312,10 @@ async def add_artist(
         db.rollback()
         raise HTTPException(status_code=400, detail="Artist already exists") from None
     db.refresh(row)
-    if row.mbid is None:
+    # Phase 15 semantics: never force a MusicBrainz match on artists already
+    # linked to a provider (the picker/URL flow chose that provider; the MB
+    # cell would otherwise override it). Only plain manual adds are matched.
+    if row.mbid is None and row.provider == "manual":
         asyncio.get_running_loop().create_task(_match_in_background(row.id))
     return _artist_item(row, _releases_counts(db, [row.id]).get(row.id, 0))
 
