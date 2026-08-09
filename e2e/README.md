@@ -1,6 +1,6 @@
 # nucs E2E — verifica automatica delle fasi (puppeteer + Chrome headless)
 
-Harness di test **browser/API** usata dai prompt di verifica delle fasi 06-13.
+Harness di test **browser/API** usata dai prompt di verifica delle fasi 06-15.
 Sostituisce i "check manuali nel browser": lo stesso flusso viene eseguito
 da Chrome headless, con tabella PASS/FAIL ed exit code ≠ 0 se qualcosa fallisce.
 
@@ -48,6 +48,7 @@ npm run e2e:11   # fase 11: login+tema+logout+security headers (browser, contain
 npm run e2e:12   # fase 12: DoD §14 automatizzabili (brute force, seed+feed+dettaglio, tema, backup, persistenza)
 npm run e2e:12b  # fase 12b: feed per giorno/seen/sync, dettaglio senza Favorite con tracklist+9 link, artisti (filtro unmatched/retry/delete), add-artist multi-provider, pagina errori, reset library
 npm run e2e:13   # fase 13b: sottoinsieme deterministico della verifica manuale (fase 13) — A4 lockout reale, A5 timing, tema, feed/settings/artisti, viewport, axe, offline, API adversarial, due tab, riavvio backend
+npm run e2e:15   # fase 15: correzioni feedback — colonna Match (MB/provider/Unmatched/Split), sort+badge unmatched, add-by-URL, pannello dettaglio candidato, retry con ricerca libera + toast, filtri feed nei query param, purge-orphans, stato "No tracked artists" (seed come e2e:12b; ~10-15 min)
 ```
 
 Variabili d'ambiente:
@@ -102,6 +103,23 @@ discovery (rete MusicBrainz, ~4-6 min). Lo scenario:
   `E2E_PROD_STACK=1`).
 - esporta la checklist compilata in `artifacts/fase-13-results.md` (tabella
   `area | PASS/FAIL/N.A. | evidenza` da incollare in STATO.md).
+
+### e2e:15 (fase 15 — correzioni dal feedback manuale)
+
+Stesse env di e2e:12b (backend su DB di test, `DEV_INSECURE_COOKIES=true`,
+`NOTIFY_URLS=`, `MUSIC_LIBRARY_PATH` reale). Il seed fa full library scan +
+discovery (rete MusicBrainz + cross-provider, ~6-10 min). Lo scenario
+verifica i nuovi flussi della fase 15: semantica "matched" multi-provider
+(colonna Match a 4 stati, nome linkato, badge `unmatched_total`, sort
+asc/desc), Add Artist by URL (locale Deezer, risoluzione nome; fallback
+name+URL se il provider è giù), pannello dettaglio candidato, retry con
+ricerca libera e toast coerenti (mai falso "Matched on MusicBrainz"),
+`GET /artists/lookup` e `rematch` con `resolved_split`, purge-orphans (API +
+bottone feed + audit `releases_purged`), filtri feed nei query param
+(sopravvivono a navigazione/back/forward e alla race col debounce), stato
+"No tracked artists" post-reset. Usa `E2E_DATA_DIR` (default `/tmp/nucs-e2e`)
+per il check dell'audit log. Esporta la tabella compilata in
+`artifacts/fase-15-results.md`.
 
 ## Struttura
 

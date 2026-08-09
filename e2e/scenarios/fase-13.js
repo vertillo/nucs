@@ -1049,7 +1049,7 @@ async function main() {
     const artistName = `e2e-double-submit-${Date.now()}`
     await page.type('#add-artist-query', artistName)
     await h.wait(1000)
-    const doubleOk = await clickByTextAwait(page, 'Add by name', 100)
+    const doubleOk = await clickByTextAwait(page, 'Add artist', 100)
     await h.wait(2000)
     const created = await page.evaluate(async (name) => {
       const r = await fetch(`/api/v1/artists?q=${encodeURIComponent(name)}&page_size=10`, { credentials: 'same-origin' })

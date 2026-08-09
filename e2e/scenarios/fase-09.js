@@ -113,20 +113,21 @@ async function main() {
       firstRow.slice(0, 80),
     )
 
-    // Search filters (debounce) — "vasco" (Vasco Rossi, s.m4a) exists in the
-    // test library (the old "avicii" term matches no tag of the current seed)
-    await setInput(page, 'input[aria-label="Search artist"]', 'vasco')
+    // Search filters (debounce) — "avicii" (Avicii, real tag artist of the
+    // repo music/ library: "Avicii - Dear Boy.flac") exists in the seed;
+    // the term must match an artist of the configured MUSIC_LIBRARY_PATH
+    await setInput(page, 'input[aria-label="Search artist"]', 'avicii')
     await page.waitForFunction(
       () => {
         const rows = [...document.querySelectorAll('table tbody tr')]
-        return rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('vasco'))
+        return rows.length > 0 && rows.every((r) => r.textContent.toLowerCase().includes('avicii'))
       },
       { timeout: 15000 },
     )
     const searchTexts = await page.evaluate(() =>
       [...document.querySelectorAll('table tbody tr')].map((r) => r.textContent.toLowerCase()),
     )
-    h.check('search "vasco" filters the list (debounce)', searchTexts.length > 0, `rows=${searchTexts.length}`)
+    h.check('search "avicii" filters the list (debounce)', searchTexts.length > 0, `rows=${searchTexts.length}`)
     await setInput(page, 'input[aria-label="Search artist"]', '')
     await page.waitForFunction(() => document.querySelectorAll('table tbody tr').length > 1, {
       timeout: 15000,
@@ -169,7 +170,7 @@ async function main() {
     await clickByText(page, '+ Add artist')
     await page.waitForSelector('#add-artist-query')
     await page.type('#add-artist-query', NEW_ARTIST)
-    await clickByText(page, 'Add by name')
+    await clickByText(page, 'Add artist')
     // the new artist is sorted at the end of the list: filter by search to see it
     await setInput(page, 'input[aria-label="Search artist"]', NEW_ARTIST)
     await page.waitForFunction((n) => document.body.innerText.includes(n), { timeout: 15000 }, NEW_ARTIST)
@@ -196,7 +197,7 @@ async function main() {
     await clickByText(page, '+ Add artist')
     await page.waitForSelector('#add-artist-query')
     await page.type('#add-artist-query', NEW_ARTIST)
-    await clickByText(page, 'Add by name')
+    await clickByText(page, 'Add artist')
     await page.waitForFunction(() => document.body.innerText.includes('Artist already exists'), { timeout: 10000 })
     h.check('duplicate add shows inline error', true)
     await clickByText(page, 'Cancel')

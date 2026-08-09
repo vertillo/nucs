@@ -297,8 +297,18 @@ async function main() {
     h.check('DELETE /api/v1/library resets the library', reset === 204, `status=${reset}`)
     await page.goto(`${h.BASE}/`, { waitUntil: 'domcontentloaded' })
     await h.wait(1000)
-    const emptyFeed = await page.evaluate(() => document.body.innerText.includes('No new releases'))
-    h.check('feed empty after the reset', emptyFeed)
+    // fase 15: with zero tracked artists the feed shows the guidance state
+    // ("No tracked artists" + Settings link) instead of the plain empty state
+    const emptyFeed = await page.evaluate(() => ({
+      noTracked: document.body.innerText.includes('No tracked artists'),
+      settingsLink: !!document.querySelector('a[href="/settings"]'),
+      noNewReleases: document.body.innerText.includes('No new releases'),
+    }))
+    h.check(
+      'feed empty after the reset ("No tracked artists" guidance)',
+      emptyFeed.noTracked && emptyFeed.settingsLink && !emptyFeed.noNewReleases,
+      JSON.stringify(emptyFeed),
+    )
 
     // 7. Console / CSP / network cleanliness
     await h.wait(800)
