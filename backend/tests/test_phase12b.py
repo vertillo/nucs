@@ -778,6 +778,54 @@ async def test_rematch_returns_candidates_and_split(client, monkeypatch):
     assert [c["name"] for c in body["candidates"]] == ["Adrenalize", "Festuca"]
 
 
+async def test_rematch_adds_mb_identity_preserving_other_providers(client, monkeypatch):
+    """Spec 2.1 / QA happy path (todo 9): rematching an artist already linked
+    to Deezer adds the MB external identity; both persist — matching never
+    clears other identities."""
+    await _login(client)
+    import app.services.musicbrainz as musicbrainz_module
+    from app.services.artist_identity import attach_external_identity, list_identities
+    from app.services.musicbrainz import MusicBrainzClient
+
+    async def _search(self, name, limit=5):
+        return [{"mbid": "mb-rh", "name": "Radiohead", "score": 100}] if name == "Radiohead" else []
+
+    async def _no_rate_limit() -> None:
+        pass
+
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _search)
+    monkeypatch.setattr(musicbrainz_module, "_rate_limit", _no_rate_limit)
+
+    async def _no_candidates(name, db=None):
+        return []
+
+    import app.api.artists as artists_api
+
+    monkeypatch.setattr(artists_api, "search_artists_everywhere", _no_candidates)
+    with get_session_factory()() as db:
+        row = Artist(name="Radiohead", normalized_name="radiohead", source="tag_artist")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        attach_external_identity(db, row, "deezer", "dz-1")
+        row.provider = "deezer"
+        row.provider_id = "dz-1"
+        db.commit()
+        artist_id = row.id
+    response = await client.post(f"/api/v1/artists/{artist_id}/rematch", headers=API_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["matched"] is True
+    assert body["mbid"] == "mb-rh"
+    with get_session_factory()() as db:
+        row = db.get(Artist, artist_id)
+        identities = {i.provider: i for i in list_identities(db, row)}
+    assert set(identities) == {"mb", "deezer"}
+    assert identities["deezer"].provider_id == "dz-1"
+    assert identities["mb"].provider_id == "mb-rh"
+    assert identities["mb"].link_method == "auto"
+
+
 async def test_rematch_reports_split_parts_when_name_is_split(client, monkeypatch):
     """A split resolves the parent (ignored, still mbid-less): the response must
     say so via split_parts and matched=False (no fake 'matched on MB')."""

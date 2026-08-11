@@ -377,6 +377,12 @@ async def _match_pending_after_scan() -> dict:
     Decision recorded in piano/STATO.md (phase 04): matching runs automatically
     at the end of the library scan AND manually via POST /artists/{id}/rematch;
     no new scan type is added (spec 10 allows only library|releases|feat).
+
+    Todo 9 (spec 2.1-2.2): the batch now runs through the identity model —
+    ``mb_matching.match_all_pending`` only ever ADDS an MB external identity
+    (link_method='auto') under the conservative policy and never clears other
+    providers; ambiguous homonyms and partial splits stay Needs match for the
+    user (spec 2.5).
     """
     with get_session_factory()() as db:
         return await mb_matching.match_all_pending(db, limit=100)

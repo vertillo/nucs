@@ -9,6 +9,15 @@ Phase 12b additions:
   (``provider`` + ``provider_id`` + optional ``mbid``).
 - ``POST /artists/{id}/rematch``: returns the match result plus the full
   multi-provider candidate list and the automatic split suggestion.
+- ``POST /artists/{id}/rematch`` (todo 9, spec 2.1-2.5): re-runs the
+  MusicBrainz match under the conservative identity policy — an eligible
+  decision ADDS an MB external identity (``link_method='auto'``) and never
+  clears the artist's other identities; ``matched`` means the artist now
+  carries the relevant identity. Composite-name splits are finalized only when
+  every meaningful part resolves safely; otherwise the artist stays Needs
+  match. Candidates keep their provider links; free-text search
+  (``GET /artists/search``) is the only "search again" mechanism
+  (spec:790-792).
 - ``POST /artists/{id}/link``: track an artist by URL. The URL is only parsed
   (never fetched server-side — no SSRF surface).
 - ``DELETE /artists/{id}``: remove an artist (ignored ones included).
@@ -358,6 +367,23 @@ async def _match_in_background(artist_id: int) -> None:
             error_service.record_exception("matching", exc, context={"artist_id": artist_id})
 
 
+def _candidate_items(candidates) -> list[dict]:
+    """Candidate rows of the retry response (spec 2.4): every candidate carries
+    its provider-page link; free-text search (``GET /artists/search``) is the
+    only "search again" mechanism (spec:790-792)."""
+    return [
+        {
+            "name": candidate.name,
+            "provider": candidate.provider,
+            "provider_id": candidate.provider_id,
+            "mbid": candidate.mbid,
+            "score": candidate.score,
+            "url": candidate.url,
+        }
+        for candidate in candidates
+    ]
+
+
 @router.post("", status_code=202)
 async def add_artist(
     payload: ArtistCreate,
@@ -473,19 +499,24 @@ async def rematch_artist(
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
 ) -> dict:
-    """Re-run the MusicBrainz match for one artist (phase 12b: with candidates).
+    """Re-run the conservative MusicBrainz match for one artist (spec 2.1-2.5).
 
-    Phase 15 semantics:
-    - ``matched`` is True only when the artist now carries an ``mbid``;
-    - a split (name broken into matched parts, parent ignored) is reported via
-      ``split_parts`` and the artist itself stays unmatched;
-    - an artist that is already ignored without an mbid (split parent or
-      manually ignored) is reported via ``resolved_split`` and never re-searched.
+    Todo 9 rewiring: an eligible decision ADDS an MB external identity via
+    ``artist_identity.attach_external_identity`` (link_method='auto'); it never
+    clears the artist's other providers — rematching an artist already linked
+    to Deezer/Apple adds the MB identity alongside it. ``matched`` is True only
+    when the artist now carries at least one external identity. A split (name
+    broken into parts that ALL resolved safely, parent ignored) is reported via
+    ``split_parts`` and the artist itself stays identity-less; an artist that
+    is already ignored without any identity (split parent or manually ignored)
+    is reported via ``resolved_split`` and never re-searched. Candidates keep
+    their provider links (spec 2.4); free-text search is the only "search
+    again" mechanism (spec:790-792).
     """
     row = db.get(Artist, artist_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
-    if row.ignored and row.mbid is None:
+    if row.ignored and row.mbid is None and not list_identities(db, row):
         # Resolved split parent (or manually ignored): do not re-run the MB
         # search; the picker candidates stay available for manual linking.
         candidates = await search_artists_everywhere(row.name, db=db)
@@ -495,41 +526,22 @@ async def rematch_artist(
             "resolved_split": True,
             "split_parts": [],
             "split": [],
-            "candidates": [
-                {
-                    "name": candidate.name,
-                    "provider": candidate.provider,
-                    "provider_id": candidate.provider_id,
-                    "mbid": candidate.mbid,
-                    "score": candidate.score,
-                    "url": candidate.url,
-                }
-                for candidate in candidates
-            ],
+            "candidates": _candidate_items(candidates),
         }
     try:
         matched = await mb_matching.match_artist(db, row)
     except MBError as exc:
         raise HTTPException(status_code=503, detail="MusicBrainz is unavailable") from exc
-    split_parts = mb_matching.split_soft(row.name) if matched and row.mbid is None else []
+    identities = list_identities(db, row)
+    split_parts = mb_matching.split_soft(row.name) if matched and not identities else []
     candidates = await search_artists_everywhere(row.name, db=db)
     return {
-        "matched": row.mbid is not None,
+        "matched": bool(identities),
         "mbid": row.mbid,
         "resolved_split": False,
         "split_parts": split_parts,
         "split": split_parts,
-        "candidates": [
-            {
-                "name": candidate.name,
-                "provider": candidate.provider,
-                "provider_id": candidate.provider_id,
-                "mbid": candidate.mbid,
-                "score": candidate.score,
-                "url": candidate.url,
-            }
-            for candidate in candidates
-        ],
+        "candidates": _candidate_items(candidates),
     }
 
 

@@ -430,3 +430,146 @@ async def test_api_scan_requires_auth(client):
     assert response.status_code == 401
     status = await client.get("/api/v1/scans/status")
     assert status.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Metadata derivation regression (spec 2.6:806-818)
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_filename_does_not_create_artists(scan_db, tmp_path):
+    """Filename contents are NEVER used to create artists (spec:119-141).
+
+    A file named after a famous artist but containing NO artist metadata must
+    produce zero artists — the filename alone must not drive artist creation.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "Beyonce.flac", title="An Instrumental Track")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert stats["artists_new"] == 0
+    assert stats["files_parsed"] == 1
+    assert ("beyonce", "tag_artist") not in artists
+    assert ("beyonce", "tag_albumartist") not in artists
+    assert ("beyonce", "tag_feat") not in artists
+    assert len(artists) == 0
+
+
+def test_metadata_track_artist_creates_artist(scan_db, tmp_path):
+    """Track artist (TPE1 / ARTIST) creates an artist with source tag_artist (spec:123)."""
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "t.flac", artist="DistinctTrackArtist")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert stats["artists_new"] == 1
+    assert artists[("distincttrackartist", "tag_artist")] == "DistinctTrackArtist"
+
+
+def test_metadata_album_artist_creates_artist(scan_db, tmp_path):
+    """Album artist (TPE2 / ALBUMARTIST) creates an artist with source tag_albumartist (spec:124)."""
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "t.flac", albumartist="DistinctAlbumArtist")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert stats["artists_new"] == 1
+    assert artists[("distinctalbumartist", "tag_albumartist")] == "DistinctAlbumArtist"
+
+
+def test_metadata_feat_title_creates_artist(scan_db, tmp_path):
+    """Metadata title (feat. X) creates a featured artist with source tag_feat (spec:125)."""
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "t.flac", title="Song (feat. DistinctFeatArtist)")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert stats["artists_new"] == 1
+    assert artists[("distinctfeatartist", "tag_feat")] == "DistinctFeatArtist"
+
+
+def test_metadata_remixer_creates_artist(scan_db, tmp_path):
+    """Structured remixer metadata creates an artist with source tag_remix (spec:126)."""
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "t.flac", remixer="DistinctRemixer")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert stats["artists_new"] == 1
+    assert artists[("distinctremixer", "tag_remix")] == "DistinctRemixer"
+
+
+def test_metadata_songwriter_does_not_create_artist(scan_db, tmp_path):
+    """Songwriter role in TIPL does NOT create an artist (spec:136).
+
+    Only the 'remixer' role is extracted from ID3 contributor lists;
+    songwriter roles are silently ignored.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_mp3(
+        music / "t.mp3",
+        title="A Song",
+        people=[["songwriter", "John Songwriter"], ["remixer", "DJ Remix"]],
+    )
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    # remixer IS tracked
+    assert artists[("dj remix", "tag_remix")] == "DJ Remix"
+    # songwriter is NOT tracked — not tag_contrib, not tag_remix
+    assert ("john songwriter", "tag_contrib") not in artists
+    assert ("john songwriter", "tag_remix") not in artists
+    assert ("john songwriter", "tag_artist") not in artists
+    assert stats["artists_new"] == 1
+
+
+def test_metadata_composer_does_not_create_artist(scan_db, tmp_path):
+    """Composer role (Vorbis COMPOSER tag) does NOT create an artist (spec:137).
+
+    Phase 12b dropped COMPOSER from the Vorbis reading path; only REMIXER is kept.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "t.flac", composer="Classical Composer")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert ("classical composer", "tag_contrib") not in artists
+    assert ("classical composer", "tag_remix") not in artists
+    assert stats["artists_new"] == 0
+
+
+def test_metadata_producer_does_not_create_artist(scan_db, tmp_path):
+    """Producer role in TIPL does NOT create an artist (spec:138).
+
+    Only the 'remixer' role is extracted from ID3 contributor lists;
+    producer roles are silently ignored.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_mp3(
+        music / "t.mp3",
+        title="A Song",
+        people=[["producer", "Big Producer"], ["remixer", "DJ Remix"]],
+    )
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert artists[("dj remix", "tag_remix")] == "DJ Remix"
+    assert ("big producer", "tag_contrib") not in artists
+    assert ("big producer", "tag_remix") not in artists
+    assert stats["artists_new"] == 1
+
+
+def test_metadata_generic_performer_does_not_create_artist(scan_db, tmp_path):
+    """Generic performer role (Vorbis PERFORMER tag) does NOT create an artist (spec:139).
+
+    Phase 12b dropped PERFORMER from the Vorbis reading path; only REMIXER is kept.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    _write_flac(music / "t.flac", performer="Session Musician")
+    stats = library_scan.scan_library_sync()
+    artists = _artist_rows()
+    assert ("session musician", "tag_contrib") not in artists
+    assert ("session musician", "tag_remix") not in artists
+    assert stats["artists_new"] == 0

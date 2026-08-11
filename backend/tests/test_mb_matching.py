@@ -24,10 +24,11 @@ import app.services.mb_matching as mb_matching
 import app.services.musicbrainz as musicbrainz
 from app.db import get_session_factory
 from app.main import run_migrations
-from app.models import Artist, Release, ReleaseArtist
-from app.services.artist_identity import attach_external_identity
+from app.models import Artist, ArtistExternalIdentity, Release, ReleaseArtist
+from app.services.artist_identity import attach_external_identity, list_identities
 from app.services.musicbrainz import MBError, MusicBrainzClient, build_user_agent, reset_for_tests
 from app.services.names import normalize_name
+from app.services.providers.base import ArtistCandidate
 
 API_HEADERS = {"X-Requested-With": "XMLHttpRequest", "Origin": "https://testserver"}
 LOGIN_URL = "/api/v1/auth/login"
@@ -399,7 +400,10 @@ async def test_upsert_child_concurrent_duplicate_handled(match_db, monkeypatch):
             return None if calls["n"] == 1 else real_scalar(*args, **kwargs)
 
         monkeypatch.setattr(db, "scalar", _stale_scalar)
-        assert mb_matching._upsert_child(db, "AA", "tag_artist", "mb-aa", 99) is False
+        # spec:1935: signature now carries the full candidate (identity-model
+        # attach, todo 9) plus the parent id for split provenance.
+        candidate = ArtistCandidate(name="AA", provider="mb", provider_id="mb-aa", score=99)
+        assert mb_matching._upsert_child(db, "AA", "tag_artist", candidate, parent_id=1) is False
         db.expunge_all()
         rows = db.scalars(select(Artist)).all()
         assert len(rows) == 1
@@ -565,6 +569,136 @@ async def test_match_deniz_koyu_and_amba_shepherd_creates_both_children(match_db
         assert amba is not None and amba.mbid == "mb-as" and amba.source == "tag_artist"
 
 
+# --- Spec 2.5: split correctness + provenance (todo 9) -------------------------
+
+
+async def test_split_finalized_only_when_all_parts_safe(match_db, monkeypatch):
+    """Spec:794-804: the parent is only finalized as an automatic split when
+    EVERY meaningful part resolves safely under the conservative policy; an
+    ambiguous part keeps the parent at Needs match (spec:147 — an uncertain
+    split must never become several confidently matched artists)."""
+    _install_search(
+        monkeypatch,
+        {
+            "AA & BB": [],
+            "AA": [{"mbid": "mb-aa", "name": "AA", "score": 99}],
+            "BB": [
+                {"mbid": "mb-bb-1", "name": "BB", "score": 95},
+                {"mbid": "mb-bb-2", "name": "BB", "score": 94},
+            ],
+        },
+    )
+    with get_session_factory()() as db:
+        parent = Artist(name="AA & BB", normalized_name="aa bb", source="tag_artist")
+        db.add(parent)
+        db.commit()
+        db.refresh(parent)
+        assert await mb_matching.match_artist(db, parent) is False
+        db.refresh(parent)
+        assert parent.ignored == 0 and parent.mbid is None
+        children = {
+            child.normalized_name: child
+            for child in db.scalars(select(Artist)).all()
+            if child.id != parent.id
+        }
+        # The safely-resolved part is derived with provenance (split_from_
+        # artist_id + inherited source); the ambiguous part was never
+        # auto-picked, so no homonym child exists.
+        assert children["aa"].mbid == "mb-aa"
+        assert children["aa"].split_from_artist_id == parent.id
+        assert children["aa"].source == "tag_artist"
+        assert "bb" not in children
+
+
+async def test_split_children_record_identity_and_provenance(match_db, monkeypatch):
+    """FIND-2-1: every finalized split child records split_from_artist_id,
+    inherits the parent source label, and carries an auto-linked MB identity."""
+    _install_search(
+        monkeypatch,
+        {
+            "AA feat. BB": [{"mbid": "mb-whole", "name": "AA feat. BB", "score": 30}],
+            "AA": [{"mbid": "mb-aa", "name": "AA", "score": 99}],
+            "BB": [{"mbid": "mb-bb", "name": "BB", "score": 99}],
+        },
+    )
+    with get_session_factory()() as db:
+        parent = Artist(
+            name="AA feat. BB", normalized_name=normalize_name("AA feat. BB"), source="tag_artist"
+        )
+        db.add(parent)
+        db.commit()
+        db.refresh(parent)
+        assert await mb_matching.match_artist(db, parent) is True
+        db.refresh(parent)
+        assert parent.ignored == 1
+        children = db.scalars(select(Artist).where(Artist.id != parent.id)).all()
+        assert {child.normalized_name for child in children} == {"aa", "bb"}
+        for child in children:
+            assert child.split_from_artist_id == parent.id
+            assert child.source == "tag_artist"
+            assert child.ignored == 0
+            identity = db.scalar(
+                select(ArtistExternalIdentity).where(ArtistExternalIdentity.artist_id == child.id)
+            )
+            assert identity is not None and identity.provider == "mb"
+            assert identity.provider_id == child.mbid
+            assert identity.link_method == "auto"
+
+
+async def test_split_fills_provenance_on_existing_child(match_db, monkeypatch):
+    """FIND-2-1: a child that already exists (created by a previous scan) gets
+    its missing split_from_artist_id filled in when the parent is re-split."""
+    _install_search(
+        monkeypatch,
+        {
+            "AA feat. BB": [{"mbid": "m", "name": "AA feat. BB", "score": 30}],
+            "AA": [{"mbid": "mb-aa", "name": "AA", "score": 99}],
+            "BB": [{"mbid": "mb-bb", "name": "BB", "score": 99}],
+        },
+    )
+    with get_session_factory()() as db:
+        parent = Artist(name="AA feat. BB", normalized_name=normalize_name("AA feat. BB"), source="tag_feat")
+        child = Artist(name="AA", normalized_name="aa", source="tag_artist")
+        db.add_all([parent, child])
+        db.commit()
+        db.refresh(parent)
+        db.refresh(child)
+        assert await mb_matching.match_artist(db, parent) is True
+        db.refresh(child)
+        assert child.split_from_artist_id == parent.id
+        assert child.mbid == "mb-aa"
+        assert child.source == "tag_artist"  # the existing row keeps its own source
+
+
+async def test_split_preserves_existing_provider_identity_of_child(match_db, monkeypatch):
+    """spec:683-687: a split part that already carries a Deezer identity gets
+    the MB identity ADDED, never cleared."""
+    _install_search(
+        monkeypatch,
+        {
+            "AA feat. BB": [{"mbid": "m", "name": "AA feat. BB", "score": 30}],
+            "AA": [{"mbid": "mb-aa", "name": "AA", "score": 99}],
+            "BB": [{"mbid": "mb-bb", "name": "BB", "score": 99}],
+        },
+    )
+    with get_session_factory()() as db:
+        parent = Artist(
+            name="AA feat. BB", normalized_name=normalize_name("AA feat. BB"), source="tag_artist"
+        )
+        child = Artist(name="AA", normalized_name="aa", source="tag_artist")
+        db.add_all([parent, child])
+        db.commit()
+        db.refresh(parent)
+        db.refresh(child)
+        attach_external_identity(db, child, "deezer", "dz-1")
+        db.commit()
+        assert await mb_matching.match_artist(db, parent) is True
+        db.refresh(child)
+        providers = {i.provider for i in list_identities(db, child)}
+        assert providers == {"mb", "deezer"}
+        assert child.mbid == "mb-aa"
+
+
 async def test_split_recovery_after_partial_mberror(match_db, monkeypatch):
     """Phase 15 review fix: when a split part fails with an MB error the parent
     stays pending (the committed child is kept) and the next run completes the
@@ -630,6 +764,37 @@ async def test_match_all_pending_respects_limit(match_db, monkeypatch):
         db.commit()
         stats = await mb_matching.match_all_pending(db, limit=2)
         assert stats["processed"] == 2
+
+
+async def test_scan_auto_match_adds_mb_identity_and_skips_linked(match_db, monkeypatch):
+    """Todo 9 (spec 2.1-2.2): the auto-match-after-scan path adds an MB external
+    identity (link_method='auto') to pending artists and never touches artists
+    that already carry a provider identity (their identity persists)."""
+    _install_search(
+        monkeypatch,
+        {"Radiohead": [{"mbid": "mb-rh", "name": "Radiohead", "score": 100}]},
+    )
+    monkeypatch.setattr(mb_matching, "match_all_pending", REAL_MATCH_ALL_PENDING)
+    with get_session_factory()() as db:
+        pending = Artist(name="Radiohead", normalized_name="radiohead", source="tag_artist")
+        linked = Artist(name="DeezerOnly", normalized_name="deezeronly", source="tag_artist")
+        db.add_all([pending, linked])
+        db.commit()
+        db.refresh(linked)
+        attach_external_identity(db, linked, "deezer", "dz-1")
+        db.commit()
+        linked_id = linked.id
+    await library_scan_module._match_pending_after_scan()
+    with get_session_factory()() as db:
+        row = db.scalar(select(Artist).where(Artist.normalized_name == "radiohead"))
+        identity = db.scalar(select(ArtistExternalIdentity).where(ArtistExternalIdentity.artist_id == row.id))
+        assert identity is not None and identity.provider == "mb"
+        assert identity.provider_id == "mb-rh"
+        assert identity.link_method == "auto"
+        assert row.mbid == "mb-rh"  # legacy sync for the transition period
+        linked = db.get(Artist, linked_id)
+        assert [i.provider for i in list_identities(db, linked)] == ["deezer"]
+        assert linked.mbid is None
 
 
 # --- API /artists -------------------------------------------------------------
@@ -900,6 +1065,110 @@ async def test_api_artists_sort_and_unmatched_total(client):
     filtered = (await client.get("/api/v1/artists", params={"q": "be"})).json()
     assert filtered["total"] == 1
     assert filtered["unmatched_total"] == 1
+
+
+# --- PiKi-style homonym safety (spec:822-826, 1597, 91-101) -------------------
+
+
+async def test_match_artist_piki_homonym_stays_needs_match(match_db, monkeypatch):
+    """spec:822: an ambiguous 'PiKi'-like name never auto-selects a homonym
+    solely because its text matches.
+
+    Two exact-name MB candidates (same normalized name, scores >= 90) → the
+    matching service returns False → no mbid set → no ArtistExternalIdentity
+    row created → the artist is Needs match (spec:91-101 — false positives
+    are worse than unmatched artists).
+    """
+    _install_search(
+        monkeypatch,
+        {
+            "PiKi": [
+                {"mbid": "mb-piki-1", "name": "PiKi", "score": 100},
+                {"mbid": "mb-piki-2", "name": "PiKi", "score": 98},
+            ]
+        },
+    )
+    with get_session_factory()() as db:
+        row = Artist(name="PiKi", normalized_name="piki", source="tag_artist")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is False
+        db.refresh(row)
+        assert row.mbid is None
+        assert row.mb_match_score is None
+        assert row.ignored == 0
+        identities = db.scalars(
+            select(ArtistExternalIdentity).where(ArtistExternalIdentity.artist_id == row.id)
+        ).all()
+        assert identities == []
+
+
+async def test_homonym_no_identity_even_with_perfect_scores(match_db, monkeypatch):
+    """spec:822-826, 91-101: homonym ambiguity is never weakened by high
+    confidence scores. Two same-name MB candidates at score=100 stay
+    ambiguous; no identity row is written and the artist stays Needs match.
+    This also asserts the matching-layer invariant: the service never yields
+    a link for an ambiguous homonym candidate set (the ReleaseArtist-
+    authoritative highlighting guard of spec:1597 is a todo-18 concern at
+    the release-API layer; the matching layer guarantees zero links for
+    ambiguous artists so no authoritative release↔artist relation can later
+    be implied for them).
+    """
+    _install_search(
+        monkeypatch,
+        {
+            "Radiohead": [
+                {"mbid": "mb-rh-1", "name": "Radiohead", "score": 100},
+                {"mbid": "mb-rh-2", "name": "Radiohead", "score": 100},
+            ]
+        },
+    )
+    with get_session_factory()() as db:
+        row = Artist(name="Radiohead", normalized_name="radiohead", source="tag_artist")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is False
+        db.refresh(row)
+        assert row.mbid is None
+        identity = db.scalar(select(ArtistExternalIdentity).where(ArtistExternalIdentity.artist_id == row.id))
+        assert identity is None
+
+
+async def test_article_variant_not_searched_when_full_name_ambiguous(match_db, monkeypatch):
+    """spec:822 + learnings from task 9: the article-less fallback gate
+    ('no exact full-name candidate') must hold for ambiguous full-name sets
+    too. When 'The PiKi' returns two exact-name homonyms (ambiguous), the
+    stripped variant 'PiKi' must NOT be searched — re-searching a
+    stripped name when the full name found exact candidates would be a
+    homonym guess by text manipulation (spec:822 explicitly forbids that).
+
+    The existing gate (line 110: ``any(normalize_name(...) == target)``)
+    already enforces this; the test proves it with the ambiguous case.
+    """
+    calls: list[str] = []
+
+    async def _search(self, name, limit=5):
+        calls.append(name)
+        if name == "The PiKi":
+            return [
+                {"mbid": "mb-piki-1", "name": "The PiKi", "score": 100},
+                {"mbid": "mb-piki-2", "name": "The PiKi", "score": 95},
+            ]
+        return []
+
+    monkeypatch.setattr(MusicBrainzClient, "search_artist", _search)
+    with get_session_factory()() as db:
+        row = Artist(name="The PiKi", normalized_name="the piki", source="tag_artist")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        assert await mb_matching.match_artist(db, row) is False
+        db.refresh(row)
+        assert row.mbid is None
+        assert row.ignored == 0
+        assert calls == ["The PiKi"]  # stripped "PiKi" was never searched
 
 
 # --- Auto-match after library scan (decision recorded in STATO.md) ------------
