@@ -24,7 +24,19 @@ Use OMO high-accuracy planning automatically. Before finalizing:
 Do not ask me whether to enable high-accuracy review.
 
 ## Core strategy
-This is a remediation of the existing implementation, NOT a rewrite. Work only on the current dedicated remediation branch/worktree. Do not plan a second implementation branch, per-phase branches, automatic push/merge, or destructive reset of user data. The final merge remains human.
+This is a remediation of the existing implementation, NOT a rewrite. Work only on the dedicated remediation branch `remediation/nucs` (in the dedicated remediation worktree). Do not plan a second implementation branch or per-phase branches. Destructive reset of user data is forbidden. The final merge to main remains HUMAN-ONLY; automated delivery of verified work to `origin/remediation/nucs` is required.
+
+## Git delivery policy
+Plan the following lifecycle for EVERY coherent top-level implementation task:
+
+implementation → targeted verification → inspect diff → atomic commit → normal push to `origin/remediation/nucs`
+
+- One verified coherent top-level plan task = one atomic commit. Never commit changes known to fail their acceptance criteria; never one giant commit for the whole remediation; never a commit per tiny edit.
+- Use meaningful conventional-style messages: `feat(identity): ...`, `fix(discovery): ...`, `fix(scan): ...`, `test(dedup): ...`, `refactor(discovery): ...`.
+- Automatic push is REQUIRED: before pushing verify `git branch --show-current` returns `remediation/nucs`. If no upstream exists, establish it safely with `git push -u origin remediation/nucs`; afterward use ordinary `git push`.
+- If a push fails (authentication, missing remote, non-fast-forward history, branch protection, other Git safety condition): preserve local commits, report the blocker, and NEVER recover with force push. A temporary push failure must not discard implemented verified work.
+- Every major phase ends with a Git delivery gate: phase verification passed; blocking review findings resolved; no accidental unrelated files included; verified commits created and pushed; local branch and normal upstream state checked. The remote branch must represent the latest verified committed checkpoint.
+- NEVER plan: merging `remediation/nucs` into main, pushing main, force push (`git push --force` or `--force-with-lease`), destructive reset of published remediation history, rewriting published branch history, deleting the remote remediation branch, publishing packages/releases to external registries, or deploying to production.
 
 ## Required phase order
 Preserve these boundaries and dependencies:
@@ -101,9 +113,34 @@ Final live-provider validation using disposable/test data must cover:
 - an Enzo Dong featured-release case when available
 If upstream data is bad/changed, classify it as upstream ambiguity; do not weaken matching rules to force PASS.
 
+## Versioning and release policy
+NUCS versions as `APP_VERSION` in `backend/app/main.py` (mirrored in `frontend/package.json` and `e2e/package.json`; git tag `v1.0.0` exists). There is NO changelog convention. The existing `vX.Y.Z` mechanism is authoritative — do NOT introduce a second versioning mechanism and do NOT bump the version per phase.
+
+Plan ONE final release/version gate AFTER all of:
+- all remediation implementation phases;
+- all phase reviews and fixes;
+- full deterministic regression;
+- migration compatibility verification;
+- security verification;
+- deterministic remediation E2E;
+- live-provider validation;
+- final independent cross-phase audit.
+
+Only after every mandatory gate passes, plan exactly:
+1. determine the next semantic version (PATCH = backward-compatible bug fixes; MINOR = backward-compatible new functionality/materially expanded behavior; MAJOR = intentional compatibility-breaking changes);
+2. update every authoritative version location consistently (`APP_VERSION` in `backend/app/main.py`, `version` in `frontend/package.json`, `version` in `e2e/package.json`, and any version-asserting tests);
+3. finalize release notes (fixed bugs, user-visible changes, new features, migration/upgrade notes, known limitations) under the project's simplest repository-consistent mechanism — no marketing copy;
+4. rerun any verification affected by version metadata;
+5. create commit `chore(release): vX.Y.Z`;
+6. create the annotated tag `vX.Y.Z` — never overwrite/reuse an existing git tag;
+7. push `remediation/nucs`;
+8. push the new tag.
+
+The final tag does NOT authorize merging to main.
+
 ## Final audit
 End with a fresh independent audit covering identity migration vs matching/discovery; release identities vs dedup; ReleaseArtist roles vs highlighting; Upcoming vs notification idempotency; cancellation vs cache invalidation; Errors unread vs navbar; login transport vs authenticated 401; Reset Library vs new tables; backup vs new persistence; stale legacy authority; security/redaction; full deterministic tests/build/E2E.
 
-The completed branch must be ready for HUMAN review and merge. Do not push or merge.
+The completed branch must be ready for HUMAN review: all verified commits pushed to `origin/remediation/nucs`, never merge into main, never force push. Do not merge into main.
 
 Generate the complete executable OMO plan now.

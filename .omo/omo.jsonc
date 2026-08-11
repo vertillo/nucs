@@ -10,7 +10,7 @@
       "sisyphus": {
         "model": "nucs-deepseek",
         "temperature": 0.2,
-        "prompt_append": "NUCS remediation is specification-driven. Preserve the dedicated remediation branch, do not push or merge, do not invent product behavior, and use deterministic tests before claiming completion."
+        "prompt_append": "NUCS remediation is specification-driven. Work exclusively on the remediation/nucs branch, commit verified coherent tasks atomically, and push them normally to origin/remediation/nucs. Never merge to main, never force-push, never rewrite published history. Do not invent product behavior; use deterministic tests before claiming completion."
       },
       "hephaestus": {
         "model": "nucs-deepseek",
@@ -48,7 +48,7 @@
       "atlas": {
         "model": "nucs-deepseek",
         "temperature": 0.1,
-        "prompt_append": "Execute the approved NUCS remediation plan exactly. Product decisions in specs/NUCS_PRODUCT_DECISIONS.md are immutable. Do not broaden scope or silently reinterpret them. Do not push, merge, rebase, or rewrite history. Use the existing NUCS pytest/Ruff/Vite/Puppeteer stack and preserve accumulated notepad wisdom."
+        "prompt_append": "Execute the approved NUCS remediation plan exactly. Product decisions in specs/NUCS_PRODUCT_DECISIONS.md are immutable. Do not broaden scope or silently reinterpret them. Commit verified coherent tasks atomically and push them normally to origin/remediation/nucs; never merge to main, never force-push, never rebase or rewrite history. Use the existing NUCS pytest/Ruff/Vite/Puppeteer stack and preserve accumulated notepad wisdom."
       },
       "sisyphus-junior": {
         "model": "nucs-deepseek",

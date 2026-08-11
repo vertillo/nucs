@@ -2263,3 +2263,51 @@ Produce a concise completion report:
 - suggested commit message.
 
 Do not proceed to the next phase unless the gate passes.
+
+## Step K — Git delivery gate
+
+Every phase ends with a Git delivery gate. The phase is delivered only when:
+
+1. phase verification passed (Steps D–E green);
+2. blocking review findings resolved (Step I);
+3. no accidental unrelated files included in the changes;
+4. verified coherent work is committed atomically (one verified top-level task = one atomic commit, conventional-style message, e.g. `feat(identity): ...`, `fix(discovery): ...`, `test(dedup): ...`, `refactor(...)`);
+5. commits are pushed normally to `origin/remediation/nucs` (verify `git branch --show-current` returns `remediation/nucs`; establish the upstream with `git push -u origin remediation/nucs` if needed, then plain `git push`);
+6. local branch and normal upstream state are checked (remote branch represents the latest verified committed checkpoint).
+
+Git safety rules:
+
+- Never commit changes known to fail their acceptance criteria.
+- Never make one giant commit for the whole remediation, and never a commit per tiny edit.
+- On push failure (authentication, missing remote, non-fast-forward, branch protection, or any other Git safety condition): preserve local commits, record the blocker, and NEVER recover with force push.
+- Never automatically: merge `remediation/nucs` into main, push main, force-push (`--force` or `--force-with-lease`), destructively reset or rewrite published history, delete the remote remediation branch, publish packages/releases to external registries, or deploy to production. The final merge to main is HUMAN-ONLY.
+
+---
+
+# FINAL RELEASE / VERSION GATE
+
+NUCS versions as `APP_VERSION` in `backend/app/main.py` (mirrored in `frontend/package.json` and `e2e/package.json`; existing git tag `v1.0.0`). There is no changelog convention. The existing `vX.Y.Z` mechanism is authoritative — do NOT introduce a second versioning mechanism and do NOT bump the version per phase.
+
+After ALL of the following pass, and only then:
+
+- all remediation implementation phases (0–10) with their gates;
+- all phase reviews and fixes;
+- full deterministic regression;
+- migration compatibility verification;
+- security verification;
+- deterministic remediation E2E;
+- live-provider validation;
+- final independent cross-phase audit;
+
+execute the release sequence exactly:
+
+1. determine the next semantic version: PATCH = backward-compatible bug fixes only; MINOR = backward-compatible new functionality or materially expanded behavior; MAJOR = intentional compatibility-breaking changes;
+2. update every authoritative version location consistently: `APP_VERSION` in `backend/app/main.py`, `version` in `frontend/package.json` and `e2e/package.json`, and any version-asserting tests;
+3. finalize release notes (fixed bugs, user-visible behavior changes, new features, migration/upgrade notes, known limitations) under the project's simplest repository-consistent mechanism — no marketing copy;
+4. rerun any verification affected by version metadata;
+5. create the commit `chore(release): vX.Y.Z`;
+6. create the annotated tag `vX.Y.Z` — never overwrite/reuse an existing git tag;
+7. push `remediation/nucs`;
+8. push the new tag.
+
+The final tag does NOT authorize merging to main; the merge remains human-only.

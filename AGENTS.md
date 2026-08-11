@@ -77,7 +77,7 @@ Centrality unmeasured (no LSP/codegraph); from code inspection.
 - **No row-moving/promotion copy jobs, no library-reset-as-migration-shortcut** — prefer expand → backfill → switch → retire.
 - **Don't treat `docs/CURRENT_IMPLEMENTATION.md` as desired behavior** — it describes as-built state; defects live in KNOWN_ISSUES.md.
 - **Do not invent product behavior** — new ambiguity = `BLOCKED_PRODUCT_DECISION`, never a guess.
-- **No push/merge/rebase/rewrite on this branch** — final merge is human.
+- **Git delivery**: verified work is committed atomically and pushed normally to `origin/remediation/nucs`; never push main, never force-push, never merge `remediation/nucs` into main — the final merge to main is human-only (see OMO_EXECUTION_INSTRUCTIONS.md).
 - No `TODO/FIXME` markers exist repo-wide; don't add them casually — remediation items are tracked in `docs/KNOWN_ISSUES.md`.
 - Never log secrets (passwords/tokens/Apprise URLs); error records and audit log scrub sensitive keys.
 
