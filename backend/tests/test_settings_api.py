@@ -108,6 +108,23 @@ async def test_settings_put_unknown_key_rejected(client):
     assert "admin_password_hash" in response.json()["detail"]
 
 
+async def test_today_override_seam_not_exposed_via_settings_api(client):
+    """Oracle LOW-1 guardrail: the internal test-only today_override seam is
+    written directly to the KV table (spec:1221) and must NOT surface through
+    the user settings API — neither in the GET body nor in the PUT whitelist."""
+    await _login(client)
+    with get_session_factory()() as db:
+        set_setting(db, "today_override", "2026-06-15")
+        db.commit()
+    body = (await client.get("/api/v1/settings")).json()
+    assert "today_override" not in body
+    response = await client.put(
+        "/api/v1/settings", json={"today_override": "2026-06-15"}, headers=API_HEADERS
+    )
+    assert response.status_code == 422
+    assert "today_override" in response.json()["detail"]
+
+
 async def test_settings_put_invalid_date_rejected(client):
     await _login(client)
     for bad in ("2024-13-01", "2024-02-30", "not-a-date", "2024"):

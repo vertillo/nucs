@@ -20,10 +20,23 @@ from sqlalchemy import select
 import app.services.discovery as discovery
 import app.services.library_scan as library_scan_module
 import app.services.musicbrainz as musicbrainz
+import app.services.notify as notify
+from app.config import get_settings
 from app.db import get_session_factory
 from app.main import run_migrations, seed_settings_if_empty
-from app.models import Artist, ArtistExternalIdentity, Release, ReleaseArtist, ScanRun, SeenRecording, Setting
+from app.models import (
+    Artist,
+    ArtistExternalIdentity,
+    NotificationEvent,
+    Release,
+    ReleaseArtist,
+    ReleaseState,
+    ScanRun,
+    SeenRecording,
+    Setting,
+)
 from app.security import set_setting
+from app.services.dates import classify_release_date
 from app.services.musicbrainz import MBError, MusicBrainzClient
 
 _DISCOVERY_FROM = "2024-01-01"
@@ -269,7 +282,7 @@ async def test_level1_inserts_roles_types_and_skips(disc_db, monkeypatch):
         stats = await discovery.run_discovery(db)
 
     assert stats["artists_processed"] == 1
-    assert stats["releases_new"] == 3
+    assert stats["releases_new"] == 4
     assert stats["releases_updated"] == 0
     assert stats["skipped_no_date"] == 1
     assert stats["skipped_type"] == 1
@@ -277,7 +290,7 @@ async def test_level1_inserts_roles_types_and_skips(disc_db, monkeypatch):
 
     with get_session_factory()() as db:
         releases = {row.rgid: row for row in db.scalars(select(Release)).all()}
-        assert set(releases) == {"rg-album", "rg-single", "rg-partial"}
+        assert set(releases) == {"rg-album", "rg-single", "rg-partial", "rg-future"}
         album = releases["rg-album"]
         assert album.title == "Mio Album"
         assert album.primary_artist == "Mio"
@@ -287,6 +300,11 @@ async def test_level1_inserts_roles_types_and_skips(disc_db, monkeypatch):
         assert releases["rg-single"].type == "single"
         assert releases["rg-single"].primary_artist == "Altro feat. Mio"
         assert releases["rg-partial"].first_release_date == "2024-05"
+        # Spec 5.2: the future-dated candidate is persisted as a canonical row.
+        future = releases["rg-future"]
+        assert future.title == "Not Yet Out"
+        assert future.first_release_date == "2999-01-01"
+        assert classify_release_date(future.first_release_date, db=db) == "upcoming"
 
         pairs = {(row.release_id, row.artist_id): row.role for row in db.scalars(select(ReleaseArtist)).all()}
         mio = db.scalar(select(Artist).where(Artist.mbid == "mb-mio"))
@@ -301,7 +319,7 @@ async def test_level1_inserts_roles_types_and_skips(disc_db, monkeypatch):
         assert run.status == "ok"
         run_stats = json.loads(run.stats)
         assert run_stats["duration_s"] >= 0
-        assert run_stats["releases_new"] == 3
+        assert run_stats["releases_new"] == 4
 
 
 async def test_level1_skips_disabled_other_type(disc_db, monkeypatch):
@@ -602,8 +620,13 @@ async def test_tracks_stored_from_deezer_candidates(disc_db, monkeypatch):
         ]
 
 
-async def test_level1_future_dated_release_skipped(disc_db, monkeypatch):
-    """A future-dated group is never rescued into an accepted release."""
+async def test_level1_future_dated_release_stored_as_upcoming(disc_db, monkeypatch):
+    """Spec 5.2 (spec:1115-1121): a definitely-future release returned by a
+    provider is persisted as a normal canonical Release row — no longer
+    discarded for being future-dated, no second copy required later. The
+    stored row classifies as upcoming (spec:1111) and the future date does
+    NOT advance the per-artist discovery cursor (it would push the next
+    scan's window past today)."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     _seed_artists(("Mio", "mb-mio"))
@@ -613,9 +636,58 @@ async def test_level1_future_dated_release_skipped(disc_db, monkeypatch):
     fake.search_counts["mb-mio"] = 1
     with get_session_factory()() as db:
         stats = await discovery.run_discovery(db)
-    assert stats["releases_new"] == 0
+    assert stats["releases_new"] == 1
+    assert stats["candidates_rejected"] == 0
     with get_session_factory()() as db:
-        assert db.scalar(select(Release).where(Release.rgid == "rg-future")) is None
+        row = db.scalar(select(Release).where(Release.rgid == "rg-future"))
+        assert row is not None
+        assert row.title == "Not Yet Out"
+        assert row.first_release_date == "2999-01-01"
+        assert classify_release_date(row.first_release_date, db=db) == "upcoming"
+        mio = db.scalar(select(Artist).where(Artist.mbid == "mb-mio"))
+        assert mio.last_release_check is None  # future dates never advance the cursor
+
+
+async def test_level1_future_release_not_duplicated_on_rescan(disc_db, monkeypatch):
+    """Spec 5.2 (spec:1121) + spec 3.4 dedup: the same future release returned
+    on a re-scan reuses the SAME canonical row (rgid identity) — one row, no
+    second copy; the second run records an update, never a new release."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-future", "Not Yet Out", "Album", "2999-01-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    with get_session_factory()() as db:
+        first = await discovery.run_discovery(db)
+    with get_session_factory()() as db:
+        second = await discovery.run_discovery(db)
+
+    assert first["releases_new"] == 1
+    assert second["releases_new"] == 0
+    assert second["releases_updated"] == 1
+    with get_session_factory()() as db:
+        rows = db.scalars(select(Release).where(Release.rgid == "rg-future")).all()
+        assert len(rows) == 1
+        assert rows[0].first_release_date == "2999-01-01"
+
+
+async def test_process_candidate_out_of_window_old_release_still_rejected(disc_db):
+    """Spec 5.2 guard: only definitely-FUTURE releases are accepted outside the
+    discovery window. An old (pre-window) released candidate is still rejected —
+    the window logic for released releases is unchanged."""
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        stats = _process_stats()
+        seen = await _process_candidate(
+            db, artist, _candidate("deezer", "dz-old", date_="2010-01-01"), stats=stats
+        )
+        db.commit()
+        assert seen is None
+        assert stats["candidates_rejected"] == 1
+        assert db.scalar(select(Release)) is None
 
 
 async def test_level1_reissue_group_rescued_via_official_release(disc_db, monkeypatch):
@@ -670,13 +742,53 @@ async def test_level1_reissue_group_without_official_release_skipped(disc_db, mo
 
 
 async def test_discovery_from_date_defaults_to_start_of_current_year(app_env):
+    """The default window covers the whole current year (phase 15) in the
+    CONFIGURED tz: with a frozen today seam the default is that year's Jan 1
+    deterministically, and the fallback is tz-stable (spec 5.1)."""
     run_migrations()
     with get_session_factory()() as db:
         from sqlalchemy import delete as sa_delete
 
         db.execute(sa_delete(Setting).where(Setting.key == "discovery_from_date"))
         db.commit()
-        assert discovery._discovery_from_date(db) == date.today().replace(month=1, day=1)
+        set_setting(db, "today_override", "2026-06-15")
+        db.commit()
+        assert discovery._discovery_from_date(db) == date(2026, 1, 1)
+
+
+async def test_policy_fingerprint_unchanged_by_configured_tz(app_env, monkeypatch):
+    """Todo 21 regression: the spec 5.1 tz refactor must NOT silently change
+    the fingerprint inputs. With an explicit discovery window the fingerprint
+    is pinned to the exact pre-refactor string regardless of the configured
+    tz (Kiritimati, UTC+14, per the e2e convention)."""
+    monkeypatch.setenv("TZ", "Pacific/Kiritimati")
+    get_settings.cache_clear()
+    run_migrations()
+    seed_settings_if_empty()
+    with get_session_factory()() as db:
+        set_setting(db, "discovery_from_date", _DISCOVERY_FROM)
+        db.commit()
+        pinned = (
+            '{"allowed_types":["album","ep","single"],'
+            '"discovery_from_date":"2024-01-01","official_only":true}'
+        )
+        assert discovery._policy_fingerprint(db) == pinned
+
+
+async def test_policy_fingerprint_default_window_uses_frozen_today(disc_db):
+    """The fingerprint's discovery_from_date default (unset window) advances
+    with the frozen today seam — the same boundary _discovery_from_date uses."""
+    with get_session_factory()() as db:
+        from sqlalchemy import delete as sa_delete
+
+        db.execute(sa_delete(Setting).where(Setting.key == "discovery_from_date"))
+        db.commit()
+        set_setting(db, "today_override", "2026-06-15")
+        db.commit()
+        assert discovery._policy_fingerprint(db) == (
+            '{"allowed_types":["album","ep","single"],'
+            '"discovery_from_date":"2026-01-01","official_only":true}'
+        )
 
 
 # --- Level 1: identity-driven daily discovery (spec 3.2) ----------------------
@@ -1129,13 +1241,13 @@ async def test_level2_failed_fetch_recorded_failed_and_retried(disc_db, monkeypa
 
 
 async def test_level2_future_dated_release_remembered_under_current_policy(disc_db, monkeypatch):
-    """Spec 4.1 (spec:1935 contract change vs MEDIA-1): a recording whose only
-    release is future-dated was previously NOT marked seen so it was re-examined
-    weekly. Spec 4.1/4.2 replaces that with the policy-fingerprint model: the
-    future-dated release WAS successfully fetched and evaluated (rejected by the
-    discovery window), so the recording is remembered as 'seen' under the
-    current fingerprint and is NOT re-fetched while the policy is unchanged.
-    Re-evaluation under a different fingerprint (e.g. a moved discovery window)
+    """Spec 4.1 + 5.2 (spec:1935 contract changes): a recording whose only
+    release is future-dated was previously NOT marked seen so it was
+    re-examined weekly, and the future release was discarded. Since spec 4.1/4.2
+    the successful fetch is a complete evaluation remembered 'seen' under the
+    current fingerprint (not re-fetched while the policy is unchanged), and
+    since spec 5.2 the future release itself is persisted as a canonical
+    Release row on first discovery. Re-evaluation under a different fingerprint
     is covered by the fingerprint-gated skip of spec 4.2."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
@@ -1150,12 +1262,14 @@ async def test_level2_future_dated_release_remembered_under_current_policy(disc_
     with get_session_factory()() as db:
         stats = await discovery.run_discovery(db, feat_scan=True)
 
-    assert stats["releases_new"] == 0  # out of range, rejected by the date filter
+    assert stats["releases_new"] == 1  # spec 5.2: future-dated releases are stored
     with get_session_factory()() as db:
         row = db.get(SeenRecording, "rec-future")
         assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
         assert row.policy_fingerprint == discovery._policy_fingerprint(db)
         assert row.evaluated_at is not None
+        stored = db.scalar(select(Release).where(Release.rgid == "rg-f"))
+        assert stored is not None and stored.first_release_date == "2999-01-01"
 
     # MB completes the date, but the policy fingerprint is unchanged: the
     # remembered evaluation is not re-fetched (the release surfaces only when
@@ -1169,7 +1283,10 @@ async def test_level2_future_dated_release_remembered_under_current_policy(disc_
     assert stats["releases_new"] == 0  # never re-evaluated under the unchanged policy
     assert fake.recording_lookups == ["rec-future"]  # exactly one fetch, first run
     with get_session_factory()() as db:
-        assert db.scalar(select(Release).where(Release.rgid == "rg-f")) is None
+        # The canonical row keeps the future date it was stored with: the
+        # completed MB date is only applied under a changed fingerprint.
+        stored = db.scalar(select(Release).where(Release.rgid == "rg-f"))
+        assert stored is not None and stored.first_release_date == "2999-01-01"
 
 
 async def test_level2_undated_release_remembered_seen(disc_db, monkeypatch):
@@ -2618,9 +2735,12 @@ async def test_level1_apple_sufficient_prevents_full_fallback(disc_db, monkeypat
 
 
 async def test_level1_apple_no_usable_results_falls_back_to_deezer(disc_db, monkeypatch):
-    """Spec:872-873: Apple returns candidates but NONE is usable for the window
-    (future-dated) -> apple_no_results recorded and discovery falls back in
-    priority order to Deezer, which supplies the release."""
+    """Spec:872-873 + spec 5.2: Apple returns candidates but NONE is usable
+    for the window (future-dated) -> apple_no_results recorded and discovery
+    falls back in priority order to Deezer, which supplies the released
+    release. The future-dated Apple candidate is NOT lost: it is persisted as
+    an Upcoming canonical row (spec 5.2), it just does not satisfy the
+    Apple-first sufficiency threshold for the requested period."""
     from app.services.providers.base import ReleaseCandidate
 
     _install_fake(monkeypatch, _FakeClient())
@@ -2677,11 +2797,14 @@ async def test_level1_apple_no_usable_results_falls_back_to_deezer(disc_db, monk
 
     assert fetched == ["itunes", "deezer"]  # Apple first, then fallback in priority order
     assert stats["fallback_reasons"]["apple_no_results"] == 1
-    assert stats["releases_new"] == 1
+    assert stats["releases_new"] == 2
     with get_session_factory()() as db:
         row = db.scalar(select(Release).where(Release.provider_id == "dz-rel-1"))
         assert row is not None
-        assert db.scalar(select(Release).where(Release.provider_id == "app-future")) is None
+        # The future release is stored too (spec 5.2) and classifies upcoming.
+        future = db.scalar(select(Release).where(Release.provider_id == "app-future"))
+        assert future is not None
+        assert classify_release_date(future.first_release_date, db=db) == "upcoming"
 
 
 async def test_level1_apple_failure_falls_back_and_run_completes(disc_db, monkeypatch):
@@ -3624,12 +3747,14 @@ async def test_benchmark_explicit_fallback_reasons(disc_db, monkeypatch):
     explicit and observable in the scan stats.
 
     Scenario: artist has Apple identity but Apple returns no usable results
-    (all future-dated). The fallback fires to Deezer, which provides a
-    usable release. Both the fallback reason (apple_no_results) and the
-    Deezer provider call are recorded.
+    for the window (all future-dated, spec 5.2: still persisted as Upcoming
+    rows). The fallback fires to Deezer, which provides a usable release.
+    Both the fallback reason (apple_no_results) and the Deezer provider call
+    are recorded.
 
     Evidence: fallback_reasons["apple_no_results"] == 1; fallback_count == 1;
-    provider_calls shows both itunes and deezer.
+    provider_calls shows both itunes and deezer; the future release is stored
+    (releases_new == 2) but the future-dated candidate was never "rejected".
     """
     from app.services.providers.base import ReleaseCandidate
 
@@ -3651,7 +3776,7 @@ async def test_benchmark_explicit_fallback_reasons(disc_db, monkeypatch):
                     title="Future Release",
                     primary_artist="Fallback",
                     type="album",
-                    first_release_date="2999-01-01",  # all future → not usable
+                    first_release_date="2999-01-01",  # all future → not usable for the window
                     provider="itunes",
                     provider_id="app-future-fb",
                 )
@@ -3686,8 +3811,8 @@ async def test_benchmark_explicit_fallback_reasons(disc_db, monkeypatch):
     assert stats["fallback_count"] == 1
     assert stats["provider_calls"].get("itunes", 0) == 1
     assert stats["provider_calls"].get("deezer", 0) == 1
-    assert stats["releases_new"] == 1
-    assert stats["candidates_rejected"] >= 1  # Apple's future-dated candidate was rejected
+    assert stats["releases_new"] == 2  # the future Apple release is stored too
+    assert stats["candidates_rejected"] == 0  # spec 5.2: future-dated is never rejected
 
 
 async def test_benchmark_no_duplicate_work_after_browser_refresh(disc_db, monkeypatch):
@@ -3845,3 +3970,114 @@ async def test_benchmark_comprehensive_multi_provider_scenario(disc_db, monkeypa
     assert stats["merge_reasons"] == {}
     assert stats["candidates_rejected"] >= 0
     assert stats["seen_recording_cache_hits"] >= 0
+
+
+# --- Spec 5.6: persisted two-stage upcoming notifications (todo 30) -----------
+
+
+async def _freeze_today(value: str) -> None:
+    """Freeze the app date via the today_override seam (spec:1221)."""
+    with get_session_factory()() as db:
+        set_setting(db, "today_override", value)
+        db.commit()
+
+
+async def _api_login(client) -> None:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "fixture-only-credential-123"},
+        headers={"X-Requested-With": "XMLHttpRequest", "Origin": "https://testserver"},
+    )
+    assert response.status_code == 204
+
+
+async def test_upcoming_notification_acceptance_sequence(disc_db, monkeypatch, make_client):
+    """Spec 5.6 acceptance (spec:1213-1221): the full two-stage notification
+    lifecycle with frozen dates (spec:1221) — discovery announcement, no
+    duplicate on the next sync, release-day follow-up, no duplicate #2, and
+    favorite/hidden survive the transition. Every scan is a ``run_discovery``
+    call, so manual and scheduled syncs demonstrably share the same
+    ``notification_events`` state (spec:1206)."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    future = _rg("rg-fut-notif", "Future Album", "Album", "2026-09-01", _credit(("Mio", "")))
+    fake.search_pages["mb-mio"] = [[future]]
+    fake.search_counts["mb-mio"] = 1
+
+    calls: list[tuple[str, str]] = []
+
+    async def _recorder(title, body):
+        calls.append((title, body))
+        return (True, "")
+
+    monkeypatch.setattr(notify, "send_notification", _recorder)
+    with get_session_factory()() as db:
+        set_setting(db, "notify_enabled", "true")
+        set_setting(db, "notify_urls", "tgram://tok/chat")
+        db.commit()
+    await _freeze_today("2026-06-15")
+
+    # 1) Discover future release -> Upcoming + notification #1.
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+    assert stats["releases_new"] == 1
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.rgid == "rg-fut-notif"))
+        release_id = row.id
+        assert classify_release_date(row.first_release_date, db=db) == "upcoming"
+    assert [title for title, _ in calls] == ["nucs: 1 upcoming release"]
+
+    # Favorite/hidden are set before the transition and must survive it.
+    with get_session_factory()() as db:
+        db.add(ReleaseState(release_id=release_id, favorite=1, hidden=1))
+        db.commit()
+
+    # 2) Run sync again tomorrow while still future -> no duplicate #1.
+    await _freeze_today("2026-06-16")
+    with get_session_factory()() as db:
+        await discovery.run_discovery(db)
+    assert [title for title, _ in calls] == ["nucs: 1 upcoming release"]
+    with get_session_factory()() as db:
+        events = db.scalars(select(NotificationEvent).where(NotificationEvent.release_id == release_id)).all()
+        assert [(event.event_type, event.state) for event in events] == [
+            (notify.EVENT_UPCOMING_DISCOVERED, notify.STATE_SENT)
+        ]
+
+    # 3) Advance app date to release day -> Released unseen + notification #2.
+    await _freeze_today("2026-09-01")
+    with get_session_factory()() as db:
+        await discovery.run_discovery(db)
+    assert [title for title, _ in calls] == ["nucs: 1 upcoming release", "nucs: 1 release out now"]
+    with get_session_factory()() as db:
+        row = db.scalar(select(Release).where(Release.id == release_id))
+        assert classify_release_date(row.first_release_date, db=db) == "released"
+        events = db.scalars(select(NotificationEvent).where(NotificationEvent.release_id == release_id)).all()
+        assert {(event.event_type, event.state) for event in events} == {
+            (notify.EVENT_UPCOMING_DISCOVERED, notify.STATE_SENT),
+            (notify.EVENT_RELEASE_DAY, notify.STATE_SENT),
+        }
+        state = db.get(ReleaseState, release_id)
+        assert state is not None
+        assert state.seen == 0 and state.favorite == 1 and state.hidden == 1
+
+    # 4) The release disappears from the Upcoming view and appears in the
+    #    Released view, still unseen (spec:1213-1219). hidden=all keeps the
+    #    hidden release visible so the DATE transition (not the hidden filter)
+    #    is what drives the assertion.
+    async with make_client() as client:
+        await _api_login(client)
+        upcoming = (await client.get("/api/v1/releases", params={"view": "upcoming", "hidden": "all"})).json()
+        released = (await client.get("/api/v1/releases", params={"view": "released", "hidden": "all"})).json()
+    assert release_id not in [item["id"] for item in upcoming["items"]]
+    released_items = [item for item in released["items"] if item["id"] == release_id]
+    assert len(released_items) == 1
+    assert released_items[0]["seen"] == 0
+
+    # 5) Run sync again -> no duplicate #2; favorite/hidden still survive.
+    with get_session_factory()() as db:
+        await discovery.run_discovery(db)
+    assert [title for title, _ in calls] == ["nucs: 1 upcoming release", "nucs: 1 release out now"]
+    with get_session_factory()() as db:
+        state = db.get(ReleaseState, release_id)
+        assert state.favorite == 1 and state.hidden == 1

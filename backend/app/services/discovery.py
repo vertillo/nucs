@@ -62,7 +62,13 @@ from app.services.artist_identity import (
 )
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.covers import fetch_cover, save_cover_response
-from app.services.dates import parse_mb_date, release_in_range
+from app.services.dates import (
+    CLASS_UPCOMING,
+    classify_release_date,
+    parse_mb_date,
+    release_in_range,
+    today,
+)
 from app.services.links import build_search_links
 from app.services.musicbrainz import MBError, get_client
 from app.services.names import normalize_name
@@ -130,10 +136,12 @@ FALLBACK_REASON_KEYS = (
 # "sufficient usable catalog results" when at least one release candidate it
 # returned was ACCEPTED into the feed for the current window (a candidate with
 # a title and a date that is in range and allowed by the type filter). A
-# candidate that was fetched but rejected (future-dated, type excluded, no
-# date) is NOT usable for the requested period, so it does not satisfy the
-# threshold and discovery falls back in catalog priority order (spec:872-873,
-# spec:186 "Apple returns no usable releases for the requested period").
+# candidate that is fetched but NOT usable for the requested period does not
+# satisfy the threshold and discovery falls back in catalog priority order
+# (spec:872-873, spec:186 "Apple returns no usable releases for the requested
+# period"): a definitely-future candidate is persisted since spec 5.2 but its
+# date covers no released-window day, and a type-excluded or date-less
+# candidate is rejected outright.
 _APPLE_MIN_USABLE_RESULTS = 1
 
 # Phase 4.1 (spec 4.1/4.2): SeenRecording evaluation states. ``seen`` = the
@@ -234,7 +242,10 @@ def _discovery_from_date(db: Session) -> date:
         logger.warning("invalid discovery_from_date %r, using default", raw)
         # Phase 15: the default window covers the whole current year, so recent
         # releases (e.g. Ye's BULLY official run) are not missed out of the box.
-        return date.today().replace(month=1, day=1)
+        # Spec 5.1: "today" is the shared configured-tz provider — the same seam
+        # discovery acceptance uses, so a frozen test override advances this
+        # default deterministically and the fingerprint boundary stays tz-stable.
+        return today(db).replace(month=1, day=1)
 
 
 def _allowed_types(db: Session) -> set[str]:
@@ -565,14 +576,19 @@ async def _process_candidate(
 ) -> str | None:
     """Filter one release candidate (type/date/official) and upsert it.
 
-    Returns the release date when accepted, else None. ``role`` overrides the
-    credit-phrase heuristic (level 2 always featured). Newly created releases
-    are appended to ``new_keys`` (provider identity) and ``new_release_ids``.
-    ``same_artist_dedup`` (spec 3.4, todo 17) routes cross-provider candidates
-    through the central conservative matcher (``match_release``): exact
-    external identity and MusicBrainz release-group identity first, then the
-    edition match with merge-reason output (EXACT_EXTERNAL_ID |
-    MB_RELEASE_GROUP | TITLE_DATE_TRACKLIST | NO_MATCH, spec:938-945).
+    Returns the release date when accepted, else None. Spec 5.2 (spec:1115-1121):
+    a definitely-future candidate is accepted and persisted as a canonical
+    Release row instead of being rejected for its date — it surfaces in the
+    Upcoming view (todo 27) and no second copy is required later. Released and
+    partial candidates keep the discovery-window acceptance unchanged. ``role``
+    overrides the credit-phrase heuristic (level 2 always featured). Newly
+    created releases are appended to ``new_keys`` (provider identity) and
+    ``new_release_ids``. ``same_artist_dedup`` (spec 3.4, todo 17) routes
+    cross-provider candidates through the central conservative matcher
+    (``match_release``): exact external identity and MusicBrainz release-group
+    identity first, then the edition match with merge-reason output
+    (EXACT_EXTERNAL_ID | MB_RELEASE_GROUP | TITLE_DATE_TRACKLIST | NO_MATCH,
+    spec:938-945).
     """
     title = candidate.title.strip()
     if not title:
@@ -584,6 +600,11 @@ async def _process_candidate(
         stats["skipped_no_date"] += 1
         stats["candidates_rejected"] += 1
         return None
+    # Spec 5.2 (spec:1115-1121): a definitely-future release (earliest possible
+    # day after today, spec:1111) is no longer discarded for its date. It is
+    # persisted as a normal canonical Release row; the discovery-window logic
+    # below for released/partial releases is unchanged.
+    definitely_future = classify_release_date(first_release_date, db=db) == CLASS_UPCOMING
 
     match = None
     if same_artist_dedup is not None:
@@ -599,12 +620,13 @@ async def _process_candidate(
     if existing is None and candidate.provider == PROVIDER_MB:
         provider = get_provider(PROVIDER_MB)
         official_filter = _official_filter_enabled(db)
-        in_range = release_in_range(first_release_date, discovery_from)
+        in_range = release_in_range(first_release_date, discovery_from, db=db)
         # Phase 15: a release group is accepted when an OFFICIAL release falls
         # inside the window, even when the group's first-release-date is older
         # (reissues, e.g. Ye's BULLY: withdrawn 2025 release, official 2026
-        # run). Only groups older than the window are rescued; future-dated
-        # groups are never turned into accepted releases.
+        # run). Only groups older than the window are rescued; a definitely-
+        # future group is stored as-is (spec 5.2) — it is never date-rewritten,
+        # so the rescue branch cannot apply to it.
         is_reissue = not in_range and first_release_date < discovery_from.isoformat()
         if official_filter or is_reissue:
             stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
@@ -620,14 +642,16 @@ async def _process_candidate(
                 )
                 return None
             official_date = provider.earliest_official_release_date(details)
-            if official_date and is_reissue and release_in_range(official_date, discovery_from):
+            if official_date and is_reissue and release_in_range(official_date, discovery_from, db=db):
                 first_release_date = official_date
                 candidate.first_release_date = official_date
-        elif not in_range:
-            # Details failed and the group is outside the window: nothing to rescue.
+        elif not in_range and not definitely_future:
+            # Details failed and the group is outside the window: nothing to
+            # rescue. A definitely-future group still falls through to the
+            # acceptance check below (it is stored, not rescued).
             stats["candidates_rejected"] += 1
             return None
-    if not release_in_range(first_release_date, discovery_from):
+    if not release_in_range(first_release_date, discovery_from, db=db) and not definitely_future:
         stats["candidates_rejected"] += 1
         return None
     if candidate.type not in allowed_types:
@@ -758,9 +782,16 @@ async def _level1_artist(
                 # "database is locked" during slow provider responses).
                 db.commit()
                 if seen is not None:
-                    accepted += 1
-                    if latest_seen is None or seen > latest_seen:
-                        latest_seen = seen
+                    # Spec 5.2 (spec:1115-1121): a definitely-future candidate is
+                    # persisted (Upcoming view, todo 27) but is NOT a usable
+                    # result for the requested window (spec:186/869-873) and must
+                    # NOT advance the per-artist cursor — a future date would push
+                    # the next scan's from-date past today and starve released
+                    # discovery. Only non-future accepted dates count here.
+                    if classify_release_date(seen, db=db) != CLASS_UPCOMING:
+                        accepted += 1
+                        if latest_seen is None or seen > latest_seen:
+                            latest_seen = seen
         except MBError:
             # Spec:883: a provider outage is observable in the scan stats
             # (``provider_failure``) and the run moves on to the next provider —
@@ -1175,9 +1206,28 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         # never raises; per-release failures land in pipeline_errors.
         scan_locks.update_progress(scan_type, phase="enriching covers and links")
         await _enrich_new_releases(new_keys, stats)
-        # Spec 8.4.3: one aggregate notification per run, never one per release.
+        # Spec 8.4.3 + 5.6: one aggregate notification per run, never one per
+        # release (spec:465). Newly RELEASED releases keep the existing "new
+        # releases" aggregate; newly discovered FUTURE releases are announced
+        # once by the persisted upcoming-discovered hook (spec:1198-1201). The
+        # release-day + retry hook then runs at the end of every scan
+        # (spec:1203-1211): manual and scheduled scans share the same
+        # notification_events state (spec:1206).
+        released_ids: list[int] = []
+        upcoming_ids: list[int] = []
         if new_release_ids:
-            await notify_service.maybe_notify_new_releases(new_release_ids)
+            new_rows = db.scalars(select(Release).where(Release.id.in_(new_release_ids))).all()
+            for row in new_rows:
+                if classify_release_date(row.first_release_date, db=db) == CLASS_UPCOMING:
+                    upcoming_ids.append(row.id)
+                else:
+                    released_ids.append(row.id)
+        if released_ids:
+            await notify_service.maybe_notify_new_releases(released_ids)
+        if upcoming_ids:
+            await notify_service.maybe_notify_upcoming_discovered(upcoming_ids)
+        await notify_service.maybe_notify_release_day()
+        if new_release_ids:
             stats["notification_count"] = len(new_release_ids)
     except asyncio.CancelledError:
         logger.warning("discovery cancelled mid-run type=%s", scan_type)
