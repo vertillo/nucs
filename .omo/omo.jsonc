@@ -1,0 +1,114 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+  "models": {
+    "nucs-deepseek": {
+      "model": "opencode-go/deepseek-v4-flash"
+    }
+  },
+  "[opencode]": {
+    "agents": {
+      "sisyphus": {
+        "model": "nucs-deepseek",
+        "temperature": 0.2,
+        "prompt_append": "NUCS remediation is specification-driven. Preserve the dedicated remediation branch, do not push or merge, do not invent product behavior, and use deterministic tests before claiming completion."
+      },
+      "hephaestus": {
+        "model": "nucs-deepseek",
+        "temperature": 0.15
+      },
+      "prometheus": {
+        "model": "nucs-deepseek",
+        "temperature": 0.15,
+        "prompt_append": "For NUCS remediation, treat specs/NUCS_PRODUCT_DECISIONS.md as resolved product truth and specs/NUCS_REMEDIATION_SPEC.md as authoritative remediation scope. Ask only for genuinely new user-visible ambiguities not resolved there. Produce a dependency-ordered plan with implementation, verification, adversarial review, bug-fix, and phase-gate checkpoints. Use high-accuracy plan review with Momus and Oracle."
+      },
+      "oracle": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "librarian": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "explore": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "multimodal-looker": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "metis": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "momus": {
+        "model": "nucs-deepseek",
+        "temperature": 0.05
+      },
+      "atlas": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1,
+        "prompt_append": "Execute the approved NUCS remediation plan exactly. Product decisions in specs/NUCS_PRODUCT_DECISIONS.md are immutable. Do not broaden scope or silently reinterpret them. Do not push, merge, rebase, or rewrite history. Use the existing NUCS pytest/Ruff/Vite/Puppeteer stack and preserve accumulated notepad wisdom."
+      },
+      "sisyphus-junior": {
+        "model": "nucs-deepseek",
+        "temperature": 0.2,
+        "prompt_append": "Work only on the delegated NUCS task. Inspect relevant callers, persistence, tests, and frontend contracts before editing. Do not make new product decisions. Add regression coverage, keep SQLite write transactions short, and never hold a write transaction across external network awaits."
+      }
+    },
+    "categories": {
+      "visual-engineering": {
+        "model": "nucs-deepseek",
+        "temperature": 0.2
+      },
+      "artistry": {
+        "model": "nucs-deepseek",
+        "temperature": 0.2
+      },
+      "ultrabrain": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "deep": {
+        "model": "nucs-deepseek",
+        "temperature": 0.15
+      },
+      "quick": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      },
+      "unspecified-low": {
+        "model": "nucs-deepseek",
+        "temperature": 0.15
+      },
+      "unspecified-high": {
+        "model": "nucs-deepseek",
+        "temperature": 0.15
+      },
+      "writing": {
+        "model": "nucs-deepseek",
+        "temperature": 0.1
+      }
+    },
+    "background_task": {
+      "providerConcurrency": {
+        "opencode-go": 2
+      },
+      "modelConcurrency": {
+        "opencode-go/deepseek-v4-flash": 2
+      }
+    },
+    "experimental": {
+      "task_system": true
+    },
+    "team_mode": {
+      "enabled": false
+    },
+    "tmux": {
+      "enabled": false
+    }
+  },
+  "_migrations": [
+    "2026-08-reasoning-unification"
+  ]
+}
