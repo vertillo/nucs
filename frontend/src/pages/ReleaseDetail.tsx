@@ -20,6 +20,7 @@ const TYPE_LABEL: Record<ReleaseType, string> = {
 const ROLE_LABEL: Record<ArtistRole, string> = {
   primary: 'Main artist',
   featured: 'Featuring',
+  remixer: 'Remixer',
   contributor: 'Contributor',
 }
 

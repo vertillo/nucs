@@ -103,6 +103,30 @@ async def test_api_releases_list_shape_and_defaults(client):
     assert not any(i["id"] == seed["ids"][2] for i in items)
 
 
+async def test_api_releases_expose_remixer_role(client):
+    """Spec 3.7 exposure: the API passes through a persisted remixer role on
+    ReleaseArtist, so the frontend role labels can map it (spec:986)."""
+    with get_session_factory()() as db:
+        remixer = Artist(name="Travis Scott", normalized_name="travisscott", source="tag_artist")
+        db.add(remixer)
+        db.flush()
+        row = Release(
+            rgid="rg-remix",
+            title="Album",
+            primary_artist="Kanye West (Travis Scott Remix)",
+            type="album",
+            first_release_date="2024-01-01",
+        )
+        db.add(row)
+        db.flush()
+        db.add(ReleaseArtist(release_id=row.id, artist_id=remixer.id, role="remixer"))
+        db.commit()
+        remixer_id = remixer.id
+    await _login(client)
+    item = (await client.get("/api/v1/releases")).json()["items"][0]
+    assert item["matched_artists"] == [{"id": remixer_id, "name": "Travis Scott", "role": "remixer"}]
+
+
 async def test_api_releases_filters(client):
     seed = _seed()
     await _login(client)

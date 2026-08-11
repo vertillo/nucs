@@ -4,11 +4,14 @@ Phase 12b additions:
 - release detail carries ``source`` (provider), ``tracks`` (lazy-fetched from
   the provider and cached in ``release_tracks``) and the new link columns
   (Apple Music, Tidal, Qobuz, Discogs, Beatport);
-- the feed's ``matched_artists`` also includes tracked artists matched by
-  normalized name against the release credit phrase (fix: artists like PiKi
-  whose release is not linked via release_artists were not highlighted);
 - ``cover_key`` lets the frontend render covers for non-MusicBrainz releases
   (rgid may be NULL now).
+
+Spec 3.6 (todo 18): ``matched_artists`` reads ONLY the authoritative
+ReleaseArtist relations. The old phase-12b name-only fallback (a tracked
+artist whose normalized name appeared in the credit phrase) is REMOVED: a
+homonym is never highlighted without an authoritative release<->artist link
+(spec:964-975, spec:1597, Trap 3).
 """
 
 from __future__ import annotations
@@ -28,7 +31,6 @@ from app.security import get_setting
 from app.services import errors as error_service
 from app.services.audit import EVENT_RELEASES_PURGED, log_event
 from app.services.dates import parse_mb_date
-from app.services.names import normalize_name
 from app.services.providers import fetch_tracks_for
 
 router = APIRouter(prefix="/api/v1/releases", tags=["releases"])
@@ -79,40 +81,15 @@ def _cover_key(row: Release) -> str:
     return row.rgid if row.rgid else str(row.id)
 
 
-def _name_match_role(credit: str, artist_name: str) -> str | None:
-    """role when the tracked artist's normalized name appears in the credit
-    phrase (word-boundary match, so "Ye" never matches inside "Yeat").
-
-    Returns 'primary' when the credit starts with the name, 'featured'
-    otherwise — the same heuristic as the discovery role assignment.
-    """
-    norm_credit = normalize_name(credit)
-    norm_name = normalize_name(artist_name)
-    if not norm_name or not norm_credit:
-        return None
-    if norm_name not in norm_credit:
-        return None
-    # Word-boundary check: a normalized name only matches between non-alnum chars.
-    position = norm_credit.find(norm_name)
-    while position != -1:
-        before = norm_credit[position - 1] if position > 0 else " "
-        after_idx = position + len(norm_name)
-        after = norm_credit[after_idx] if after_idx < len(norm_credit) else " "
-        if not before.isalnum() and not after.isalnum():
-            break
-        position = norm_credit.find(norm_name, position + 1)
-    else:
-        return None
-    return "primary" if norm_credit.startswith(norm_name) else "featured"
-
-
 def _matched_artists_for(db: Session, release_ids: list[int]) -> dict[int, list[dict]]:
     """release_id -> [{id, name, role}] (no N+1).
 
-    Linked artists (release_artists) first; then every non-ignored tracked
-    artist whose normalized name appears in the release credit phrase is added
-    with the heuristic role (phase 12b fix: PiKi-style releases are highlighted
-    even without a release_artists link).
+    Reads ONLY the authoritative ReleaseArtist relations (spec 3.6 / spec:964-975).
+    Discovery persists the release<->artist link with its role whenever a release
+    belongs to a tracked internal artist; highlighting decisions follow those
+    relations. A tracked artist whose normalized name merely appears in the
+    credit phrase is NEVER added here — homonym safety (spec:1597, Trap 3) is
+    decided by discovery, not by string appearance.
     """
     by_release: dict[int, list[dict]] = defaultdict(list)
     if not release_ids:
@@ -123,27 +100,8 @@ def _matched_artists_for(db: Session, release_ids: list[int]) -> dict[int, list[
         .where(ReleaseArtist.release_id.in_(release_ids))
         .order_by(ReleaseArtist.release_id, Artist.name)
     ).all()
-    linked_ids: dict[int, set[int]] = defaultdict(set)
     for release_id, artist_id, name, role in rows:
         by_release[release_id].append({"id": artist_id, "name": name, "role": role})
-        linked_ids[release_id].add(artist_id)
-    tracked = db.scalars(select(Artist).where(Artist.ignored == 0)).all()
-    if not tracked:
-        return by_release
-    credits = {
-        release_id: credit
-        for release_id, credit in db.execute(
-            select(Release.id, Release.primary_artist).where(Release.id.in_(release_ids))
-        )
-    }
-    for release_id, credit in credits.items():
-        for artist in tracked:
-            if artist.id in linked_ids.get(release_id, ()):
-                continue
-            role = _name_match_role(credit, artist.name)
-            if role:
-                by_release[release_id].append({"id": artist.id, "name": artist.name, "role": role})
-        by_release[release_id].sort(key=lambda item: item["name"])
     return by_release
 
 

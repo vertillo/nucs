@@ -498,12 +498,15 @@ async def test_record_error_scrubs_secrets(app_env):
     assert "***" in combined
 
 
-# --- Feed: name-match highlighting (the PiKi case) -----------------------------
+# --- Feed: ReleaseArtist-authoritative highlighting (spec 3.6, Trap 3) ---------
 
 
-async def test_feed_matched_artists_include_name_match(client):
-    """A tracked artist whose normalized name appears in the credit phrase is
-    returned in matched_artists even without a release_artists link."""
+async def test_feed_homonym_by_name_alone_not_highlighted(client):
+    """Spec 3.6 / spec:1597: a tracked artist whose normalized name appears in
+    the credit phrase is NOT highlighted without an authoritative
+    release<->artist relation. The PiKi case: 'PiKi' is tracked, the release
+    credit says 'PiKi', but discovery never linked them -> matched_artists is
+    empty (no name-only fallback, Trap 3)."""
     await _login(client)
     with get_session_factory()() as db:
         tracked = Artist(name="PiKi", normalized_name="piki", source="tag_artist")
@@ -524,12 +527,75 @@ async def test_feed_matched_artists_include_name_match(client):
     response = await client.get("/api/v1/releases")
     body = response.json()
     item = body["items"][0]
-    assert any(
-        a["id"] == tracked_id and a["role"] in ("primary", "featured") for a in item["matched_artists"]
-    )
+    assert item["matched_artists"] == []
+    assert tracked_id not in [a["id"] for a in item["matched_artists"]]
 
 
-async def test_feed_name_match_ignores_ignored_artists(client):
+async def test_feed_featured_artist_highlighted_via_release_artist(client):
+    """Spec 3.6: a tracked artist IS highlighted when discovery persisted the
+    ReleaseArtist link — the featured role comes from the authoritative relation,
+    not from the credit phrase."""
+    await _login(client)
+    with get_session_factory()() as db:
+        featured = Artist(name="Mio", normalized_name="mio", source="tag_artist")
+        db.add(featured)
+        db.flush()
+        featured_id = featured.id
+        row = Release(
+            rgid="rg-feat",
+            provider_id="rg-feat",
+            title="Album",
+            primary_artist="Altro feat. Mio",
+            type="album",
+            first_release_date="2024-01-01",
+        )
+        db.add(row)
+        db.flush()
+        db.add(ReleaseArtist(release_id=row.id, artist_id=featured_id, role="featured"))
+        db.commit()
+    response = await client.get("/api/v1/releases")
+    item = response.json()["items"][0]
+    assert item["matched_artists"] == [{"id": featured_id, "name": "Mio", "role": "featured"}]
+
+
+async def test_feed_homonym_relation_wins_over_credit_string(client):
+    """Spec:1597: with two tracked artists whose names appear in the credit, only
+    the one with an authoritative ReleaseArtist relation is highlighted — string
+    appearance never adds the other (homonym safety by construction)."""
+    await _login(client)
+    with get_session_factory()() as db:
+        linked = Artist(name="Mio", normalized_name="mio", source="tag_artist")
+        db.add(linked)
+        db.flush()
+        linked_id = linked.id
+        row = Release(
+            rgid="rg-rel",
+            provider_id="rg-rel",
+            title="Album",
+            primary_artist="Mio & Mio Band",
+            type="album",
+            first_release_date="2024-01-01",
+        )
+        db.add(row)
+        db.flush()
+        db.add(ReleaseArtist(release_id=row.id, artist_id=linked_id, role="primary"))
+        # A second tracked artist whose name appears in the credit but was never
+        # linked by discovery (its identity is unresolved — a homonym concern).
+        other = Artist(name="Mio Band", normalized_name="mioband", source="tag_artist")
+        db.add(other)
+        db.flush()
+        other_id = other.id
+        db.commit()
+    response = await client.get("/api/v1/releases")
+    item = response.json()["items"][0]
+    assert [a["id"] for a in item["matched_artists"]] == [linked_id]
+    assert other_id not in [a["id"] for a in item["matched_artists"]]
+
+
+async def test_feed_unlinked_artist_not_highlighted_even_when_ignored(client):
+    """A release with no ReleaseArtist relation for the artist is never
+    highlighted — the ignored flag changes nothing here because no authoritative
+    relation exists in the first place."""
     await _login(client)
     with get_session_factory()() as db:
         ignored = Artist(name="Yeat", normalized_name="yeat", source="tag_artist", ignored=1)
@@ -550,8 +616,10 @@ async def test_feed_name_match_ignores_ignored_artists(client):
     assert response.json()["items"][0]["matched_artists"] == []
 
 
-async def test_name_match_no_false_positive_substring(client):
-    """'Ye' must not match inside 'Yeat' (word-boundary matching)."""
+async def test_feed_no_false_positive_substring_without_link(client):
+    """'Ye' never highlights inside 'Yeat': without an authoritative relation
+    there is nothing to highlight (word-boundary concerns are moot — only the
+    ReleaseArtist link decides)."""
     await _login(client)
     with get_session_factory()() as db:
         db.add(Artist(name="Ye", normalized_name="ye", source="tag_artist"))

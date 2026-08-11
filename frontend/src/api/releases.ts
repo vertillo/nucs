@@ -2,7 +2,9 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { apiFetch, get, post } from './client'
 
 export type ReleaseType = 'album' | 'single' | 'ep' | 'other'
-export type ArtistRole = 'primary' | 'featured' | 'contributor'
+// Spec 3.7 (spec:986): the backend exposes primary/featured/remixer on
+// ReleaseArtist; 'contributor' is kept for legacy API compatibility.
+export type ArtistRole = 'primary' | 'featured' | 'contributor' | 'remixer'
 
 export interface MatchedArtist {
   id: number
