@@ -289,3 +289,32 @@ class ReleaseExternalIdentity(Base):
         ),
         Index("ix_release_external_identities_release_id", "release_id"),
     )
+
+
+class NotificationEvent(Base):
+    """Persisted delivery state for the two-stage upcoming notifications (spec 5.6).
+
+    One row per (release, event_type) — ``upcoming_discovered`` records the
+    first-discovery announcement (spec:1198-1201), ``release_day`` the follow-up
+    when the release becomes due (spec:1203-1204). ``UNIQUE(release_id,
+    event_type)`` is the idempotency backbone: a release can carry at most one
+    row per event type, so repeated daily/manual scans (which share this state,
+    spec:1206) can never double-send. ``state`` is ``sent`` after a successful
+    send or ``retryable_failed`` after a transient provider failure that a later
+    scan retries safely (spec:1211). When notifications were disabled (or no URL
+    configured) at the time, NO row is created at all — that is the no-backlog
+    semantics (spec:377-378, 1208-1209).
+    """
+
+    __tablename__ = "notification_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    release_id: Mapped[int] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), nullable=False)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    sent_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(Text, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("release_id", "event_type", name="uq_notification_events_release_event"),
+    )
