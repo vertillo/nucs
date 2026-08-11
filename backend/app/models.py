@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, Text
+from sqlalchemy import ForeignKey, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -36,6 +36,12 @@ class Artist(Base):
     provider: Mapped[str] = mapped_column(Text, default="manual", nullable=False)
     provider_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Split provenance (spec 1.1 / 617-625): parent artist this row was derived
+    # from when its name was split into matched parts. The ``source`` column
+    # (inherited from the parent by the split path) preserves the library
+    # source label. Plain nullable integer mirroring ``SeenRecording``: no DB
+    # FK, so deleting a parent never cascades into its split children.
+    split_from_artist_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     @property
     def is_matched(self) -> bool:
@@ -213,3 +219,61 @@ class AppError(Base):
     context: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("ix_app_errors_ts", "ts"),)
+
+
+class ArtistExternalIdentity(Base):
+    """One external catalog identity of an artist (spec 1.1 / target A).
+
+    MusicBrainz (provider ``mb``), Deezer, iTunes (kept as ``itunes``,
+    spec:500-503), Discogs, SoundCloud, Beatport each get one row; an artist
+    carries several identities. The legacy single-provider columns
+    (``artists.provider/provider_id``) remain as deprecated compatibility
+    columns until every code path reads the identity tables (expand -> migrate
+    -> contract, spec:530-559).
+    """
+
+    __tablename__ = "artist_external_identities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    match_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Provenance of the link: manual | auto | migration (spec target A).
+    link_method: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(Text, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("artist_id", "provider", name="uq_artist_external_identities_artist_provider"),
+        UniqueConstraint(
+            "provider", "provider_id", name="uq_artist_external_identities_provider_provider_id"
+        ),
+        Index("ix_artist_external_identities_artist_id", "artist_id"),
+    )
+
+
+class ReleaseExternalIdentity(Base):
+    """One external catalog identity of a release (spec 1.1 / target B).
+
+    One NUCS release row is the canonical edition; a merge from another
+    provider adds an identity row instead of discarding that provider id
+    (spec:526).
+    """
+
+    __tablename__ = "release_external_identities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    release_id: Mapped[int] = mapped_column(ForeignKey("releases.id", ondelete="CASCADE"), nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(Text, default=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("release_id", "provider", name="uq_release_external_identities_release_provider"),
+        UniqueConstraint(
+            "provider", "provider_id", name="uq_release_external_identities_provider_provider_id"
+        ),
+        Index("ix_release_external_identities_release_id", "release_id"),
+    )
