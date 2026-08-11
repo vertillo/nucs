@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.db import get_session_factory
 from app.models import Artist, Release, ReleaseArtist, ReleaseState
+from app.security import set_setting
 
 API_HEADERS = {"X-Requested-With": "XMLHttpRequest", "Origin": "https://testserver"}
 LOGIN_URL = "/api/v1/auth/login"
@@ -418,3 +419,330 @@ async def test_api_purge_orphans_keeps_releases_shared_between_artists(client):
 async def test_api_purge_orphans_requires_auth(client):
     response = await client.post("/api/v1/releases/purge-orphans", headers=API_HEADERS)
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# spec 5.3 view=released|upcoming filter tests
+# ---------------------------------------------------------------------------
+
+
+def _seed_future() -> dict:
+    """One artist plus releases spanning past, partial-ambiguous and future dates."""
+    with get_session_factory()() as db:
+        artist = Artist(
+            name="FutureArtist", normalized_name="futureartist", source="tag_artist", mbid="mb-fa"
+        )
+        db.add(artist)
+        db.flush()
+        artist_id = artist.id
+
+        def _release(rgid, title, rtype, date_, primary="FutureArtist"):
+            row = Release(
+                rgid=rgid,
+                title=title,
+                primary_artist=primary,
+                type=rtype,
+                first_release_date=date_,
+            )
+            db.add(row)
+            db.flush()
+            db.add(ReleaseArtist(release_id=row.id, artist_id=artist_id, role="primary"))
+            return row
+
+        a = _release("rg-up-1", "Future Album 2099", "album", "2099-12-31")
+        b = _release("rg-up-2", "Future Single 2098", "single", "2098-06-15")
+        c = _release("rg-up-3", "Future Year Only", "ep", "2099")
+        d = _release("rg-up-4", "Future Month", "album", "2098-12")
+        e = _release("rg-up-5", "Past Release 2024", "album", "2024-03-01")
+        f = _release("rg-up-6", "Current Year Only", "single", "2026")
+        g = _release("rg-up-7", "Hidden Future", "single", "2099-01-01")
+
+        db.add(ReleaseState(release_id=g.id, hidden=1))
+        db.commit()
+        return {
+            "artist_id": artist_id,
+            "ids": [a.id, b.id, c.id, d.id, e.id, f.id, g.id],
+            "future_ids": [a.id, b.id, c.id, d.id],
+            "hidden_future_id": g.id,
+            "past_id": e.id,
+            "current_year_id": f.id,
+        }
+
+
+async def test_api_releases_view_default_is_released(client):
+    """Default view=released excludes definitely-future releases."""
+    seed = _seed_future()
+    await _login(client)
+    response = await client.get("/api/v1/releases")
+    assert response.status_code == 200
+    body = response.json()
+    # Past (2024-03-01) + current year partial (2026) = 2; hidden excluded.
+    # Future dates 2098, 2099 excluded by released view.
+    assert body["total"] == 2
+    titles = [item["title"] for item in body["items"]]
+    assert "Past Release 2024" in titles
+    assert "Current Year Only" in titles
+    for future_id in seed["future_ids"]:
+        assert future_id not in [item["id"] for item in body["items"]]
+    # Default sort: newest-first. "2026" > "2024-03-01" as strings, so
+    # Current Year Only (2026) sorts before Past Release 2024 in descending.
+    assert titles[0] == "Current Year Only"
+    assert titles[1] == "Past Release 2024"
+
+
+async def test_api_releases_view_upcoming_includes_only_future(client):
+    """view=upcoming includes only definitely-future releases."""
+    seed = _seed_future()
+    await _login(client)
+    response = await client.get("/api/v1/releases", params={"view": "upcoming"})
+    assert response.status_code == 200
+    body = response.json()
+    # All 4 future releases (rg-up-1..4), excluding the hidden one (rg-up-7).
+    assert body["total"] == 4
+    ids = [item["id"] for item in body["items"]]
+    for future_id in seed["future_ids"]:
+        assert future_id in ids
+    assert seed["hidden_future_id"] not in ids
+    assert seed["past_id"] not in ids
+    assert seed["current_year_id"] not in ids
+
+
+async def test_api_releases_view_upcoming_default_sort_soonest_first(client):
+    """Upcoming view defaults to date asc (soonest-first) per spec:1139-1141."""
+    _seed_future()
+    await _login(client)
+    response = await client.get("/api/v1/releases", params={"view": "upcoming"})
+    body = response.json()
+    dates = [item["first_release_date"] for item in body["items"]]
+    # Soonest-first: "2098" < "2098-06-15" < "2098-12" (YYYY-MM, start=Dec 1) < "2099" < "2099-12-31"
+    # Expected order (date asc): 2098, 2098-06-15, 2098-12, 2099, 2099-12-31
+    # But after excluding hidden: "2099-01-01" is hidden, so not in results.
+    assert dates == sorted(dates)
+    assert dates[0] < dates[-1]
+
+
+async def test_api_releases_view_hidden_works_in_both_views(client):
+    """Hidden filtering (default hidden=no) excludes hidden releases in both views."""
+    seed = _seed_future()
+    await _login(client)
+    # Released view: hidden filter excludes the hidden release
+    released = (await client.get("/api/v1/releases", params={"view": "released"})).json()
+    assert seed["hidden_future_id"] not in [i["id"] for i in released["items"]]
+    # Upcoming view: hidden filter excludes the hidden release
+    upcoming = (await client.get("/api/v1/releases", params={"view": "upcoming"})).json()
+    assert seed["hidden_future_id"] not in [i["id"] for i in upcoming["items"]]
+    # hidden=yes returns the hidden release
+    upcoming_hidden = (
+        await client.get("/api/v1/releases", params={"view": "upcoming", "hidden": "yes"})
+    ).json()
+    assert upcoming_hidden["total"] == 1
+    assert upcoming_hidden["items"][0]["id"] == seed["hidden_future_id"]
+    # hidden=all includes hidden + non-hidden
+    upcoming_all = (await client.get("/api/v1/releases", params={"view": "upcoming", "hidden": "all"})).json()
+    assert upcoming_all["total"] == 5  # 4 non-hidden future + 1 hidden future
+
+
+async def test_api_releases_view_upcoming_with_explicit_sort(client):
+    """Explicit sort=date_desc is respected in upcoming view."""
+    _seed_future()
+    await _login(client)
+    response = await client.get("/api/v1/releases", params={"view": "upcoming", "sort": "date_desc"})
+    body = response.json()
+    dates = [item["first_release_date"] for item in body["items"]]
+    assert dates == sorted(dates, reverse=True)
+
+
+async def test_api_releases_view_validation(client):
+    """Invalid view values get 422."""
+    await _login(client)
+    assert (await client.get("/api/v1/releases", params={"view": "bogus"})).status_code == 422
+    assert (await client.get("/api/v1/releases", params={"view": ""})).status_code == 422
+    assert (await client.get("/api/v1/releases", params={"view": "UPCOMING"})).status_code == 422
+
+
+async def test_api_releases_view_seen_filters_apply_in_upcoming(client):
+    """Seen/favorite filters apply as-is in upcoming view (plumbing check)."""
+    seed = _seed_future()
+    await _login(client)
+    # Mark one future release as seen
+    future_id = seed["future_ids"][0]
+    await client.post(f"/api/v1/releases/{future_id}/state", json={"seen": True}, headers=API_HEADERS)
+    # seen=yes in upcoming should return the seen future release
+    seen_yes = (await client.get("/api/v1/releases", params={"view": "upcoming", "seen": "yes"})).json()
+    assert seen_yes["total"] == 1
+    assert seen_yes["items"][0]["id"] == future_id
+    # seen=no in upcoming should exclude it
+    seen_no = (await client.get("/api/v1/releases", params={"view": "upcoming", "seen": "no"})).json()
+    assert future_id not in [i["id"] for i in seen_no["items"]]
+
+
+async def test_api_releases_view_with_q_search_in_upcoming(client):
+    """Search filter works combined with upcoming view."""
+    _seed_future()
+    await _login(client)
+    response = await client.get("/api/v1/releases", params={"view": "upcoming", "q": "Single"})
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["title"] == "Future Single 2098"
+
+
+async def test_api_releases_view_partial_date_not_upcoming(client):
+    """A partial date overlapping today (e.g. current year '2026') is NOT upcoming."""
+    seed = _seed_future()
+    await _login(client)
+    # view=upcoming must NOT return 'Current Year Only' (partial year overlapping today)
+    upcoming = (await client.get("/api/v1/releases", params={"view": "upcoming"})).json()
+    assert seed["current_year_id"] not in [i["id"] for i in upcoming["items"]]
+    # view=released must include it (partial_ambiguous is not definitely-future)
+    released = (await client.get("/api/v1/releases", params={"view": "released"})).json()
+    assert seed["current_year_id"] in [i["id"] for i in released["items"]]
+
+
+# ---------------------------------------------------------------------------
+# spec 5.5 release detail state tests
+# ---------------------------------------------------------------------------
+
+
+async def test_api_release_detail_upcoming_does_not_set_seen(client):
+    """Opening an upcoming release must NOT consume future unseen state (spec:360).
+
+    A definitely-upcoming release opened in detail stays unseen (seen=0) and
+    the response carries classification="upcoming". The released detail path
+    retains its seen side-effect (already covered by test_api_release_detail_sets_seen).
+    """
+    seed = _seed_future()
+    await _login(client)
+    future_id = seed["future_ids"][0]  # "Future Album 2099" dated 2099-12-31
+
+    response = await client.get(f"/api/v1/releases/{future_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["seen"] == 0, "upcoming open must not mark seen"
+    assert body["seen_at"] is None
+    assert body["classification"] == "upcoming"
+    assert body["favorite"] == 0
+    assert body["hidden"] == 0
+
+    # Verify no ReleaseState row with seen=1 exists in the database.
+    with get_session_factory()() as db:
+        state = db.get(ReleaseState, future_id)
+        # The upcoming path creates a placeholder state row with seen=0.
+        assert state is not None
+        assert state.seen == 0
+
+
+async def test_api_release_detail_upcoming_state_row_preserves_existing_seen_zero(client):
+    """An upcoming release with an explicit seen=0 must stay seen=0 on open.
+
+    Even with a pre-existing ReleaseState row where seen=0, the upcoming
+    detail path must not flip it to seen=1.
+    """
+    seed = _seed_future()
+    await _login(client)
+    future_id = seed["future_ids"][0]
+    # Pre-create a state row with seen=0 (simulating an earlier upcoming open).
+    await client.post(f"/api/v1/releases/{future_id}/state", json={"seen": False}, headers=API_HEADERS)
+
+    response = await client.get(f"/api/v1/releases/{future_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["seen"] == 0, "explicit seen=0 must survive upcoming open"
+    assert body["seen_at"] is None
+
+
+async def test_api_release_detail_classification_field(client):
+    """Detail response carries classification from classify_release_date."""
+    seed = _seed_future()
+    await _login(client)
+
+    # Past release: classification=released
+    past = (await client.get(f"/api/v1/releases/{seed['past_id']}")).json()
+    assert past["classification"] == "released"
+
+    # Definitely-future release (2099): classification=upcoming
+    future = (await client.get(f"/api/v1/releases/{seed['future_ids'][0]}")).json()
+    assert future["classification"] == "upcoming"
+
+
+async def test_api_release_detail_favorite_toggle_works(client):
+    """Favorite toggle persists through POST /state and reflects in detail."""
+    seed = _seed_future()
+    await _login(client)
+    future_id = seed["future_ids"][0]
+
+    # Set favorite on upcoming release.
+    fav = await client.post(
+        f"/api/v1/releases/{future_id}/state", json={"favorite": True}, headers=API_HEADERS
+    )
+    assert fav.status_code == 200
+    assert fav.json()["favorite"] == 1
+
+    # Detail reflects it.
+    detail = (await client.get(f"/api/v1/releases/{future_id}")).json()
+    assert detail["favorite"] == 1
+
+    # Unset.
+    unfav = await client.post(
+        f"/api/v1/releases/{future_id}/state", json={"favorite": False}, headers=API_HEADERS
+    )
+    assert unfav.json()["favorite"] == 0
+
+
+async def test_api_release_detail_favorite_hidden_survive_date_transition(client):
+    """Favorite and hidden survive the natural date transition with no row-moving.
+
+    Freeze today before the release date → classification=upcoming, set favorite
+    + hidden. Advance today past the release date → same row id, classification
+    now released, favorite + hidden preserved, seen still false (spec:1176-1183).
+    """
+    await _login(client)
+
+    # Seed one release dated 2026-06-15 with a tracked artist.
+    with get_session_factory()() as db:
+        set_setting(db, "today_override", "2026-06-01")
+        artist = Artist(
+            name="TransitionArtist", normalized_name="transitionartist", source="tag_artist", mbid="mb-ta"
+        )
+        db.add(artist)
+        db.flush()
+        artist_id = artist.id
+        row = Release(
+            rgid="rg-transition",
+            title="Transition Album",
+            primary_artist="TransitionArtist",
+            type="album",
+            first_release_date="2026-06-15",
+        )
+        db.add(row)
+        db.flush()
+        release_id = row.id
+        db.add(ReleaseArtist(release_id=row.id, artist_id=artist_id, role="primary"))
+        db.commit()
+
+    # Phase 1: today=2026-06-01, release date=2026-06-15 → upcoming.
+    detail = (await client.get(f"/api/v1/releases/{release_id}")).json()
+    assert detail["classification"] == "upcoming"
+    assert detail["seen"] == 0
+
+    # Set favorite + hidden.
+    await client.post(
+        f"/api/v1/releases/{release_id}/state",
+        json={"favorite": True, "hidden": True},
+        headers=API_HEADERS,
+    )
+
+    # Phase 2: advance today past the release date.
+    with get_session_factory()() as db:
+        set_setting(db, "today_override", "2026-07-01")
+        db.commit()
+
+    detail2 = (await client.get(f"/api/v1/releases/{release_id}")).json()
+    assert detail2["id"] == release_id, "same row id — no duplication (spec:1178)"
+    assert detail2["classification"] == "released", "naturally matches Released (spec:1180)"
+    assert detail2["seen"] == 0, "seen state is still false (spec:1181)"
+    assert detail2["favorite"] == 1, "favorite survives (spec:1182)"
+    assert detail2["hidden"] == 1, "hidden survives (spec:1182)"
+
+    # Verify the original row still exists — no new row with same title, no duplication.
+    with get_session_factory()() as db:
+        assert db.get(Release, release_id) is not None

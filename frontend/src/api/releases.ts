@@ -2,6 +2,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { apiFetch, get, post } from './client'
 
 export type ReleaseType = 'album' | 'single' | 'ep' | 'other'
+// Spec 5.4 (spec:1149): feed view — released (default) vs upcoming (definitely-future).
+export type ReleaseView = 'released' | 'upcoming'
 // Spec 3.7 (spec:986): the backend exposes primary/featured/remixer on
 // ReleaseArtist; 'contributor' is kept for legacy API compatibility.
 export type ArtistRole = 'primary' | 'featured' | 'contributor' | 'remixer'
@@ -49,6 +51,7 @@ export interface ReleaseDetail extends ReleaseListItem {
   tracks: ReleaseTrack[]
   discovered_at: string
   seen_at: string | null
+  classification: 'released' | 'upcoming' | 'partial_ambiguous' | 'invalid'
 }
 
 export interface ReleasesResponse {
@@ -62,11 +65,13 @@ export interface ReleaseFilters {
   type: ReleaseType | 'all'
   unseenOnly: boolean
   q: string
+  view: ReleaseView
 }
 
 function buildUrl(filters: ReleaseFilters, page: number): string {
   const params = new URLSearchParams()
   params.set('page', String(page))
+  if (filters.view !== 'released') params.set('view', filters.view)
   if (filters.type !== 'all') params.set('type', filters.type)
   if (filters.unseenOnly) params.set('seen', 'no')
   if (filters.q) params.set('q', filters.q)

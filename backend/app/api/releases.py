@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -30,7 +30,7 @@ from app.schemas import ReleaseStatePatch, SeenAllRequest
 from app.security import get_setting
 from app.services import errors as error_service
 from app.services.audit import EVENT_RELEASES_PURGED, log_event
-from app.services.dates import parse_mb_date
+from app.services.dates import CLASS_UPCOMING, classify_release_date, parse_mb_date, today
 from app.services.providers import fetch_tracks_for
 
 router = APIRouter(prefix="/api/v1/releases", tags=["releases"])
@@ -115,13 +115,24 @@ async def list_releases(
     favorite: bool | None = Query(default=None),
     hidden: str = Query(default="no", pattern="^(all|yes|no)$"),
     q: str = Query(default="", max_length=200),
-    sort: str = Query(default="date_desc", pattern="^(date_desc|date_asc)$"),
+    sort: str | None = Query(default=None, pattern="^(date_desc|date_asc)$"),
+    view: str = Query(default="released", pattern="^(released|upcoming)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=_DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
 ) -> dict:
-    """Feed list with filters and pagination (spec 10); NULL dates always last."""
+    """Feed list with filters and pagination (spec 10 + spec 5.3 view); NULL dates always last.
+
+    spec 5.3 (view=released|upcoming):
+    - released (default): excludes definitely-future releases (classify == upcoming).
+    - upcoming: includes only definitely-future releases; default sort soonest-first.
+    - hidden filtering works in both views.
+    - Classification uses the configured application timezone (``today(db)``), never the
+      host clock. The SQL filter mirrors ``classify_release_date``: a release is
+      definitely-future when its earliest possible day is strictly after the configured
+      today, handling partial YYYY / YYYY-MM / YYYY-MM-DD formats.
+    """
     filters = []
     if from_ is not None:
         filters.append(Release.first_release_date >= _validate_date_param("from", from_))
@@ -154,11 +165,41 @@ async def list_releases(
                 Release.primary_artist.ilike(pattern, escape="\\"),
             )
         )
+    # spec 5.3: view filter using configured-tz today boundary (spec:1135-1137).
+    # A release is definitely-future when its earliest possible day is strictly after
+    # today, matching ``classify_release_date`` semantics for YYYY / YYYY-MM / YYYY-MM-DD.
+    # Empty/invalid dates are never definitely-future and always pass the released view.
+    if view == "released":
+        # Exclude releases whose start > today (definitely-future).
+        today_iso = today(db).isoformat()
+        definitely_future = or_(
+            # Full date YYYY-MM-DD: strictly after today
+            and_(func.length(Release.first_release_date) == 10, Release.first_release_date > today_iso),
+            # Partial YYYY-MM: year-month > today year-month (day-01 always <= today's day)
+            and_(func.length(Release.first_release_date) == 7, Release.first_release_date > today_iso[:7]),
+            # Year only: year > today year (Jan 1 always <= today unless future year)
+            and_(func.length(Release.first_release_date) == 4, Release.first_release_date > today_iso[:4]),
+        )
+        filters.append(not_(definitely_future))
+    elif view == "upcoming":
+        # Include only releases whose start > today (definitely-future).
+        today_iso = today(db).isoformat()
+        definitely_future = or_(
+            and_(func.length(Release.first_release_date) == 10, Release.first_release_date > today_iso),
+            and_(func.length(Release.first_release_date) == 7, Release.first_release_date > today_iso[:7]),
+            and_(func.length(Release.first_release_date) == 4, Release.first_release_date > today_iso[:4]),
+        )
+        filters.append(definitely_future)
     query = select(Release).outerjoin(ReleaseState, ReleaseState.release_id == Release.id).where(*filters)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     # Empty-string dates (schema default) sort like NULL: always at the end.
     order_date = func.nullif(Release.first_release_date, "")
-    if sort == "date_asc":
+    # spec 5.3: upcoming view defaults to soonest-first (date asc).
+    if sort is None:
+        effective_sort = "date_asc" if view == "upcoming" else "date_desc"
+    else:
+        effective_sort = sort
+    if effective_sort == "date_asc":
         order = (order_date.asc().nulls_last(), Release.id.asc())
     else:
         order = (order_date.desc().nulls_last(), Release.id.desc())
@@ -236,17 +277,32 @@ async def get_release(
     already explicitly unseen: a state row with seen=0 (set via POST state) is
     respected, otherwise the toggle in the detail UI could never keep a release
     unseen. Already-seen releases only refresh seen_at.
+
+    spec 5.5 (spec:1165-1174): opening a definitely-upcoming release does NOT
+    consume future unseen state — the seen side-effect is gated on
+    classification != "upcoming". Released detail retains the existing
+    behaviour.
     """
     row = db.get(Release, release_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
+    # Classify release date against configured-tz today before any side-effect.
+    classification = classify_release_date(row.first_release_date, db=db)
     state = db.get(ReleaseState, release_id)
-    if state is None:
-        state = ReleaseState(release_id=release_id, seen=1, seen_at=utc_now())
+    # spec 5.5: do NOT mark upcoming releases as seen on open (spec:360).
+    if classification != CLASS_UPCOMING:
+        if state is None:
+            state = ReleaseState(release_id=release_id, seen=1, seen_at=utc_now())
+            db.add(state)
+        elif state.seen:
+            state.seen_at = utc_now()
+        db.commit()
+    elif state is None:
+        # Create a placeholder state row without seen=1 so the response shape
+        # is consistent (seen=0, hidden=0, favorite=0 reflected in output).
+        state = ReleaseState(release_id=release_id)
         db.add(state)
-    elif state.seen:
-        state.seen_at = utc_now()
-    db.commit()
+        db.commit()
     tracks = await _tracks_for(db, row)
     return {
         "id": row.id,
@@ -273,6 +329,7 @@ async def get_release(
         "tracks": tracks,
         **_state_filters(state),
         "seen_at": state.seen_at,
+        "classification": classification,
         "matched_artists": _matched_artists_for(db, [row.id]).get(row.id, []),
     }
 
