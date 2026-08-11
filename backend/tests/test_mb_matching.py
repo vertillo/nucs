@@ -25,6 +25,7 @@ import app.services.musicbrainz as musicbrainz
 from app.db import get_session_factory
 from app.main import run_migrations
 from app.models import Artist, Release, ReleaseArtist
+from app.services.artist_identity import attach_external_identity
 from app.services.musicbrainz import MBError, MusicBrainzClient, build_user_agent, reset_for_tests
 from app.services.names import normalize_name
 
@@ -681,6 +682,8 @@ async def test_api_artists_list_filters_and_pagination(client):
     assert body["total"] == 3
     assert [item["name"] for item in body["items"]] == ["AC/DC", "Beyonce", "Radiohead"]
     item = body["items"][0]
+    # Phase 1 contract change (spec:1935): the item gained status, identities[]
+    # and split provenance; the legacy fields are kept for the contract freeze.
     assert set(item) == {
         "id",
         "name",
@@ -691,10 +694,15 @@ async def test_api_artists_list_filters_and_pagination(client):
         "mbid",
         "mb_match_score",
         "ignored",
+        "status",
+        "identities",
+        "split_from_artist_id",
         "releases_count",
         "source_files",
     }
     assert item["releases_count"] == 0
+    assert item["status"] == "Ignored"  # AC/DC is ignored (sort name_asc puts it first)
+    assert item["identities"] == []
     counts = {artist["name"]: artist["releases_count"] for artist in body["items"]}
     assert counts == {"AC/DC": 0, "Beyonce": 1, "Radiohead": 0}
 
@@ -867,32 +875,26 @@ async def test_api_artists_q_escapes_like_wildcards(client):
 async def test_api_artists_sort_and_unmatched_total(client):
     await _login(client)
     with get_session_factory()() as db:
-        db.add_all(
-            [
-                Artist(name="Beyonce", normalized_name="beyonce", source="tag_artist"),
-                Artist(name="AC/DC", normalized_name="ac dc", source="tag_artist"),
-                Artist(
-                    name="Radiohead",
-                    normalized_name="radiohead",
-                    source="manual",
-                    mbid="mb-rh",
-                    mb_match_score=95,
-                ),
-                Artist(
-                    name="Zed",
-                    normalized_name="zed",
-                    source="manual",
-                    provider="itunes",
-                    provider_id="9",
-                ),
-            ]
-        )
+        beyonce = Artist(name="Beyonce", normalized_name="beyonce", source="tag_artist")
+        acdc = Artist(name="AC/DC", normalized_name="ac dc", source="tag_artist")
+        radiohead = Artist(name="Radiohead", normalized_name="radiohead", source="manual")
+        zed = Artist(name="Zed", normalized_name="zed", source="manual")
+        db.add_all([beyonce, acdc, radiohead, zed])
+        db.commit()
+        # Phase 1 contract change (spec:1935): linked artists carry identity
+        # rows; the legacy mbid/provider columns no longer decide matched-ness
+        # (spec Trap 2).
+        attach_external_identity(db, radiohead, "mb", "mb-rh", match_score=95)
+        radiohead.mbid = "mb-rh"
+        attach_external_identity(db, zed, "itunes", "9")
+        zed.provider = "itunes"
+        zed.provider_id = "9"
         db.commit()
     asc = (await client.get("/api/v1/artists", params={"sort": "name_asc"})).json()
     assert [item["name"] for item in asc["items"]] == ["AC/DC", "Beyonce", "Radiohead", "Zed"]
     desc = (await client.get("/api/v1/artists", params={"sort": "name_desc"})).json()
     assert [item["name"] for item in desc["items"]] == ["Zed", "Radiohead", "Beyonce", "AC/DC"]
-    # unmatched_total: manual artists without mbid only (Beyonce and AC/DC).
+    # unmatched_total: artists with zero external identities (Beyonce and AC/DC).
     assert asc["unmatched_total"] == 2
     # unmatched_total respects the q filter.
     filtered = (await client.get("/api/v1/artists", params={"q": "be"})).json()

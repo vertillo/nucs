@@ -1,4 +1,4 @@
-"""Artist endpoints: /api/v1/artists/* (spec section 10 + phase 12b).
+"""Artist endpoints: /api/v1/artists/* (spec section 10 + phase 12b + phase 1).
 
 Phase 12b additions:
 - ``GET /artists?matched=no``: unmatched-only filter; unmatched items carry
@@ -12,6 +12,22 @@ Phase 12b additions:
 - ``POST /artists/{id}/link``: track an artist by URL. The URL is only parsed
   (never fetched server-side — no SSRF surface).
 - ``DELETE /artists/{id}``: remove an artist (ignored ones included).
+
+Phase 1 (spec 1.2-1.3) identity-model additions:
+- ``_artist_item`` exposes ``status`` (Ignored | Linked | Needs match per
+  spec:653-661 via ``artist_identity.derive_status``) and ``identities[]``
+  (provider, provider_id, external_url, match_score, link_method). ``status``
+  and the ``matched=no`` filter read the identity table only — never the legacy
+  ``mbid``/``provider`` columns (spec Trap 2).
+- ``PUT /artists/{id}/identities/{provider}``: add/replace exactly that
+  provider identity; never touches the artist's other identities
+  (spec:683-687).
+- ``DELETE /artists/{id}/identities/{provider}``: unlink only that provider.
+- ``DELETE /artists/{id}/identities``: unlink all; the artist returns to Needs
+  match unless ignored (spec:689-690).
+- ``POST /artists/{id}/link`` no longer clears ``mbid`` when linking a non-MB
+  provider (spec Trap 1); it adds/replaces the identity via the identity
+  service. Manual identity mutations are audit-logged (spec:691).
 """
 
 from __future__ import annotations
@@ -21,16 +37,27 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_db, get_session_factory
-from app.deps import require_user
-from app.models import Artist, ArtistFile, ReleaseArtist
+from app.deps import get_client_ip, require_user
+from app.models import Artist, ArtistExternalIdentity, ArtistFile, ReleaseArtist
 from app.models import Session as DbSession
-from app.schemas import ArtistCreate, ArtistLink, ArtistPatch
+from app.schemas import ArtistCreate, ArtistLink, ArtistPatch, IdentityUpsert
 from app.services import mb_matching
+from app.services.artist_identity import (
+    KNOWN_IDENTITY_PROVIDERS,
+    IdentityConflictError,
+    UnknownProviderError,
+    attach_external_identity,
+    derive_status,
+    list_identities,
+    unlink_all_identities,
+    unlink_identity,
+)
+from app.services.audit import EVENT_ARTIST_IDENTITY, log_event
 from app.services.musicbrainz import MBError
 from app.services.names import is_trivial_artist, normalize_name
 from app.services.providers import get_provider, parse_track_url, search_artists_everywhere
@@ -85,7 +112,31 @@ def _source_files_for(db: Session, artist_ids: list[int]) -> dict[int, list[str]
     return by_artist
 
 
-def _artist_item(row: Artist, releases_count: int = 0, source_files: list[str] | None = None) -> dict:
+def _identities_for(db: Session, artist_ids: list[int]) -> dict[int, list[ArtistExternalIdentity]]:
+    """External identities per artist, one grouped query (no N+1)."""
+    if not artist_ids:
+        return {}
+    rows = db.scalars(
+        select(ArtistExternalIdentity)
+        .where(ArtistExternalIdentity.artist_id.in_(artist_ids))
+        .order_by(ArtistExternalIdentity.artist_id, ArtistExternalIdentity.provider)
+    ).all()
+    by_artist: dict[int, list[ArtistExternalIdentity]] = {}
+    for identity in rows:
+        by_artist.setdefault(identity.artist_id, []).append(identity)
+    return by_artist
+
+
+def _artist_item(
+    row: Artist,
+    identities: list[ArtistExternalIdentity],
+    releases_count: int = 0,
+    source_files: list[str] | None = None,
+) -> dict:
+    """Artist payload (spec 1.2): legacy single-provider fields stay for the
+    contract freeze (phase 8 retires them); ``status`` and ``identities[]`` are
+    the identity-model additions. ``status`` is derived from the identity table
+    only (spec:653-661, spec Trap 2)."""
     return {
         "id": row.id,
         "name": row.name,
@@ -96,10 +147,78 @@ def _artist_item(row: Artist, releases_count: int = 0, source_files: list[str] |
         "mbid": row.mbid,
         "mb_match_score": row.mb_match_score,
         "ignored": row.ignored,
+        "status": derive_status(row.ignored, len(identities)),
+        "identities": [
+            {
+                "provider": identity.provider,
+                "provider_id": identity.provider_id,
+                "external_url": identity.external_url,
+                "match_score": identity.match_score,
+                "link_method": identity.link_method,
+            }
+            for identity in identities
+        ],
+        "split_from_artist_id": row.split_from_artist_id,
         "releases_count": releases_count,
-        # Only useful for unmatched artists; matched ones always return [].
+        # Only useful for artists that still need a match; Linked/Ignored ones
+        # always return [] (identity-model equivalent of the old is_matched).
         "source_files": source_files if source_files is not None else [],
     }
+
+
+def _audit_identity(
+    db: Session,
+    client_ip: str | None,
+    artist: Artist,
+    action: str,
+    provider: str,
+    provider_id: str | None = None,
+) -> None:
+    """Record one manual identity mutation (spec:691).
+
+    Only public catalog ids and names are stored — never secrets; the audit
+    sanitizer additionally redacts any sensitive-looking detail key.
+    """
+    log_event(
+        db,
+        EVENT_ARTIST_IDENTITY,
+        client_ip,
+        {
+            "action": action,
+            "artist_id": artist.id,
+            "artist_name": artist.name,
+            "provider": provider,
+            "provider_id": provider_id,
+        },
+    )
+
+
+def _upsert_identity(
+    db: Session, row: Artist, provider: str, provider_id: str, external_url: str | None
+) -> None:
+    """Add/replace exactly one provider identity (spec:683-687) and keep the
+    legacy single-provider columns in sync for the transition period.
+
+    Both the legacy write and the identity write share one transaction: on a
+    (provider, provider_id) conflict the service rolls back, so the legacy
+    columns are never left half-updated. A non-MB link never clears ``mbid``
+    (spec Trap 1)."""
+    row.provider = provider
+    row.provider_id = provider_id
+    row.external_url = external_url
+    if provider == "mb":
+        row.mbid = provider_id
+        row.mb_match_score = 100
+    try:
+        attach_external_identity(
+            db, row, provider, provider_id, external_url=external_url, link_method="manual"
+        )
+    except UnknownProviderError as exc:
+        # Defensive: callers pre-validate against KNOWN_IDENTITY_PROVIDERS.
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except IdentityConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    db.refresh(row)
 
 
 def _base_filters(ignored: str, q: str) -> list:
@@ -126,18 +245,20 @@ async def list_artists(
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
 ) -> dict:
-    """List artists with filters; default order is name ASC (spec 10)."""
+    """List artists with filters; default order is name ASC (spec 10).
+
+    ``matched=no`` selects artists with zero external identities (spec Trap 2:
+    the legacy ``mbid is None AND provider == manual`` test is gone); the
+    response keeps ``unmatched_total`` with the same meaning.
+    """
     filters = _base_filters(ignored, q)
+    # Phase 1: "Needs match" = no external identity rows, never legacy columns.
+    has_identity = exists().where(ArtistExternalIdentity.artist_id == Artist.id)
     if matched == "no":
-        filters += [Artist.mbid.is_(None), Artist.provider == "manual"]
+        filters += [~has_identity]
     total = db.scalar(select(func.count()).select_from(select(Artist).where(*filters).subquery())) or 0
-    # Phase 15: "unmatched" = no MB id AND not linked to any provider.
     unmatched_total = (
-        db.scalar(
-            select(func.count()).select_from(
-                select(Artist).where(*filters, Artist.mbid.is_(None), Artist.provider == "manual").subquery()
-            )
-        )
+        db.scalar(select(func.count()).select_from(select(Artist).where(*filters, ~has_identity).subquery()))
         or 0
     )
     order = Artist.name.asc() if sort == "name_asc" else Artist.name.desc()
@@ -146,15 +267,15 @@ async def list_artists(
     ).all()
     counts = _releases_counts(db, [row.id for row in rows])
     files = _source_files_for(db, [row.id for row in rows])
+    identities_by_artist = _identities_for(db, [row.id for row in rows])
+    items = []
+    for row in rows:
+        identities = identities_by_artist.get(row.id, [])
+        status = derive_status(row.ignored, len(identities))
+        source_files = files.get(row.id, []) if status == "Needs match" else []
+        items.append(_artist_item(row, identities, counts.get(row.id, 0), source_files))
     return {
-        "items": [
-            _artist_item(
-                row,
-                counts.get(row.id, 0),
-                files.get(row.id, []) if not row.is_matched else [],
-            )
-            for row in rows
-        ],
+        "items": items,
         "total": total,
         "unmatched_total": unmatched_total,
         "page": page,
@@ -312,12 +433,22 @@ async def add_artist(
         db.rollback()
         raise HTTPException(status_code=400, detail="Artist already exists") from None
     db.refresh(row)
+    # Phase 1 (spec 1.2-1.3): a provider-linked add also writes the identity
+    # row, so status/filters read the identity table (spec Trap 2).
+    if provider and provider in KNOWN_IDENTITY_PROVIDERS:
+        try:
+            attach_external_identity(
+                db, row, provider, provider_id, external_url=external_url, link_method="manual"
+            )
+        except IdentityConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
     # Phase 15 semantics: never force a MusicBrainz match on artists already
     # linked to a provider (the picker/URL flow chose that provider; the MB
-    # cell would otherwise override it). Only plain manual adds are matched.
-    if row.mbid is None and row.provider == "manual":
+    # cell would otherwise override it). Only artists with no external identity
+    # (plain manual adds) are matched in the background.
+    if not list_identities(db, row):
         asyncio.get_running_loop().create_task(_match_in_background(row.id))
-    return _artist_item(row, _releases_counts(db, [row.id]).get(row.id, 0))
+    return _artist_item(row, list_identities(db, row), _releases_counts(db, [row.id]).get(row.id, 0))
 
 
 @router.patch("/{artist_id}")
@@ -333,7 +464,7 @@ async def update_artist(
         raise HTTPException(status_code=404, detail="Not found")
     row.ignored = payload.ignored
     db.commit()
-    return _artist_item(row, _releases_counts(db, [row.id]).get(row.id, 0))
+    return _artist_item(row, list_identities(db, row), _releases_counts(db, [row.id]).get(row.id, 0))
 
 
 @router.post("/{artist_id}/rematch")
@@ -408,8 +539,16 @@ async def link_artist(
     payload: ArtistLink,
     db: Session = Depends(get_db),
     current: DbSession = Depends(require_user),
+    client_ip: str = Depends(get_client_ip),
 ) -> dict:
     """Track an artist by provider URL or by an explicit (provider, id) pair.
+
+    Phase 1 (spec 1.2-1.3): the link adds/replaces the identity of exactly that
+    provider via ``artist_identity.attach_external_identity``; it never clears
+    the artist's other identities — in particular linking a non-MB provider no
+    longer wipes an existing ``mbid`` (spec Trap 1). The legacy single-provider
+    columns stay in sync for the transition period (contract freeze; phase 8
+    retires them). ``manual`` is not an external identity and is rejected.
 
     Security: URLs are parsed locally to extract (provider, provider_id);
     they are NEVER fetched server-side (no SSRF). Allowed hosts are
@@ -419,7 +558,7 @@ async def link_artist(
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
     if payload.provider:
-        if payload.provider not in _KNOWN_PROVIDERS:
+        if payload.provider not in KNOWN_IDENTITY_PROVIDERS:
             raise HTTPException(status_code=422, detail=f"Unknown provider: {payload.provider}")
         provider_id = (payload.provider_id or "").strip()
         if not provider_id:
@@ -442,18 +581,105 @@ async def link_artist(
             )
         provider, provider_id = parsed
         external_url = _valid_external_url(payload.url)
-    row.provider = provider
-    row.provider_id = provider_id
-    row.external_url = external_url
-    if provider == "mb":
-        row.mbid = provider_id
-        row.mb_match_score = 100
-    else:
+    if provider == "mb" and not _MBID_RE.fullmatch(provider_id):
+        raise HTTPException(status_code=422, detail="Invalid MusicBrainz artist id")
+    _upsert_identity(db, row, provider, provider_id, external_url)
+    _audit_identity(db, client_ip, row, "link", provider, provider_id)
+    return _artist_item(row, list_identities(db, row), _releases_counts(db, [row.id]).get(row.id, 0))
+
+
+@router.put("/{artist_id}/identities/{provider}")
+async def upsert_artist_identity(
+    artist_id: int,
+    provider: str,
+    payload: IdentityUpsert,
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+    client_ip: str = Depends(get_client_ip),
+) -> dict:
+    """Add or replace exactly one provider identity of one artist (spec 1.3).
+
+    The other providers of the artist are never touched (spec:683-687); the
+    artist item is returned with the updated ``status``/``identities[]``.
+    """
+    row = db.get(Artist, artist_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if provider not in KNOWN_IDENTITY_PROVIDERS:
+        raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
+    provider_id = payload.provider_id.strip()
+    if not provider_id:
+        raise HTTPException(status_code=422, detail="provider_id is required")
+    if provider == "mb" and not _MBID_RE.fullmatch(provider_id):
+        raise HTTPException(status_code=422, detail="Invalid MusicBrainz artist id")
+    external_url = _valid_external_url(payload.external_url)
+    _upsert_identity(db, row, provider, provider_id, external_url)
+    _audit_identity(db, client_ip, row, "attach", provider, provider_id)
+    return _artist_item(row, list_identities(db, row), _releases_counts(db, [row.id]).get(row.id, 0))
+
+
+@router.delete("/{artist_id}/identities/{provider}")
+async def delete_artist_identity(
+    artist_id: int,
+    provider: str,
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+    client_ip: str = Depends(get_client_ip),
+) -> dict:
+    """Unlink exactly one provider identity of one artist (spec:687).
+
+    Other providers are untouched; ``removed`` is False (and nothing is
+    audited) when the artist carried no such identity.
+    """
+    row = db.get(Artist, artist_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if provider not in KNOWN_IDENTITY_PROVIDERS:
+        raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
+    removed = unlink_identity(db, row, provider)
+    if removed:
+        # Legacy single-provider columns: reset only when they pointed at the
+        # identity that was just removed (contract freeze; phase 8 retires them).
+        if row.provider == provider:
+            row.provider = "manual"
+            row.provider_id = None
+            row.external_url = None
+            if provider == "mb":
+                row.mbid = None
+                row.mb_match_score = None
+            db.commit()
+        _audit_identity(db, client_ip, row, "unlink", provider)
+    return {"removed": removed}
+
+
+@router.delete("/{artist_id}/identities")
+async def delete_all_artist_identities(
+    artist_id: int,
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+    client_ip: str = Depends(get_client_ip),
+) -> dict:
+    """Unlink every identity of one artist (spec:689-690).
+
+    The artist returns to Needs match unless it is ignored (then it stays
+    Ignored). ``removed`` is the number of identity rows deleted.
+    """
+    row = db.get(Artist, artist_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    removed = unlink_all_identities(db, row)
+    if removed:
+        # The legacy single-provider columns no longer describe any identity:
+        # reset them so legacy read paths never reuse a removed link (phase 8
+        # retires them; the identity table is authoritative meanwhile).
+        row.provider = "manual"
+        row.provider_id = None
+        row.external_url = None
         row.mbid = None
         row.mb_match_score = None
-    db.commit()
-    db.refresh(row)
-    return _artist_item(row, _releases_counts(db, [row.id]).get(row.id, 0))
+        db.commit()
+        _audit_identity(db, client_ip, row, "unlink_all", "")
+    return {"removed": removed}
 
 
 @router.delete("/{artist_id}", status_code=204)

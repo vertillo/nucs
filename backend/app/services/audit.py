@@ -21,6 +21,7 @@ EVENT_PW_FAIL = "password_fail"
 EVENT_SETTINGS_CHANGE = "settings_change"
 EVENT_SCAN_RUN = "scan_run"
 EVENT_RELEASES_PURGED = "releases_purged"
+EVENT_ARTIST_IDENTITY = "artist_identity_change"
 
 _SENSITIVE_MARKERS = ("password", "passwd", "token", "secret", "cookie", "authorization")
 

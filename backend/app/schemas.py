@@ -38,6 +38,18 @@ class ArtistLink(BaseModel):
     provider_id: str | None = Field(default=None, max_length=200)
 
 
+class IdentityUpsert(BaseModel):
+    """Add/replace one provider identity of one artist (spec 1.3).
+
+    ``provider_id`` is the provider-side catalog id; ``external_url`` (when
+    given) must be an http(s) URL and is validated by the endpoint — the URL is
+    stored, never fetched server-side (no SSRF surface).
+    """
+
+    provider_id: str = Field(min_length=1, max_length=200)
+    external_url: str | None = Field(default=None, max_length=500)
+
+
 class ArtistPatch(BaseModel):
     ignored: int = Field(ge=0, le=1)
 

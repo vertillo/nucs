@@ -615,39 +615,51 @@ async def test_release_detail_tracks_lazy_fetch_and_cache(client, monkeypatch):
 
 
 async def test_artists_unmatched_filter_and_source_files(client):
+    """matched=no selects artists with zero external identities.
+
+    Phase 1 contract change (spec:1935): matched-ness is decided by the
+    identity table, NOT the legacy mbid/provider columns (spec Trap 2). The
+    seed below therefore attaches identity rows for the linked artists.
+    """
+    from app.services.artist_identity import attach_external_identity
+
     await _login(client)
     with get_session_factory()() as db:
-        matched = Artist(
-            name="Matchato",
-            normalized_name="matchato",
-            source="tag_artist",
-            mbid="11111111-1111-1111-1111-111111111111",
-        )
+        matched = Artist(name="Matchato", normalized_name="matchato", source="tag_artist")
         db.add(matched)
         db.flush()
         db.add(Artist(name="Solo", normalized_name="solo", source="tag_artist"))
         db.flush()
-        db.add(
-            Artist(
-                name="DeezerLinked",
-                normalized_name="deezerlinked",
-                source="manual",
-                provider="deezer",
-                provider_id="42",
-            )
-        )
+        linked = Artist(name="DeezerLinked", normalized_name="deezerlinked", source="manual")
+        db.add(linked)
         db.flush()
         db.add(ArtistFile(artist_id=matched.id, path="/music/a.flac"))
+        db.commit()
+        attach_external_identity(
+            db,
+            matched,
+            "mb",
+            "11111111-1111-1111-1111-111111111111",
+            match_score=100,
+            link_method="migration",
+        )
+        matched.mbid = "11111111-1111-1111-1111-111111111111"
+        attach_external_identity(db, linked, "deezer", "42")
+        linked.provider = "deezer"
+        linked.provider_id = "42"
         db.commit()
     response = await client.get("/api/v1/artists", params={"matched": "no"})
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["name"] == "Solo"
-    # unmatched_total counts manual+mbid-less artists only (provider-linked are matched).
+    # unmatched_total counts identity-less artists only (linked ones are matched).
     assert body["unmatched_total"] == 1
     # matched artists never return source_files; unmatched do
     all_response = await client.get("/api/v1/artists")
     by_name = {item["name"]: item for item in all_response.json()["items"]}
+    assert by_name["Matchato"]["status"] == "Linked"
+    assert by_name["DeezerLinked"]["status"] == "Linked"
+    assert by_name["Solo"]["status"] == "Needs match"
     assert by_name["Matchato"]["source_files"] == []
     assert by_name["DeezerLinked"]["source_files"] == []
     assert by_name["Solo"]["source_files"] == []
