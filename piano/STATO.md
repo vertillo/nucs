@@ -13,6 +13,17 @@
 
 ---
 
+## HANDOFF 2026-08-11 — dev override: porta locale 8080 → 8066 (non committato)
+
+- **Cosa**: il compose dev mappa ora `127.0.0.1:8066 → 8080` del container (`docker-compose.dev.yml`); la porta interna dell'app nel container resta **8080** (invariata in produzione e nel compose base).
+- **File toccati** (tutti in working tree, **NON committati**): `docker-compose.dev.yml`, `README.md` (2 citazioni), `deploy/tailscale.md`, `e2e/README.md` (nota su BASE), `e2e/scenarios/fase-11.js` (header doc), `piano/STATO.md` (istruzioni verifica locale fase 15).
+- **Motivo**: sulla macchina di sviluppo la porta 8080 risultava occupata → il dev override è stato spostato su 8066 per i test locali (e2e:11 e verifica manuale).
+- **Impatto comandi**: per il test locale usare `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d` e poi `BASE=http://127.0.0.1:8066 npm run e2e:11` (default `BASE` in `e2e/README.md` resta `http://127.0.0.1:8080` per il backend uvicorn locale senza container — invariato, valido quando si usa `E2E_13B_QUICK`/e2e:13 senza container).
+- **Da non fare**: NON propagare 8066 a produzione/fase 14 (Tailscale/Cloudflare non pubblicano porte; la doc di fase 14 usa l'URL tailnet).
+- **Prossimo step**: decidere se committare (es. `chore(dev): move local dev override to 127.0.0.1:8066`); poi ripresa da STATO.md riga 39: checklist manuale fase 13 residua + fase 14.
+
+---
+
 ## FASE 15 — Automazione browser post-fase: e2e:15 + fix flussi esistenti + 2 bug app — 2026-08-09
 - Nuovo scenario **`e2e/scenarios/fase-15.js`** + script `e2e:15` (riga in `e2e/README.md`): automatizza la verifica browser dei casi d'uso della fase 15, seed identico a e2e:12b. **40/40 PASS** — copertura:
   - **API**: `sort=name_asc|name_desc` + `unmatched_total` (coerente col filtro `matched=no`, semantica multi-provider); `POST /artists {url}` Deezer locale (`/it/artist/6253` → Eluveitie risolto da provider, linkato, `external_url` salvato); URL non supportato → 422; url+provider → 422; SoundCloud senza nome → 422 (nessuna risoluzione); `GET /artists/lookup` (mb con aliases, discogs senza token → 422); `rematch` su artista ignorato → `resolved_split` (nessuna ricerca MB); `purge-orphans` idempotente + audit `releases_purged`.
@@ -374,7 +385,7 @@ Tutti i 6 findings sono stati risolti con fix minimi, ognuno in un commit separa
   docker compose build            # build locale per l'arch della macchina
   docker compose --profile tailscale up -d   # produzione (mini PC, fase 14)
   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d  # test locale
-  cd e2e && BASE=http://127.0.0.1:8080 npm run e2e:11
+  cd e2e && BASE=http://127.0.0.1:8066 npm run e2e:11
   ```
 
 ---

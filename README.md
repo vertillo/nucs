@@ -107,7 +107,7 @@ docker compose --profile cloudflare --profile tailscale up -d
 Il compose **non pubblica nessuna porta**: si accede solo via tailnet o tunnel.
 Il primo avvio applica le migrazioni del database e crea l'utente admin dal `.env`.
 
-> Per una prova rapida su `http://127.0.0.1:8080` (sviluppo/verifica locale):
+> Per una prova rapida su `http://127.0.0.1:8066` (sviluppo/verifica locale):
 > `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
 > — il file `docker-compose.dev.yml` è **solo sviluppo**, in produzione usa il
 > compose base.
@@ -246,7 +246,7 @@ Le notifiche partono solo se `NOTIFY_URLS` è valorizzato.
 Non c'è una porta: l'app **non pubblica nessuna porta** sul host. Si accede
 solo via **Tailscale** (`https://nucs.<tailnet>.ts.net`) o **Cloudflare Tunnel**
 (il tuo dominio) — vedi le guide in `deploy/`. Se per test locale vuoi
-`127.0.0.1:8080`, usa il dev override (sezione Installazione, punto 3).
+`127.0.0.1:8066`, usa il dev override (sezione Installazione, punto 3).
 
 **5. Ho dimenticato la password. Come la resetto?**
 Da terminale, sul server:

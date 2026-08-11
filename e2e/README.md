@@ -55,7 +55,7 @@ Variabili d'ambiente:
 
 | Variabile | Default | Note |
 |---|---|---|
-| `BASE` | `http://127.0.0.1:8080` | URL dell'app (per fase 11: `https://<tunnel>` ) |
+| `BASE` | `http://127.0.0.1:8080` | URL dell'app (backend uvicorn locale; per il container con dev override: `http://127.0.0.1:8066`; per fase 11: `https://<tunnel>` ) |
 | `ADMIN_USER` | `admin` | credenziali admin |
 | `ADMIN_PASS` | `password-lunga-12` | **il backend deve avere QUESTO utente** |
 | `E2E_DATA_DIR` | `/tmp/nucs-e2e` | solo e2e:12 — DATA_DIR del backend sotto test (backup/persistenza) |

@@ -35,7 +35,7 @@ Nessuna porta viene esposta sull'host e nessun dominio è richiesto.
 
 > Nota macOS: Docker Desktop non espone `/dev/net/tun`, quindi il profilo
 > `tailscale` non può partire sul Mac di sviluppo — è previsto per il mini PC
-> (fase 14). Per test locali usa il compose dev (`127.0.0.1:8080`).
+> (fase 14). Per test locali usa il compose dev (`127.0.0.1:8066`).
 
 ## Passi
 

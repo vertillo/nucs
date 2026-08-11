@@ -1,7 +1,7 @@
 'use strict'
 /**
  * Fase 11 — container verification: login, theme, logout, security headers,
- * public health endpoint. Designed to run today on http://127.0.0.1:8080
+ * public health endpoint. Designed to run today on http://127.0.0.1:8066
  * (docker-compose.dev.yml) and in fase 14 on https://nucs.<tailnet>.ts.net
  * (BASE env var). The app must be the containerized one (FRONTEND_DIST=/app/static).
  */
