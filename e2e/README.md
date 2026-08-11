@@ -102,7 +102,7 @@ discovery (rete MusicBrainz, ~4-6 min). Lo scenario:
   sessione scaduta in DB (A11), audit log/backup (J3/J5, solo con
   `E2E_PROD_STACK=1`).
 - esporta la checklist compilata in `artifacts/fase-13-results.md` (tabella
-  `area | PASS/FAIL/N.A. | evidenza` da incollare in STATO.md).
+  `area | PASS/FAIL/N.A. | evidenza`).
 
 ### e2e:15 (fase 15 — correzioni dal feedback manuale)
 

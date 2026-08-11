@@ -1,8 +1,23 @@
-# SPECIFICHE TECNICHE — nucs (v1)
+# LEGACY / HISTORICAL SPECIFICATION
 
-> **FONTE UNICA DI VERITÀ.** Ogni fase di implementazione DEVE rispettare questo documento.
-> Se una sezione ti sembra ambigua, non improvvisare: segnala l'ambiguità in `piano/STATO.md`
-> e applica l'interpretazione più semplice coerente col resto del documento.
+This document describes an earlier NUCS specification (v1, written before phases
+12b/13/15) and is **not authoritative** for current remediation or product behavior.
+
+- Use **current code, migrations and tests** for the as-built implementation.
+- Use **`docs/CURRENT_IMPLEMENTATION.md`** as the factual orientation map.
+- Use **`docs/KNOWN_ISSUES.md`** and **`docs/REMEDIATION_RECONCILIATION.md`** for
+  known defects and the gap between implementation and remediation requirements.
+- Future authoritative product/remediation decisions will arrive as
+  `NUCS_PRODUCT_DECISIONS.md` and `NUCS_REMEDIATION_SPEC.md` and will supersede
+  this document where they explicitly define changed behavior.
+
+The section-by-section disposition (STILL ACCURATE / IMPLEMENTATION DETAIL OUTDATED /
+PRODUCT BEHAVIOR CHANGED LATER / NO LONGER APPLICABLE) of this document against the
+current implementation is recorded in `docs/OMO_PREPARATION_REPORT.md`.
+
+---
+
+# SPECIFICHE TECNICHE — nucs (v1) [HISTORICAL CONTENT — see header above]
 
 ---
 

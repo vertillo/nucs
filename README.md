@@ -39,7 +39,10 @@ automatico giornaliero** del database, audit log e rate limiting sul login.
 └─────────────────────────────────────────────┘
 ```
 
-**v1.0.0** — specifiche tecniche complete (vincolanti): `piano/00-specifiche.md`.
+**v1.0.0** — documentazione di riferimento: [`docs/README.md`](docs/README.md)
+(implementazione corrente, problemi noti e stato della remediation). L'originaria
+specifica tecnica v1 è conservata solo come riferimento storico in
+`piano/00-specifiche-legacy.md` e **non è più vincolante**.
 
 ---
 
