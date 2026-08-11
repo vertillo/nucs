@@ -1,9 +1,14 @@
 """Release discovery engine (spec section 8 + phase 12b multi-provider).
 
 Level 1 (daily, ``run_discovery(feat_scan=False)``): per tracked artist, the
-provider adapter of ``artists.provider`` (mb|deezer|itunes|discogs|soundcloud|
-beatport) returns release candidates, filtered by type/date with the per-artist
-cursor ``artists.last_release_check`` (-7 day overlap). MusicBrainz candidates
+PERSISTED external identities are queried in catalog priority order — Apple
+Music (``itunes``) first, then Deezer/MusicBrainz/Discogs/URL-only as fallback
+(spec 3.3) — each BY its stored identity, never by provider name search (spec
+3.2). Candidates are filtered by type/date with the per-artist cursor
+``artists.last_release_check`` (-7 day overlap). When Apple supplies sufficient
+usable results the remaining catalog providers are NOT queried (no redundant
+full discovery, spec:189); otherwise discovery falls back in priority order
+with the fallback reasons observable in the scan stats (spec:876). MusicBrainz candidates
 undergo the official-status filter (phase 12b): a release group is created only
 when at least one of its releases has status ``official`` — this is what keeps
 bootlegs/unofficial reworks ("Yeezus (Andre's Rework)") out of the feed.
@@ -27,13 +32,22 @@ import time
 from contextlib import suppress
 from datetime import date, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session_factory
-from app.models import Artist, Release, ReleaseArtist, ReleaseTrack, ScanRun, SeenRecording, utc_now
+from app.models import (
+    Artist,
+    ArtistExternalIdentity,
+    Release,
+    ReleaseArtist,
+    ReleaseTrack,
+    ScanRun,
+    SeenRecording,
+    utc_now,
+)
 from app.security import get_setting
 from app.services import deezer, scan_locks, spotify
 from app.services import errors as error_service
@@ -42,6 +56,7 @@ from app.services.artist_identity import (
     IdentityConflictError,
     attach_release_identity,
     find_release_by_external_identity,
+    list_identities,
     list_release_identities,
     preferred_release_identity,
 )
@@ -50,8 +65,13 @@ from app.services.covers import fetch_cover, save_cover_response
 from app.services.dates import parse_mb_date, release_in_range
 from app.services.links import build_search_links
 from app.services.musicbrainz import MBError, get_client
-from app.services.names import is_trivial_artist, normalize_name
-from app.services.providers import PROVIDER_DISCOGS, PROVIDER_MB, get_provider, providers_for_name_search
+from app.services.names import normalize_name
+from app.services.providers import (
+    PROVIDER_ITUNES,
+    PROVIDER_MB,
+    get_provider,
+)
+from app.services.release_dedup import match_release
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +80,15 @@ SCAN_TYPE_FEAT = "feat"
 
 ROLE_PRIMARY = "primary"
 ROLE_FEATURED = "featured"
+ROLE_REMIXER = "remixer"
+
+# ReleaseArtist roles supported end-to-end (spec 3.7, spec:976-986). The role
+# heuristic below deliberately returns ONLY primary/featured: no provider
+# currently supplies a structured "this release's remixer" signal — the credit
+# phrase only distinguishes a lead artist from a featured/other credit — so a
+# remixer role is never invented (spec:984 "where provider data cannot
+# distinguish a role safely, do not invent it"). ROLE_REMIXER exists so a
+# future structured signal and the frontend labels are ready (spec:986).
 
 _PAGE_SIZE = 100
 _CURSOR_OVERLAP_DAYS = 7
@@ -67,13 +96,99 @@ _MAX_FEAT_RECORDINGS_PER_ARTIST = 2000
 _PIPELINE_CONCURRENCY = 2
 _DEDUP_DATE_WINDOW_DAYS = 7
 
-# Phase 15: cross-provider discovery (artists tracked on MB only): the artist
-# name plus up to 2 non-trivial aliases are searched on the other providers so
-# versions that only exist there (e.g. Deezer-only "BULLY - DELUXE") surface.
-_MAX_CROSS_PROVIDER_QUERY_NAMES = 3
-
 _DEFAULT_RELEASE_TYPES = "album,single,ep"
 _ALLOWED_TYPES = frozenset({"album", "single", "ep", "other"})
+
+# Catalog (discovery-fetch) priority for a tracked artist (spec 3.1,
+# spec:836-842): Apple Music (internal key ``itunes``) first, then Deezer,
+# MusicBrainz, Discogs, and finally the provider-specific URL-only sources.
+# This is the ORDER in which level-1 discovery queries providers for release
+# candidates (todo 16 drives the actual Apple-first decision off it). It is
+# deliberately NOT the capability priority that picks a tracklist/credits
+# source (``RELEASE_PROVIDER_PRIORITY`` in artist_identity, spec:844-846:
+# "do not conflate this with credits/metadata priority"); MusicBrainz stays
+# complementary for credits/featured information. The two share an ordering
+# today but are distinct concepts that evolve independently.
+CATALOG_PROVIDER_PRIORITY = ("itunes", "deezer", "mb", "discogs", "soundcloud", "beatport")
+
+# Observable fallback reasons of the Apple-first flow (spec 3.3, spec:876-885).
+# NON-SECRET scan observability: each key is a fixed constant string with no
+# dynamic value, so no artist id, provider id or URL can ever leak into the
+# scan stats/logs (spec:885).
+FALLBACK_APPLE_MISSING_IDENTITY = "apple_missing_identity"
+FALLBACK_APPLE_NO_RESULTS = "apple_no_results"
+FALLBACK_CREDITS_ENRICHMENT = "credits_enrichment"
+FALLBACK_PROVIDER_FAILURE = "provider_failure"
+FALLBACK_REASON_KEYS = (
+    FALLBACK_APPLE_MISSING_IDENTITY,
+    FALLBACK_APPLE_NO_RESULTS,
+    FALLBACK_CREDITS_ENRICHMENT,
+    FALLBACK_PROVIDER_FAILURE,
+)
+
+# Apple-first sufficiency threshold (spec 3.3, spec:869-871): Apple supplied
+# "sufficient usable catalog results" when at least one release candidate it
+# returned was ACCEPTED into the feed for the current window (a candidate with
+# a title and a date that is in range and allowed by the type filter). A
+# candidate that was fetched but rejected (future-dated, type excluded, no
+# date) is NOT usable for the requested period, so it does not satisfy the
+# threshold and discovery falls back in catalog priority order (spec:872-873,
+# spec:186 "Apple returns no usable releases for the requested period").
+_APPLE_MIN_USABLE_RESULTS = 1
+
+
+def _catalog_providers_for_artist(
+    identities: list[ArtistExternalIdentity],
+    provider_priority: tuple[str, ...] = CATALOG_PROVIDER_PRIORITY,
+) -> list[str]:
+    """Ordered catalog providers to query for one artist (spec 3.1/3.3).
+
+    Given the artist's stored external identities, returns the providers to
+    query in catalog priority order: Apple Music first whenever a valid Apple
+    identity exists, then Deezer, MusicBrainz, Discogs and the URL-only sources
+    (spec:836-842). This is the "use Apple first / fallback in priority order"
+    decision structure of level-1 discovery (spec:863-874); the caller decides
+    whether Apple's results are sufficient (todo 16). Providers outside the
+    priority list are skipped; an artist without identities yields ``[]``.
+    """
+    rank = {provider: index for index, provider in enumerate(provider_priority)}
+    ranked = [identity.provider for identity in identities if identity.provider in rank]
+    ranked.sort(key=lambda provider: rank[provider])
+    return ranked
+
+
+def _record_fallback_reason(stats: dict, reason: str) -> None:
+    """Increment one fallback-reason counter in the scan stats (spec 3.3).
+
+    ``stats["fallback_reasons"]`` counts by reason key so a run's fallback
+    decisions are observable in the persisted scan stats (spec:876). Only the
+    fixed ``FALLBACK_REASON_KEYS`` are ever passed here — never dynamic
+    artist/provider ids or URLs (no secrets in observability, spec:885).
+    """
+    reasons = stats["fallback_reasons"]
+    reasons[reason] = reasons.get(reason, 0) + 1
+
+
+def _identity_artist_snapshot(artist: Artist, identity: ArtistExternalIdentity) -> Artist:
+    """A minimal Artist view carrying one stored identity for a provider fetch.
+
+    The level-1 adapters query by the legacy ``provider_id``/``mbid`` columns,
+    so the identity's provider_id is mapped onto a detached snapshot of the
+    tracked artist (the adapters also read ``name`` as the display fallback).
+    The tracked ``artist`` row itself is never mutated: ReleaseArtist linking
+    and the role heuristic keep using the real row.
+    """
+    snapshot = Artist(
+        name=artist.name,
+        normalized_name=artist.normalized_name,
+        source=artist.source,
+        provider=identity.provider,
+        provider_id=identity.provider_id,
+    )
+    if identity.provider == PROVIDER_MB:
+        snapshot.mbid = identity.provider_id
+    return snapshot
+
 
 # Columns filled from the candidate's direct provider URL (phase 12b).
 _DIRECT_URL_MAP = (
@@ -147,16 +262,16 @@ def _role_for(artist: Artist, credit_phrase: str) -> str:
     return ROLE_PRIMARY if name and credit.startswith(name) else ROLE_FEATURED
 
 
-def _find_existing_release(db: Session, candidate, *, same_artist: Artist | None = None) -> Release | None:
+def _find_existing_release(db: Session, candidate) -> Release | None:
     """Find an existing release for one candidate: by exact external identity,
     then by rgid, then by (provider, provider_id), then by normalized
     title+artist within a date window (spec 1.4: ReleaseExternalIdentity lookup
     first, so a canonical release that accumulated identities from several
-    providers is reused by any of them). When ``same_artist`` is given
-    (cross-provider candidates, phase 15) the dedup is by normalized TITLE
-    only, among the releases linked to that artist: the candidate is the same
-    artist by construction and provider artist credits may differ ("Ye" on MB
-    vs "Kanye West" on Deezer), while regional dates may be far apart."""
+    providers is reused by any of them). This is the legacy title+artist+date
+    fallback for candidates WITHOUT a same-artist context (level-2 feat scan);
+    cross-provider candidates in level 1 go through the central conservative
+    matcher instead (``match_release``, spec 3.4 — todo 17), which replaces
+    the old title-only same-artist dedup."""
     if candidate.provider_id:
         row = find_release_by_external_identity(db, candidate.provider, candidate.provider_id)
         if row is not None:
@@ -175,17 +290,6 @@ def _find_existing_release(db: Session, candidate, *, same_artist: Artist | None
             return row
     norm_title = normalize_name(candidate.title)
     if not norm_title:
-        return None
-    if same_artist is not None:
-        rows = db.scalars(
-            select(Release)
-            .join(ReleaseArtist, ReleaseArtist.release_id == Release.id)
-            .where(ReleaseArtist.artist_id == same_artist.id)
-            .order_by(Release.id)
-        ).all()
-        for row in rows:
-            if normalize_name(row.title) == norm_title:
-                return row
         return None
     norm_artist = normalize_name(candidate.primary_artist)
     if not norm_artist:
@@ -259,8 +363,14 @@ def _create_release(db: Session, candidate) -> tuple[Release, bool]:
 
 
 def _update_existing_release(row: Release, candidate) -> None:
-    """Fill empty fields of an existing release; never overwrites set values."""
+    """Fill empty fields of an existing release; never overwrites set values.
+
+    ``rgid`` is included: under the identity-driven ordering (spec 3.1) a
+    non-MB provider may create the canonical row first and a MusicBrainz
+    candidate merge onto it — the release-group id must survive the merge so
+    the Cover Art Archive flow keeps working."""
     for field, value in (
+        ("rgid", candidate.rgid),
         ("title", candidate.title),
         ("primary_artist", candidate.primary_artist),
         ("type", candidate.type),
@@ -362,9 +472,11 @@ async def _process_candidate(
     Returns the release date when accepted, else None. ``role`` overrides the
     credit-phrase heuristic (level 2 always featured). Newly created releases
     are appended to ``new_keys`` (provider identity) and ``new_release_ids``.
-    ``same_artist_dedup`` (phase 15) dedups cross-provider candidates by
-    normalized title within the tracked artist's releases (provider credits
-    and dates may differ).
+    ``same_artist_dedup`` (spec 3.4, todo 17) routes cross-provider candidates
+    through the central conservative matcher (``match_release``): exact
+    external identity and MusicBrainz release-group identity first, then the
+    edition match with merge-reason output (EXACT_EXTERNAL_ID |
+    MB_RELEASE_GROUP | TITLE_DATE_TRACKLIST | NO_MATCH, spec:938-945).
     """
     title = candidate.title.strip()
     if not title:
@@ -375,7 +487,16 @@ async def _process_candidate(
         stats["skipped_no_date"] += 1
         return None
 
-    existing = _find_existing_release(db, candidate, same_artist=same_artist_dedup)
+    match = None
+    if same_artist_dedup is not None:
+        # Todo 17 (spec 3.4): cross-provider candidates (same tracked artist by
+        # construction) are matched by the central conservative matcher instead
+        # of title-only dedup — identity/release-group first, then the edition
+        # match, each with an explicit merge reason recorded in the stats.
+        match = match_release(db, candidate, same_artist=same_artist_dedup)
+        existing = match.release
+    else:
+        existing = _find_existing_release(db, candidate)
     details = None
     if existing is None and candidate.provider == PROVIDER_MB:
         provider = get_provider(PROVIDER_MB)
@@ -436,92 +557,15 @@ async def _process_candidate(
         if candidate.tracks and candidate.provider == _preferred_track_source(db, row):
             _store_tracks(db, row.id, candidate.tracks)
         stats["releases_updated"] += 1
+        if match is not None and match.release is not None:
+            # Spec:938-947: record WHY the merge occurred (fixed reason keys,
+            # never ids/URLs) so run diagnostics stay observable.
+            merge_reasons = stats["merge_reasons"]
+            merge_reasons[match.decision] = merge_reasons.get(match.decision, 0) + 1
 
     effective_role = role if role is not None else _role_for(artist, candidate.primary_artist)
     _add_release_artist(db, row.id, artist.id, effective_role)
     return first_release_date
-
-
-async def _cross_provider_query_names(db: Session, artist: Artist) -> list[str]:
-    """Search names for the cross-provider step: the artist name plus up to 2
-    non-trivial MB aliases (phase 15). Aliases let "Ye" reach Deezer's
-    "Kanye West" (id 230) and find the Deezer-only "BULLY - DELUXE"."""
-    names = [artist.name]
-    if artist.mbid:
-        try:
-            client = await get_client(_contact_email(db))
-            data = await client.get_artist(artist.mbid, inc="aliases")
-        except Exception:
-            data = {}
-        seen = {normalize_name(artist.name)}
-        for alias in data.get("aliases") or []:
-            if len(names) >= _MAX_CROSS_PROVIDER_QUERY_NAMES:
-                break
-            alias_name = (alias.get("name") or "").strip()
-            if not alias_name or is_trivial_artist(alias_name):
-                continue
-            normalized = normalize_name(alias_name)
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            names.append(alias_name)
-    return names
-
-
-async def _best_cross_provider_candidate(provider, query_names: list[str], db) -> object | None:
-    """Best provider hit whose normalized name equals one of the query names.
-
-    Phase 15 review fix: NO blind first-hit fallback — a provider only
-    contributes cross-provider candidates when a query name (artist name or
-    alias) matches a provider artist exactly after normalization, so a wrong
-    artist is never linked (e.g. Deezer "Y.E" must not stand in for "Ye").
-    """
-    best = None
-    for query in query_names:
-        if provider.name == PROVIDER_DISCOGS:
-            rows = await provider.search_artist(query, db=db)
-        else:
-            rows = await provider.search_artist(query)
-        for row in rows:
-            if normalize_name(row.name) == normalize_name(query):
-                if best is None or (row.score or 0) > (best.score or 0):
-                    best = row
-                break
-    return best
-
-
-async def _cross_provider_candidates(db: Session, artist: Artist, from_date, stats: dict) -> list:
-    """Releases of the other name-searchable providers for an MB-tracked artist.
-
-    Every candidate is processed with role=ROLE_PRIMARY (same artist) and
-    deduplicated against the artist's existing releases by normalized title
-    (see ``same_artist_dedup``). Every provider step is best-effort: a failure
-    just yields no extra candidates.
-    """
-    candidates: list = []
-    query_names = await _cross_provider_query_names(db, artist)
-    for provider in providers_for_name_search():
-        if provider.name == PROVIDER_MB:
-            continue
-        try:
-            candidate = await _best_cross_provider_candidate(provider, query_names, db)
-            if candidate is None or not candidate.provider_id:
-                continue
-            snapshot = Artist(
-                name=candidate.name,
-                normalized_name=normalize_name(candidate.name),
-                source="manual",
-                provider=candidate.provider,
-                provider_id=candidate.provider_id,
-            )
-            rows = await provider.fetch_releases(snapshot, from_date, db=db)
-        except Exception:
-            logger.debug("cross-provider discovery failed for provider %s", provider.name)
-            rows = []
-        if rows:
-            candidates.extend(rows)
-            stats["cross_provider_candidates"] += len(rows)
-    return candidates
 
 
 async def _level1_artist(
@@ -533,57 +577,108 @@ async def _level1_artist(
     new_keys: list[tuple[str, str]],
     new_release_ids: list[int],
 ) -> None:
-    """Level 1 for one artist via its provider adapter."""
-    provider = get_provider(artist.provider)
+    """Level 1 for one artist via its PERSISTED external identities (spec 3.2).
+
+    The daily path consumes stored identities: every provider the artist
+    carries an identity for is queried BY that identity, in catalog priority
+    order (Apple first, CATALOG_PROVIDER_PRIORITY) — never by provider name
+    search (spec:848-861: "do not repeatedly name-search every provider during
+    every sync"). Provider name search stays in the interactive flows (match
+    resolution, add artist, manual identity management, explicit identity
+    enrichment). An artist without any external identity is not queried at all
+    (Needs match semantics): the run simply counts it and moves on without
+    crashing.
+
+    Apple-first fallback flow (spec 3.3, spec:863-886):
+    - Apple (itunes) leads the query order whenever a valid Apple identity
+      exists (spec:867-868);
+    - when Apple supplies SUFFICIENT usable catalog results — at least one
+      release candidate accepted into the feed for the current window
+      (``_APPLE_MIN_USABLE_RESULTS``) — the remaining catalog providers are NOT
+      queried (spec:869-871, spec:189: "do not blindly query every provider for
+      every artist");
+    - a missing Apple identity records ``apple_missing_identity`` and an Apple
+      query with no usable results records ``apple_no_results``; in both cases
+      discovery falls back in catalog priority order (spec:872-873);
+    - a provider outage (MBError) records ``provider_failure`` and the loop
+      continues with the NEXT provider — a single failure never aborts this
+      artist's discovery or the run (spec:883);
+    - complementary providers are consulted only when required for identity,
+      credits or dedup information (spec:874): the weekly feat scan (level 2)
+      IS the MusicBrainz credits/featured consultation (``credits_enrichment``);
+      this level-1 catalog loop never queries a provider purely for credits.
+
+    Candidates of one provider are matched against this artist's releases by
+    the central conservative matcher (``same_artist_dedup``, spec 3.4 / todo
+    17): exact external identity and MusicBrainz release-group identity first,
+    then the edition match (exact normalized title preserving semantic edition
+    words + compatible type + compatible dates/tracklist). They are the same
+    artist by construction, while provider artist credits may differ ("Ye" vs
+    "Kanye West") and regional dates may be far apart; genuinely different
+    editions (Deluxe/Remastered/...) stay separate.
+    """
     from_date = _cursor_from_date(artist, discovery_from)
-    if provider.name == PROVIDER_MB:
-        if not artist.mbid:
-            return
-        candidates = await provider.fetch_releases(artist, from_date, email=_contact_email(db), stats=stats)
-    else:
-        if not (artist.provider_id or artist.external_url):
-            return
-        candidates = await provider.fetch_releases(artist, from_date, db=db)
+    identities = list_identities(db, artist)
+    catalog = _catalog_providers_for_artist(identities)
+    if catalog and catalog[0] != PROVIDER_ITUNES:
+        _record_fallback_reason(stats, FALLBACK_APPLE_MISSING_IDENTITY)
     latest_seen = artist.last_release_check
-    for candidate in candidates:
-        seen = await _process_candidate(
-            db,
-            artist,
-            candidate,
-            discovery_from,
-            allowed_types,
-            stats,
-            new_keys=new_keys,
-            new_release_ids=new_release_ids,
-        )
-        # Commit after every candidate: a write transaction must never stay
-        # open across the next candidate's network calls (phase 12b fix for
-        # "database is locked" during slow provider responses).
-        db.commit()
-        if seen and (latest_seen is None or seen > latest_seen):
-            latest_seen = seen
-    if provider.name == PROVIDER_MB:
-        # Phase 15: also look for the same artist's releases on the other
-        # providers (Deezer/iTunes/Discogs) via name+aliases, so versions that
-        # only exist there (e.g. "BULLY - DELUXE") reach the feed. Candidates
-        # are deduped by title within this artist's releases (their provider
-        # credit may differ, e.g. "Kanye West" vs "Ye").
-        for candidate in await _cross_provider_candidates(db, artist, from_date, stats):
-            seen = await _process_candidate(
-                db,
-                artist,
-                candidate,
-                discovery_from,
-                allowed_types,
-                stats,
-                role=ROLE_PRIMARY,
-                new_keys=new_keys,
-                new_release_ids=new_release_ids,
-                same_artist_dedup=artist,
+    for provider_name in catalog:
+        provider = get_provider(provider_name)
+        identity = next(row for row in identities if row.provider == provider_name)
+        snapshot = _identity_artist_snapshot(artist, identity)
+        try:
+            if provider.name == PROVIDER_MB:
+                candidates = await provider.fetch_releases(
+                    snapshot, from_date, email=_contact_email(db), stats=stats
+                )
+            else:
+                candidates = await provider.fetch_releases(snapshot, from_date, db=db)
+            accepted = 0
+            for candidate in candidates:
+                seen = await _process_candidate(
+                    db,
+                    artist,
+                    candidate,
+                    discovery_from,
+                    allowed_types,
+                    stats,
+                    role=None if provider.name == PROVIDER_MB else ROLE_PRIMARY,
+                    new_keys=new_keys,
+                    new_release_ids=new_release_ids,
+                    same_artist_dedup=artist,
+                )
+                # Commit after every candidate: a write transaction must never stay
+                # open across the next candidate's network calls (phase 12b fix for
+                # "database is locked" during slow provider responses).
+                db.commit()
+                if seen is not None:
+                    accepted += 1
+                    if latest_seen is None or seen > latest_seen:
+                        latest_seen = seen
+        except MBError:
+            # Spec:883: a provider outage is observable in the scan stats
+            # (``provider_failure``) and the run moves on to the next provider —
+            # it never aborts this artist or the whole discovery run. The
+            # failure detail lives on the /errors page (failure-tolerance
+            # contract, phase 12b).
+            db.rollback()
+            _record_fallback_reason(stats, FALLBACK_PROVIDER_FAILURE)
+            logger.warning(
+                "level-1 provider %s failed for artist id=%s name=%s",
+                provider_name,
+                artist.id,
+                artist.name,
             )
-            db.commit()
-            if seen and (latest_seen is None or seen > latest_seen):
-                latest_seen = seen
+            continue
+        if provider_name == PROVIDER_ITUNES:
+            if accepted >= _APPLE_MIN_USABLE_RESULTS:
+                # Apple covered the window: stop the redundant catalog discovery
+                # (spec:869-871); the remaining providers are not queried.
+                break
+            # Apple supplied nothing usable for the period -> fallback in
+            # catalog priority order (spec:872-873).
+            _record_fallback_reason(stats, FALLBACK_APPLE_NO_RESULTS)
     artist.last_release_check = latest_seen
 
 
@@ -600,6 +695,7 @@ async def _level1(db: Session, stats: dict, new_keys: list, new_release_ids: lis
             scan_locks.update_progress(SCAN_TYPE_RELEASES, done=index)
         except MBError:
             db.rollback()
+            _record_fallback_reason(stats, FALLBACK_PROVIDER_FAILURE)
             logger.warning("level-1 discovery failed for artist id=%s name=%s", artist.id, artist.name)
         except Exception:
             db.rollback()
@@ -617,11 +713,30 @@ async def _level2_artist(
 ) -> None:
     """Level 2 for one artist: paginated recording browse, capped per artist.
 
+    The weekly feat scan IS the complementary MusicBrainz credits/featured
+    consultation (spec:846); it can only run when the artist carries a
+    MusicBrainz external identity. An artist with any other external identity
+    (e.g. Apple-only) stays in the feat eligibility set and is counted as
+    processed, but is handled WITHOUT any MB browse — no crash, no false
+    matching (Oracle MED-1: the browse sits OUTSIDE the per-recording
+    try/except and the per-artist guard only catches MBError, so a None mbid
+    would abort the whole feat scan; the browse is therefore guarded on the mb
+    identity's presence and queried by its provider_id, never by the legacy
+    ``artist.mbid`` column).
+
     Only recordings not present in ``seen_recordings`` are processed; a
     recording is marked seen only when all its release-group fetches
-    succeeded, so a partial failure is retried the next run.
+    succeeded, so a partial failure is retried the next run. Each browsed
+    artist records the ``credits_enrichment`` fallback reason (spec:878).
     """
+    mb_identity = next(
+        (identity for identity in list_identities(db, artist) if identity.provider == PROVIDER_MB),
+        None,
+    )
+    if mb_identity is None:
+        return
     provider = get_provider(PROVIDER_MB)
+    _record_fallback_reason(stats, FALLBACK_CREDITS_ENRICHMENT)
     client = await get_client(_contact_email(db))
     offset = 0
     pages = 0
@@ -636,7 +751,7 @@ async def _level2_artist(
             )
             break
         stats["api_calls"] += 1
-        data = await client.browse_artist_recordings(artist.mbid, limit=_PAGE_SIZE, offset=offset)
+        data = await client.browse_artist_recordings(mb_identity.provider_id, limit=_PAGE_SIZE, offset=offset)
         recordings = data.get("recordings") or []
         count = data.get("recording-count") or data.get("count") or count
         pages += 1
@@ -678,6 +793,7 @@ async def _level2_artist(
                     # call (slow MusicBrainz requests must not lock the DB).
                     db.commit()
             except MBError:
+                _record_fallback_reason(stats, FALLBACK_PROVIDER_FAILURE)
                 logger.warning("level-2: release fetch failed for recording %s", recording_mbid)
                 continue
             if not releases or accepted_any:
@@ -688,8 +804,15 @@ async def _level2_artist(
 
 
 async def _level2(db: Session, stats: dict, new_keys: list, new_release_ids: list[int]) -> None:
+    """Feat-scan eligibility (spec 3.2): artists with at least one EXTERNAL
+    IDENTITY — never the legacy ``mbid`` column. An Apple-only artist is
+    eligible/processed; ``_level2_artist`` then browses MusicBrainz only for
+    artists that actually carry an mb identity."""
     artists = db.scalars(
-        select(Artist).where(Artist.ignored == 0, Artist.mbid.is_not(None)).order_by(Artist.id)
+        select(Artist)
+        .where(Artist.ignored == 0)
+        .where(exists().where(ArtistExternalIdentity.artist_id == Artist.id))
+        .order_by(Artist.id)
     ).all()
     stats["artists_processed"] = len(artists)
     scan_locks.update_progress(SCAN_TYPE_FEAT, total=len(artists), phase="level 2")
@@ -702,6 +825,7 @@ async def _level2(db: Session, stats: dict, new_keys: list, new_release_ids: lis
             scan_locks.update_progress(SCAN_TYPE_FEAT, done=index)
         except MBError:
             db.rollback()
+            _record_fallback_reason(stats, FALLBACK_PROVIDER_FAILURE)
             logger.warning("level-2 discovery failed for artist id=%s name=%s", artist.id, artist.name)
         except Exception:
             db.rollback()
@@ -868,7 +992,7 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
     scan_type = SCAN_TYPE_FEAT if feat_scan else SCAN_TYPE_RELEASES
     started_at = utc_now()
     start_time = time.monotonic()
-    stats: dict[str, int | float] = {
+    stats: dict[str, int | float | dict[str, int]] = {
         "artists_processed": 0,
         "release_groups_found": 0,
         "releases_new": 0,
@@ -877,10 +1001,15 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         "skipped_type": 0,
         "skipped_not_official": 0,
         "cross_provider_candidates": 0,
+        # Todo 17 (spec:938-947): count of merge decisions by reason
+        # (EXACT_EXTERNAL_ID | MB_RELEASE_GROUP | TITLE_DATE_TRACKLIST), so a
+        # run's merges explain themselves. Fixed keys only, no ids/URLs.
+        "merge_reasons": {},
         "api_calls": 0,
         "covers_fetched": 0,
         "links_resolved": 0,
         "pipeline_errors": 0,
+        "fallback_reasons": {},
         "duration_s": 0.0,
     }
     if feat_scan:

@@ -74,9 +74,6 @@ def _no_real_musicbrainz(monkeypatch):
     async def _no_cover(db, release):
         return None
 
-    async def _no_cross_provider(db, artist, from_date, stats):
-        return []
-
     class _InertDeezer:
         async def resolve_album(self, artist, title):
             return (None, None)
@@ -87,7 +84,6 @@ def _no_real_musicbrainz(monkeypatch):
 
     monkeypatch.setattr(mb_matching_module, "match_all_pending", _no_match)
     monkeypatch.setattr(discovery_module, "fetch_cover", _no_cover)
-    monkeypatch.setattr(discovery_module, "_cross_provider_candidates", _no_cross_provider)
     monkeypatch.setattr(discovery_module, "deezer", _InertDeezer())
     monkeypatch.setattr(discovery_module, "spotify", _InertSpotify())
 
