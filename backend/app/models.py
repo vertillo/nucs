@@ -167,6 +167,15 @@ class SeenRecording(Base):
 
     ``recording_mbid`` is globally unique, so it is the primary key; ``artist_id``
     records which tracked artist surfaced it first. Rows are never deleted.
+
+    Phase 4.1 (spec 4.1/4.2): ``evaluation_state`` separates the two meanings
+    the table used to conflate (spec:1022-1024) — ``seen`` = a COMPLETE
+    evaluation (every release of the recording was fetched and accepted or
+    rejected under the policy fingerprint) from ``failed`` = a provider fetch
+    failed and the recording stays retryable. ``policy_fingerprint`` is the
+    stable settings fingerprint the evaluation was made under (spec 4.2);
+    ``evaluated_at`` is the completion timestamp of a complete evaluation
+    (None for failed attempts).
     """
 
     __tablename__ = "seen_recordings"
@@ -174,6 +183,9 @@ class SeenRecording(Base):
     recording_mbid: Mapped[str] = mapped_column(Text, primary_key=True)
     artist_id: Mapped[int] = mapped_column(Integer, nullable=False)
     first_seen: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluation_state: Mapped[str] = mapped_column(Text, nullable=False, default="seen", server_default="seen")
+    policy_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluated_at: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ArtistFile(Base):

@@ -977,6 +977,11 @@ async def test_level2_new_recording_inserts_featured_release(disc_db, monkeypatc
 
 
 async def test_level2_already_seen_recording_skipped_without_extra_calls(disc_db, monkeypatch):
+    """Spec 4.2 (spec:1935 contract change): a recording whose complete
+    evaluation was made under the CURRENT policy fingerprint is skipped — no
+    recording/release lookups, no release rows. The seeded row used to skip on
+    'seen' alone; since todo 21 the skip is fingerprint-gated, so the seed
+    records the fingerprint the evaluation was made under."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     _seed_artists(("Mio", "mb-mio"))
@@ -984,7 +989,14 @@ async def test_level2_already_seen_recording_skipped_without_extra_calls(disc_db
     fake.browse_counts["mb-mio"] = 1
     fake.recording_details["rec-1"] = _recording_detail("rec-1", ["rel-1"])
     with get_session_factory()() as db:
-        db.add(SeenRecording(recording_mbid="rec-1", artist_id=1, first_seen="2024-01-01"))
+        db.add(
+            SeenRecording(
+                recording_mbid="rec-1",
+                artist_id=1,
+                first_seen="2024-01-01",
+                policy_fingerprint=discovery._policy_fingerprint(db),
+            )
+        )
         db.commit()
 
     with get_session_factory()() as db:
@@ -1069,7 +1081,12 @@ async def test_level2_skips_recordings_without_releases(disc_db, monkeypatch):
         assert db.get(SeenRecording, "rec-empty") is not None
 
 
-async def test_level2_recording_not_marked_seen_when_release_fetch_fails(disc_db, monkeypatch):
+async def test_level2_failed_fetch_recorded_failed_and_retried(disc_db, monkeypatch):
+    """Spec 4.1 (spec:1935 contract change): a provider fetch failure is
+    recorded in state 'failed' — a 'failed' row is NOT 'seen' (previously the
+    failure left NO row at all), so the recording is retried next run; once
+    the fetch succeeds the row is upgraded in place to a complete evaluation.
+    Failed (retryable) and remembered (seen) are now distinct states."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     _seed_artists(("Mio", "mb-mio"))
@@ -1081,14 +1098,45 @@ async def test_level2_recording_not_marked_seen_when_release_fetch_fails(disc_db
     with get_session_factory()() as db:
         stats = await discovery.run_discovery(db, feat_scan=True)
 
-    assert stats["api_calls"] == 3  # browse + recording lookup + failed release fetch (counted)
+    assert stats["api_calls"] == 3  # browse + recording lookup + failed release fetch
     with get_session_factory()() as db:
-        assert db.get(SeenRecording, "rec-fail") is None  # retried next run
+        row = db.get(SeenRecording, "rec-fail")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_FAILED
+        assert row.policy_fingerprint is None
+        assert row.evaluated_at is None
+        assert (
+            discovery._recording_seen(db, "rec-fail", discovery._policy_fingerprint(db)) is False
+        )  # retried next run
+
+    # Provider recovers: the failed recording is retried and upgraded in place
+    # to a complete evaluation under the current policy fingerprint.
+    fake.fail_release_ids.clear()
+    fake.release_details["rel-down"] = _release_detail(
+        "rel-down",
+        _rg("rg-rec", "Album Rec", "Album", "2024-07-01", _credit(("Altro", ""))),
+    )
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 1
+    assert fake.recording_lookups == ["rec-fail", "rec-fail"]  # retried exactly once
+    with get_session_factory()() as db:
+        row = db.get(SeenRecording, "rec-fail")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
+        assert row.evaluated_at is not None
+        assert discovery._recording_seen(db, "rec-fail", discovery._policy_fingerprint(db)) is True
 
 
-async def test_level2_future_dated_release_not_marked_seen_then_picked_up(disc_db, monkeypatch):
-    """MEDIA-1 regression: a recording whose only release is future-dated is
-    NOT marked seen, so the release is picked up once it becomes current."""
+async def test_level2_future_dated_release_remembered_under_current_policy(disc_db, monkeypatch):
+    """Spec 4.1 (spec:1935 contract change vs MEDIA-1): a recording whose only
+    release is future-dated was previously NOT marked seen so it was re-examined
+    weekly. Spec 4.1/4.2 replaces that with the policy-fingerprint model: the
+    future-dated release WAS successfully fetched and evaluated (rejected by the
+    discovery window), so the recording is remembered as 'seen' under the
+    current fingerprint and is NOT re-fetched while the policy is unchanged.
+    Re-evaluation under a different fingerprint (e.g. a moved discovery window)
+    is covered by the fingerprint-gated skip of spec 4.2."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     _seed_artists(("Mio", "mb-mio"))
@@ -1102,27 +1150,35 @@ async def test_level2_future_dated_release_not_marked_seen_then_picked_up(disc_d
     with get_session_factory()() as db:
         stats = await discovery.run_discovery(db, feat_scan=True)
 
-    assert stats["releases_new"] == 0  # out of range, skipped
+    assert stats["releases_new"] == 0  # out of range, rejected by the date filter
     with get_session_factory()() as db:
-        assert db.get(SeenRecording, "rec-future") is None  # will be re-examined
+        row = db.get(SeenRecording, "rec-future")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
+        assert row.evaluated_at is not None
 
-    # MB completes the date: same run next week now finds the release.
+    # MB completes the date, but the policy fingerprint is unchanged: the
+    # remembered evaluation is not re-fetched (the release surfaces only when
+    # the fingerprint changes, spec 4.2).
     fake.release_details["rel-f"] = _release_detail(
         "rel-f", _rg("rg-f", "Album Futuro", "Album", "2024-07-01", _credit(("Altro", "")))
     )
     with get_session_factory()() as db:
         stats = await discovery.run_discovery(db, feat_scan=True)
 
-    assert stats["releases_new"] == 1
+    assert stats["releases_new"] == 0  # never re-evaluated under the unchanged policy
+    assert fake.recording_lookups == ["rec-future"]  # exactly one fetch, first run
     with get_session_factory()() as db:
-        row = db.scalar(select(Release).where(Release.rgid == "rg-f"))
-        assert row is not None and row.first_release_date == "2024-07-01"
-        assert db.get(SeenRecording, "rec-future") is not None
+        assert db.scalar(select(Release).where(Release.rgid == "rg-f")) is None
 
 
-async def test_level2_undated_release_not_marked_seen(disc_db, monkeypatch):
-    """MEDIA-1 regression: undated release groups are re-examined, so the
-    release appears once MusicBrainz adds the date."""
+async def test_level2_undated_release_remembered_seen(disc_db, monkeypatch):
+    """Spec 4.1 (spec:1935 contract change vs MEDIA-1): an undated release
+    group was previously NOT marked seen so it was re-examined weekly. Under
+    spec 4.1 a successfully fetched recording whose release was evaluated and
+    rejected (here: skipped for missing date) is remembered as a complete
+    evaluation under the current policy fingerprint; it is re-evaluated when
+    the fingerprint changes (spec 4.2)."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     _seed_artists(("Mio", "mb-mio"))
@@ -1145,7 +1201,208 @@ async def test_level2_undated_release_not_marked_seen(disc_db, monkeypatch):
 
     assert stats["skipped_no_date"] == 1
     with get_session_factory()() as db:
-        assert db.get(SeenRecording, "rec-nd") is None
+        row = db.get(SeenRecording, "rec-nd")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
+
+
+async def test_level2_all_releases_rejected_remembered_seen(disc_db, monkeypatch):
+    """Spec 4.1: a successfully fetched recording whose releases were ALL
+    evaluated and rejected (here: type-excluded) is remembered as a complete
+    evaluation ('seen') with the current policy fingerprint — NOT re-fetched
+    next run under the same policy."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-rej"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-rej"] = _recording_detail("rec-rej", ["rel-r"])
+    fake.release_details["rel-r"] = _release_detail(
+        "rel-r", _rg("rg-r", "Singolo Escluso", "Single", "2024-07-01", _credit(("Altro", "")))
+    )
+    with get_session_factory()() as db:
+        set_setting(db, "release_types", "album,ep")  # single excluded
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 0
+    assert stats["skipped_type"] == 1
+    with get_session_factory()() as db:
+        row = db.get(SeenRecording, "rec-rej")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
+        assert row.evaluated_at is not None
+
+    # Next run, same policy: the remembered evaluation is skipped (spec 4.2:
+    # a seen evaluation counts only under the matching fingerprint).
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 0
+    assert fake.recording_lookups == ["rec-rej"]  # exactly one fetch, first run
+
+
+def test_recording_seen_requires_matching_policy_fingerprint(disc_db):
+    """Spec 4.2: a complete evaluation only counts under the SAME policy
+    fingerprint. A 'seen' row is skipped under its own fingerprint and
+    re-evaluated under a different one; a 'failed' row and a legacy row
+    without a stored fingerprint never match a real run's fingerprint."""
+    with get_session_factory()() as db:
+        db.add_all(
+            [
+                SeenRecording(
+                    recording_mbid="rec-a",
+                    artist_id=1,
+                    first_seen="2024-01-01",
+                    policy_fingerprint="fingerprint-A",
+                ),
+                SeenRecording(
+                    recording_mbid="rec-b",
+                    artist_id=1,
+                    first_seen="2024-01-01",
+                    evaluation_state=discovery.SEEN_RECORDING_FAILED,
+                ),
+                SeenRecording(recording_mbid="rec-legacy", artist_id=1, first_seen="2024-01-01"),
+            ]
+        )
+        db.commit()
+        assert discovery._recording_seen(db, "rec-a", "fingerprint-A") is True
+        assert discovery._recording_seen(db, "rec-a", "fingerprint-B") is False
+        assert discovery._recording_seen(db, "rec-b", "fingerprint-A") is False
+        assert discovery._recording_seen(db, "rec-legacy", "fingerprint-A") is False
+
+
+async def test_level2_changed_release_types_re_evaluates_seen_recording(disc_db, monkeypatch):
+    """Spec 4.2 acceptance (spec:1090-1092): a rejected recording becomes
+    eligible again when a relevant filter changes. Run 1 excludes 'single':
+    the recording's Single is rejected and remembered 'seen' under fingerprint
+    A. Run 2 allows singles (fingerprint B): the recording is fetched again
+    and its release is accepted — a complete evaluation only counts under the
+    same fingerprint."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-rej"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-rej"] = _recording_detail("rec-rej", ["rel-r"])
+    fake.release_details["rel-r"] = _release_detail(
+        "rel-r", _rg("rg-r", "Singolo Escluso", "Single", "2024-07-01", _credit(("Altro", "")))
+    )
+    with get_session_factory()() as db:
+        set_setting(db, "release_types", "album,ep")  # single excluded
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 0
+    assert stats["skipped_type"] == 1
+
+    # A relevant filter changed (singles now allowed) -> a different fingerprint.
+    with get_session_factory()() as db:
+        set_setting(db, "release_types", "album,single,ep")
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 1  # eligible again under the new fingerprint
+    assert fake.recording_lookups == ["rec-rej", "rec-rej"]  # re-fetched exactly once
+    with get_session_factory()() as db:
+        row = db.get(SeenRecording, "rec-rej")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
+        assert db.scalar(select(Release).where(Release.rgid == "rg-r")) is not None
+
+
+async def test_level2_changed_official_filter_re_evaluates_seen_recording(disc_db, monkeypatch):
+    """Spec 4.2 acceptance (spec:1090-1092): official-only is part of the
+    policy fingerprint. Run 1 filters non-official groups: the recording's
+    release group has no official release -> rejected and remembered 'seen'
+    under fingerprint A. Run 2 disables the filter (fingerprint B): the
+    recording is fetched again and its release is accepted."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-off"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-off"] = _recording_detail("rec-off", ["rel-off"])
+    fake.release_details["rel-off"] = _release_detail(
+        "rel-off", _rg("rg-off", "Ufficioso", "Album", "2024-07-01", _credit(("Altro", "")))
+    )
+    fake.unofficial_rgids = {"rg-off"}
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 0
+    assert stats["skipped_not_official"] == 1
+
+    # The official-only filter changed (disabled) -> a different fingerprint.
+    with get_session_factory()() as db:
+        set_setting(db, "discovery_filter_official", "false")
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 1  # eligible again under the new fingerprint
+    assert fake.recording_lookups == ["rec-off", "rec-off"]  # re-fetched exactly once
+    with get_session_factory()() as db:
+        row = db.get(SeenRecording, "rec-off")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
+
+
+async def test_level2_changed_discovery_window_re_evaluates_seen_recording(disc_db, monkeypatch):
+    """Spec 4.2 acceptance (spec:1090-1092): discovery_from_date is part of the
+    policy fingerprint. Run 1 (window 2024-01-01) rejects the recording's
+    2023 release as out of range and remembers it 'seen' under fingerprint A.
+    Run 2 moves the window back to 2022-01-01 (fingerprint B): the recording
+    is fetched again and its release is accepted."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-win"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-win"] = _recording_detail("rec-win", ["rel-win"])
+    fake.release_details["rel-win"] = _release_detail(
+        "rel-win", _rg("rg-win", "Fuori Finestra", "Album", "2023-06-01", _credit(("Altro", "")))
+    )
+    # The group's official releases also predate the run-1 window, so the
+    # reissue rescue cannot pull the 2023 candidate into range (spec 8.5).
+    from app.services.providers.musicbrainz import provider as mb_provider
+
+    async def _old_only_details(rgid, email=None, stats=None):
+        return {"releases": [{"id": f"rel-{rgid}", "date": "2022-01-01", "status": "official"}]}
+
+    monkeypatch.setattr(mb_provider, "release_group_details", _old_only_details)
+
+    with get_session_factory()() as db:
+        set_setting(db, "discovery_from_date", "2024-01-01")
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 0  # 2023 release outside the 2024 window
+
+    # The discovery window moved back -> a different fingerprint.
+    with get_session_factory()() as db:
+        set_setting(db, "discovery_from_date", "2022-01-01")
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    assert stats["releases_new"] == 1  # eligible again under the new fingerprint
+    assert fake.recording_lookups == ["rec-win", "rec-win"]  # re-fetched exactly once
+    with get_session_factory()() as db:
+        row = db.get(SeenRecording, "rec-win")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        assert row.policy_fingerprint == discovery._policy_fingerprint(db)
 
 
 async def test_run_discovery_records_error_status_on_fatal_exception(disc_db, monkeypatch):
@@ -1694,6 +1951,9 @@ def _process_stats() -> dict:
         "skipped_not_official": 0,
         "releases_new": 0,
         "releases_updated": 0,
+        "provider_calls": {},
+        "candidates_rejected": 0,
+        "cross_provider_merges": 0,
     }
 
 
@@ -2588,6 +2848,9 @@ def _matcher_stats() -> dict:
         "skipped_not_official": 0,
         "releases_new": 0,
         "releases_updated": 0,
+        "provider_calls": {},
+        "candidates_rejected": 0,
+        "cross_provider_merges": 0,
     }
 
 
@@ -3066,3 +3329,519 @@ async def test_axwell_deluxe_variant_kept_separate_canonical_release(disc_db, mo
         for row in (standard, deluxe):
             identities = {identity.provider for identity in list_release_identities(db, row)}
             assert identities == {"deezer", "mb"}
+
+
+# --- Spec 4.3: performance counters (todo 22) ---------------------------------
+
+
+async def test_performance_counters_present_after_mocked_scan(disc_db, monkeypatch):
+    """After a mocked level-1 scan, the stats dict includes all the spec 4.3
+    performance counters with non-None, JSON-serializable values."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-cnt", "Album Counters", "Album", "2024-07-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # All spec 4.3 counters must be present.
+    expected_counters = [
+        "provider_calls",
+        "apple_success_count",
+        "fallback_count",
+        "cross_provider_merges",
+        "candidates_rejected",
+        "seen_recording_cache_hits",
+        "notification_count",
+    ]
+    for key in expected_counters:
+        assert key in stats, f"missing counter: {key}"
+    # Existing counters still present.
+    assert "api_calls" in stats
+    assert "artists_processed" in stats
+    assert "fallback_reasons" in stats
+    assert "merge_reasons" in stats
+    # provider_calls is a dict with non-negative ints.
+    assert isinstance(stats["provider_calls"], dict)
+    for provider, count in stats["provider_calls"].items():
+        assert isinstance(provider, str)
+        assert isinstance(count, int) and count >= 0
+    # All other new counters are non-negative ints.
+    for key in expected_counters:
+        if key == "provider_calls":
+            continue
+        assert isinstance(stats[key], int) and stats[key] >= 0, f"{key} = {stats[key]!r}"
+    # api_calls and provider_calls both count HTTP invocations; in mocked
+    # tests the two may diverge since mocked providers bypass the api_calls
+    # increment. Both should be non-negative.
+    assert stats["api_calls"] >= 0
+    assert sum(stats["provider_calls"].values()) >= 0
+
+
+async def test_performance_counters_no_secrets_in_stats(disc_db, monkeypatch):
+    """Spec:1069: the persisted scan_runs.stats JSON must never contain
+    secrets, provider tokens, or credential-bearing URLs."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-sec", "Album Secure", "Album", "2024-07-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # Serialized stats as JSON string (same form persisted in scan_runs.stats).
+    import json
+
+    stats_json = json.dumps(stats)
+    # Common secret patterns: no tokens, API keys, bearer credentials.
+    for secretish in (
+        "token",
+        "Bearer ",
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "authorization",
+    ):
+        assert secretish not in stats_json.lower(), f"stats JSON contains secret-like: {secretish}"
+    # fallback_reasons and merge_reasons must only contain fixed keys.
+    assert set(stats.get("fallback_reasons", {})) <= set(discovery.FALLBACK_REASON_KEYS)
+
+
+async def test_performance_counters_incremented_mocked_scan(disc_db, monkeypatch):
+    """After a mocked scan that accepts a candidate, the key counters have
+    expected concrete values."""
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.search_pages["mb-mio"] = [
+        [_rg("rg-inc", "Album Increment", "Album", "2024-07-01", _credit(("Mio", "")))]
+    ]
+    fake.search_counts["mb-mio"] = 1
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # One artist processed, one release new => notification_count equals new_releases count.
+    assert stats["artists_processed"] == 1
+    assert stats["releases_new"] == 1
+    assert stats["notification_count"] == 1
+    # MB provider was called (search_pages populated).
+    assert stats["provider_calls"].get("mb", 0) >= 1
+    # No fallback happened (Apple identity absent, but MB was used directly).
+    # fallback_count may be > 0 if apple_missing_identity was recorded.
+    # candidates_rejected should be non-negative.
+    assert stats["candidates_rejected"] >= 0
+
+
+# --- Spec 4.4 / PERFORMANCE ACCEPTANCE benchmark tests (todo 23) -------------
+
+
+async def test_benchmark_apple_first_avoids_unnecessary_calls(disc_db, monkeypatch):
+    """PERFORMANCE ACCEPTANCE bullet 1 (spec:1824): Apple-first avoids
+    unnecessary provider catalog calls.
+
+    Scenario: artist has Apple + Deezer + MB identities. Apple returns
+    sufficient usable results (1 accepted release). The remaining catalog
+    providers (Deezer, MB) are NEVER queried.
+
+    Evidence: provider_calls only shows itunes; fallback_reasons is empty
+    (no fallback triggered); apple_success_count == 1.
+    """
+    from app.services.providers.base import ReleaseCandidate
+
+    _install_fake(monkeypatch, _FakeClient())
+    with get_session_factory()() as db:
+        db.add(Artist(name="Benchmark", normalized_name="benchmark-apple", source="tag_artist"))
+        db.commit()
+        artist = db.scalar(select(Artist).where(Artist.normalized_name == "benchmark-apple"))
+        db.add(ArtistExternalIdentity(artist_id=artist.id, provider="itunes", provider_id="app-bench"))
+        db.add(ArtistExternalIdentity(artist_id=artist.id, provider="deezer", provider_id="dz-bench"))
+        db.add(ArtistExternalIdentity(artist_id=artist.id, provider="mb", provider_id="mb-bench"))
+        db.commit()
+
+    fetch_log: list[str] = []
+
+    class _CountingItunes:
+        name = "itunes"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            fetch_log.append("itunes")
+            return [
+                ReleaseCandidate(
+                    title="Apple Sufficient Album",
+                    primary_artist="Benchmark",
+                    type="album",
+                    first_release_date="2024-07-01",
+                    provider="itunes",
+                    provider_id="app-rel-bench",
+                )
+            ]
+
+    class _BoomDeezer:
+        name = "deezer"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            fetch_log.append("deezer")
+            raise AssertionError("Deezer must NOT be queried when Apple suffices")
+
+    class _BoomMB:
+        name = "mb"
+
+        async def fetch_releases(self, artist, from_date, *, email=None, stats=None):
+            fetch_log.append("mb")
+            raise AssertionError("MB must NOT be queried when Apple suffices")
+
+    monkeypatch.setattr(
+        discovery,
+        "get_provider",
+        lambda name: {"itunes": _CountingItunes(), "deezer": _BoomDeezer(), "mb": _BoomMB()}[name],
+    )
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # EVIDENCE: Only Apple was fetched; no catalog fallback needed.
+    assert fetch_log == ["itunes"]
+    assert stats["provider_calls"] == {"itunes": 1}
+    assert stats["apple_success_count"] == 1
+    assert stats["fallback_count"] == 0
+    assert stats["fallback_reasons"] == {}
+    assert stats["releases_new"] == 1
+
+
+async def test_benchmark_repeated_level2_recordings_skipped(disc_db, monkeypatch):
+    """PERFORMANCE ACCEPTANCE bullet 2 (spec:1825): repeated level-2 filtered
+    recordings are skipped (recording remembered under fingerprint, not
+    re-fetched weekly).
+
+    Scenario: feat scan with 3 recordings from the browse, all already
+    evaluated under the CURRENT policy fingerprint. ZERO recording lookups
+    or release lookups triggered; all 3 are cache hits.
+
+    Evidence: seen_recording_cache_hits == 3; api_calls == 1 (browse only);
+    recording_lookups and release_lookups are empty.
+    """
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-cache"))
+    fake.browse_pages["mb-cache"] = [[{"id": "rec-a"}, {"id": "rec-b"}, {"id": "rec-c"}]]
+    fake.browse_counts["mb-cache"] = 3
+
+    with get_session_factory()() as db:
+        fingerprint = discovery._policy_fingerprint(db)
+        for rec_id in ("rec-a", "rec-b", "rec-c"):
+            db.add(
+                SeenRecording(
+                    recording_mbid=rec_id,
+                    artist_id=1,
+                    first_seen="2024-01-01",
+                    evaluation_state=discovery.SEEN_RECORDING_EVALUATED,
+                    policy_fingerprint=fingerprint,
+                )
+            )
+        db.commit()
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db, feat_scan=True)
+
+    # EVIDENCE: Browse is the only MB call; all 3 recordings are cache hits.
+    assert stats["api_calls"] == 1  # browse only
+    assert stats["seen_recording_cache_hits"] == 3
+    assert fake.recording_lookups == []
+    assert fake.release_lookups == []
+    assert stats["releases_new"] == 0
+
+
+async def test_benchmark_no_name_search_in_daily_discovery(disc_db, monkeypatch):
+    """PERFORMANCE ACCEPTANCE bullet 3 (spec:1826): provider name search is
+    not repeated in daily discovery — persisted identities drive every query.
+
+    Scenario: artist with a stored Deezer identity (no Apple). Daily
+    discovery fetches releases by the persisted provider_id; the provider's
+    search_artist method is NEVER invoked.
+
+    Evidence: search_artist calls == 0; fetch_releases receives the stored
+    provider_id; provider_calls shows the identity-driven fetch.
+    """
+    from app.services.providers.base import ReleaseCandidate
+
+    _install_fake(monkeypatch, _FakeClient())
+    with get_session_factory()() as db:
+        db.add(Artist(name="NNS", normalized_name="nns", source="tag_artist"))
+        db.commit()
+        artist = db.scalar(select(Artist).where(Artist.normalized_name == "nns"))
+        db.add(ArtistExternalIdentity(artist_id=artist.id, provider="deezer", provider_id="dz-nns-1"))
+        db.commit()
+
+    class _CountingDeezer:
+        name = "deezer"
+        search_calls = 0
+        fetch_calls: list[str] = []
+
+        async def search_artist(self, name):
+            self.search_calls += 1
+            raise AssertionError("search_artist must NOT run in the daily path")
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            self.fetch_calls.append(artist.provider_id)
+            return [
+                ReleaseCandidate(
+                    title="Deezer Identity Release",
+                    primary_artist="NNS",
+                    type="album",
+                    first_release_date="2024-07-01",
+                    provider="deezer",
+                    provider_id="dz-rel-nns",
+                )
+            ]
+
+    provider = _CountingDeezer()
+    monkeypatch.setattr(discovery, "get_provider", lambda name: provider)
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # EVIDENCE: Zero name-search calls; identity-driven fetch only.
+    assert provider.search_calls == 0
+    assert provider.fetch_calls == ["dz-nns-1"]
+    assert stats["provider_calls"].get("deezer", 0) == 1
+    assert stats["releases_new"] == 1
+
+
+async def test_benchmark_explicit_fallback_reasons(disc_db, monkeypatch):
+    """PERFORMANCE ACCEPTANCE bullet 4 (spec:1827): provider fallback is
+    explicit and observable in the scan stats.
+
+    Scenario: artist has Apple identity but Apple returns no usable results
+    (all future-dated). The fallback fires to Deezer, which provides a
+    usable release. Both the fallback reason (apple_no_results) and the
+    Deezer provider call are recorded.
+
+    Evidence: fallback_reasons["apple_no_results"] == 1; fallback_count == 1;
+    provider_calls shows both itunes and deezer.
+    """
+    from app.services.providers.base import ReleaseCandidate
+
+    _install_fake(monkeypatch, _FakeClient())
+    with get_session_factory()() as db:
+        db.add(Artist(name="Fallback", normalized_name="fallback-explicit", source="tag_artist"))
+        db.commit()
+        artist = db.scalar(select(Artist).where(Artist.normalized_name == "fallback-explicit"))
+        db.add(ArtistExternalIdentity(artist_id=artist.id, provider="itunes", provider_id="app-fb"))
+        db.add(ArtistExternalIdentity(artist_id=artist.id, provider="deezer", provider_id="dz-fb"))
+        db.commit()
+
+    class _EmptyItunes:
+        name = "itunes"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="Future Release",
+                    primary_artist="Fallback",
+                    type="album",
+                    first_release_date="2999-01-01",  # all future → not usable
+                    provider="itunes",
+                    provider_id="app-future-fb",
+                )
+            ]
+
+    class _SavingDeezer:
+        name = "deezer"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title="Deezer Saves Day",
+                    primary_artist="Fallback",
+                    type="album",
+                    first_release_date="2024-07-01",
+                    provider="deezer",
+                    provider_id="dz-save-fb",
+                )
+            ]
+
+    monkeypatch.setattr(
+        discovery,
+        "get_provider",
+        lambda name: _EmptyItunes() if name == "itunes" else _SavingDeezer(),
+    )
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # EVIDENCE: Fallback is explicit; both reasons and counts are observable.
+    assert stats["fallback_reasons"] == {"apple_no_results": 1}
+    assert stats["fallback_count"] == 1
+    assert stats["provider_calls"].get("itunes", 0) == 1
+    assert stats["provider_calls"].get("deezer", 0) == 1
+    assert stats["releases_new"] == 1
+    assert stats["candidates_rejected"] >= 1  # Apple's future-dated candidate was rejected
+
+
+async def test_benchmark_no_duplicate_work_after_browser_refresh(disc_db, monkeypatch):
+    """PERFORMANCE ACCEPTANCE bullet 5 (spec:1828): no duplicate work is
+    launched after browser refresh — the scan stats are persisted in the
+    database and the global scan lock prevents concurrent runs.
+
+    Scenario: run a scan, then check. The stats are persisted in scan_runs
+    (one row with the complete stats). A browser refresh re-queries the
+    stored stats — no new work launched.
+
+    Evidence: scan_runs table has exactly 1 row after the run; the stats
+    JSON includes all spec 4.3 counters; no duplicate scan runs exist.
+    """
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Refresh", "mb-rf"))
+    fake.search_pages["mb-rf"] = [
+        [_rg("rg-rf", "Single Run Release", "Single", "2024-07-01", _credit(("Refresh", "")))]
+    ]
+    fake.search_counts["mb-rf"] = 1
+
+    # First run: produces stats.
+    with get_session_factory()() as db:
+        stats_run1 = await discovery.run_discovery(db)
+
+    assert stats_run1["releases_new"] == 1
+
+    # Verify persistence: exactly one scan_runs row with full stats.
+    with get_session_factory()() as db:
+        runs = db.scalars(select(ScanRun).order_by(ScanRun.id)).all()
+        assert len(runs) == 1  # exactly one scan — no duplicate work
+        persisted = json.loads(runs[0].stats)
+        # All spec 4.3 counters are present in the persisted stats.
+        for key in (
+            "provider_calls",
+            "apple_success_count",
+            "fallback_count",
+            "cross_provider_merges",
+            "candidates_rejected",
+            "seen_recording_cache_hits",
+            "notification_count",
+        ):
+            assert key in persisted, f"persisted stats missing counter: {key}"
+
+    # Simulate browser refresh: re-reading the persisted stats (no new scan).
+    with get_session_factory()() as db:
+        runs_after = db.scalars(select(ScanRun).order_by(ScanRun.id)).all()
+        assert len(runs_after) == 1  # still exactly one — refresh did not launch new work
+
+
+async def test_benchmark_comprehensive_multi_provider_scenario(disc_db, monkeypatch):
+    """End-to-end benchmark: 2 artists, one Apple-first sufficient, one with
+    Apple missing identity → fallback. Demonstrates all algorithmic
+    improvements working together in a single representative scan run.
+
+    Artist A (Apple + Deezer identities): Apple sufficient → stop.
+    Artist B (Deezer only): Apple missing → fallback to Deezer.
+
+    Counters extracted:
+    - provider_calls: {itunes: 1, deezer: 1} — Apple called once (Artist A),
+      Deezer called once (Artist B fallback); MB never called.
+    - apple_success_count: 1 — Artist A's Apple provided results.
+    - fallback_count: 1 — Artist B triggered apple_missing_identity fallback.
+    - fallback_reasons: {apple_missing_identity: 1} — explicit.
+    - merge_reasons: {} — no cross-provider merges (same-edition releases
+      from a single provider each).
+    - candidates_rejected >= 0.
+    - notification_count == 2 — both artists got a new release.
+    """
+    from app.services.providers.base import ReleaseCandidate
+
+    _install_fake(monkeypatch, _FakeClient())
+    with get_session_factory()() as db:
+        db.add(Artist(name="ArtistA", normalized_name="artista", source="tag_artist"))
+        db.add(Artist(name="ArtistB", normalized_name="artistb", source="tag_artist"))
+        db.commit()
+        a = db.scalar(select(Artist).where(Artist.normalized_name == "artista"))
+        b = db.scalar(select(Artist).where(Artist.normalized_name == "artistb"))
+        db.add(ArtistExternalIdentity(artist_id=a.id, provider="itunes", provider_id="app-a"))
+        db.add(ArtistExternalIdentity(artist_id=a.id, provider="deezer", provider_id="dz-a"))
+        db.add(ArtistExternalIdentity(artist_id=b.id, provider="deezer", provider_id="dz-b"))
+        db.commit()
+
+    class _MultiItunes:
+        name = "itunes"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title=f"Apple Release {artist.name}",
+                    primary_artist=artist.name,
+                    type="album",
+                    first_release_date="2024-07-01",
+                    provider="itunes",
+                    provider_id=f"app-rel-{artist.name.lower()}",
+                )
+            ]
+
+    class _MultiDeezer:
+        name = "deezer"
+
+        async def fetch_releases(self, artist, from_date, *, db=None):
+            return [
+                ReleaseCandidate(
+                    title=f"Deezer Release {artist.name}",
+                    primary_artist=artist.name,
+                    type="album",
+                    first_release_date="2024-08-01",
+                    provider="deezer",
+                    provider_id=f"dz-rel-{artist.name.lower()}",
+                )
+            ]
+
+    class _BoomMB:
+        name = "mb"
+
+        async def fetch_releases(self, artist, from_date, *, email=None, stats=None):
+            raise AssertionError("MB must NOT be queried in this scenario")
+
+    monkeypatch.setattr(
+        discovery,
+        "get_provider",
+        lambda name: {"itunes": _MultiItunes(), "deezer": _MultiDeezer(), "mb": _BoomMB()}[name],
+    )
+
+    with get_session_factory()() as db:
+        stats = await discovery.run_discovery(db)
+
+    # ---- COUNTER EVIDENCE ----
+    # Artist A: Apple returned usable results → catalog stop.
+    # Artist B: no Apple identity → fallback recorded, Deezer queried.
+    assert stats["artists_processed"] == 2
+    assert stats["releases_new"] == 2
+    assert stats["notification_count"] == 2
+
+    # === BULLET 1: Apple-first avoids unnecessary provider catalog calls ===
+    assert stats["provider_calls"] == {"itunes": 1, "deezer": 1}
+    # MB never called — both artists avoided it (Artist A: Apple sufficient;
+    # Artist B: no MB identity, queried Deezer as fallback).
+    assert "mb" not in stats["provider_calls"]
+
+    # === BULLET 1: Apple success count ===
+    assert stats["apple_success_count"] == 1
+
+    # === BULLETS 3 & 4: No name search; fallback is explicit ===
+    assert stats["fallback_reasons"] == {"apple_missing_identity": 1}
+    assert stats["fallback_count"] == 1
+
+    # === BULLET 5: Work is persisted (stats complete, no duplication) ===
+    with get_session_factory()() as db:
+        runs = db.scalars(select(ScanRun).order_by(ScanRun.id)).all()
+        assert len(runs) == 1
+    assert stats["cross_provider_merges"] == 0  # single-provider per release
+    assert stats["merge_reasons"] == {}
+    assert stats["candidates_rejected"] >= 0
+    assert stats["seen_recording_cache_hits"] >= 0

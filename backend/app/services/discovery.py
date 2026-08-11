@@ -136,6 +136,16 @@ FALLBACK_REASON_KEYS = (
 # spec:186 "Apple returns no usable releases for the requested period").
 _APPLE_MIN_USABLE_RESULTS = 1
 
+# Phase 4.1 (spec 4.1/4.2): SeenRecording evaluation states. ``seen`` = the
+# recording's fetch SUCCEEDED and every release was evaluated (accepted or
+# rejected) under its stored ``policy_fingerprint`` — remembered, not
+# re-fetched while the fingerprint is unchanged (spec 4.2: a seen evaluation
+# only counts under the matching fingerprint). ``failed`` = a provider fetch
+# failed; the recording stays retryable because ``_recording_seen`` only
+# counts complete evaluations under the matching fingerprint.
+SEEN_RECORDING_EVALUATED = "seen"
+SEEN_RECORDING_FAILED = "failed"
+
 
 def _catalog_providers_for_artist(
     identities: list[ArtistExternalIdentity],
@@ -167,6 +177,7 @@ def _record_fallback_reason(stats: dict, reason: str) -> None:
     """
     reasons = stats["fallback_reasons"]
     reasons[reason] = reasons.get(reason, 0) + 1
+    stats["fallback_count"] = stats.get("fallback_count", 0) + 1
 
 
 def _identity_artist_snapshot(artist: Artist, identity: ArtistExternalIdentity) -> Artist:
@@ -447,12 +458,97 @@ def _store_tracks(db: Session, release_id: int, tracks) -> None:
         )
 
 
-def _recording_seen(db: Session, recording_mbid: str) -> bool:
-    return db.get(SeenRecording, recording_mbid) is not None
+def _recording_seen(db: Session, recording_mbid: str, policy_fingerprint: str) -> bool:
+    """True when the recording holds a COMPLETE evaluation made under the
+    CURRENT policy fingerprint (spec 4.1/4.2).
+
+    State 'seen' alone is not enough: the evaluation only counts when it was
+    recorded under the same policy fingerprint that governs this feat run
+    (spec:1046-1052). A 'seen' row whose stored fingerprint differs — or that
+    predates the fingerprint entirely (legacy ``policy_fingerprint IS NULL``
+    rows, spec:1054) — does NOT count, so the recording is evaluated again. A
+    'failed' row never counts: the provider fetch failed and the recording
+    must be retried next run.
+    """
+    row = db.get(SeenRecording, recording_mbid)
+    return (
+        row is not None
+        and row.evaluation_state == SEEN_RECORDING_EVALUATED
+        and row.policy_fingerprint == policy_fingerprint
+    )
 
 
-def _mark_recording_seen(db: Session, artist_id: int, recording_mbid: str) -> None:
-    db.add(SeenRecording(recording_mbid=recording_mbid, artist_id=artist_id, first_seen=utc_now()))
+def _upsert_recording_state(
+    db: Session,
+    artist_id: int,
+    recording_mbid: str,
+    state: str,
+    policy_fingerprint: str | None = None,
+) -> None:
+    """Insert or update one SeenRecording evaluation row (phase 4.1).
+
+    ``recording_mbid`` is the primary key, so a previously-recorded 'failed'
+    row is upgraded in place when the same recording is later evaluated (and
+    the state columns are rewritten when a seen evaluation would re-run):
+    ``first_seen`` keeps the first time the recording surfaced.
+    """
+    now = utc_now()
+    evaluated_at = now if state == SEEN_RECORDING_EVALUATED else None
+    stmt = (
+        sqlite_insert(SeenRecording)
+        .values(
+            recording_mbid=recording_mbid,
+            artist_id=artist_id,
+            first_seen=now,
+            evaluation_state=state,
+            policy_fingerprint=policy_fingerprint,
+            evaluated_at=evaluated_at,
+        )
+        .on_conflict_do_update(
+            index_elements=["recording_mbid"],
+            set_={
+                "artist_id": artist_id,
+                "evaluation_state": state,
+                "policy_fingerprint": policy_fingerprint,
+                "evaluated_at": evaluated_at,
+            },
+        )
+    )
+    db.execute(stmt)
+
+
+def _mark_recording_seen(db: Session, artist_id: int, recording_mbid: str, policy_fingerprint: str) -> None:
+    """Remember a recording whose fetch SUCCEEDED and whose releases were all
+    evaluated (accepted or rejected) under the current policy fingerprint
+    (spec 4.1/4.2): it is not re-fetched next run while the fingerprint is
+    unchanged (``_recording_seen`` only counts evaluations recorded under the
+    matching fingerprint; the state + fingerprint are recorded here)."""
+    _upsert_recording_state(db, artist_id, recording_mbid, SEEN_RECORDING_EVALUATED, policy_fingerprint)
+
+
+def _mark_recording_failed(db: Session, artist_id: int, recording_mbid: str) -> None:
+    """Record a recording whose provider fetch failed (spec 4.1): the row is
+    kept in state 'failed' so the recording is retried next run (a failed row
+    is not 'seen')."""
+    _upsert_recording_state(db, artist_id, recording_mbid, SEEN_RECORDING_FAILED)
+
+
+def _policy_fingerprint(db: Session) -> str:
+    """Stable fingerprint of the settings that alter feat-candidate eligibility
+    (spec 4.2): discovery window, effective allowed release types and the
+    official-only filter — exactly the filters the level-2 candidate path
+    applies. Stored with every SeenRecording evaluation; fingerprint equality
+    drives the skip in ``_level2_artist`` (same fingerprint + complete
+    evaluation -> no provider work, spec:1046-1052)."""
+    return json.dumps(
+        {
+            "discovery_from_date": _discovery_from_date(db).isoformat(),
+            "allowed_types": sorted(_allowed_types(db)),
+            "official_only": _official_filter_enabled(db),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 async def _process_candidate(
@@ -481,10 +577,12 @@ async def _process_candidate(
     title = candidate.title.strip()
     if not title:
         logger.warning("skipping candidate without title (provider=%s)", candidate.provider)
+        stats["candidates_rejected"] += 1
         return None
     first_release_date = candidate.first_release_date or ""
     if not first_release_date:
         stats["skipped_no_date"] += 1
+        stats["candidates_rejected"] += 1
         return None
 
     match = None
@@ -509,10 +607,12 @@ async def _process_candidate(
         # groups are never turned into accepted releases.
         is_reissue = not in_range and first_release_date < discovery_from.isoformat()
         if official_filter or is_reissue:
+            stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
             details = await provider.release_group_details(candidate.rgid, _contact_email(db), stats=stats)
         if details is not None:
             if official_filter and not provider.has_official_release(details):
                 stats["skipped_not_official"] += 1
+                stats["candidates_rejected"] += 1
                 logger.info(
                     "skipping release-group %s (no official release): %s",
                     candidate.rgid,
@@ -525,11 +625,14 @@ async def _process_candidate(
                 candidate.first_release_date = official_date
         elif not in_range:
             # Details failed and the group is outside the window: nothing to rescue.
+            stats["candidates_rejected"] += 1
             return None
     if not release_in_range(first_release_date, discovery_from):
+        stats["candidates_rejected"] += 1
         return None
     if candidate.type not in allowed_types:
         stats["skipped_type"] += 1
+        stats["candidates_rejected"] += 1
         return None
 
     if existing is None:
@@ -562,6 +665,7 @@ async def _process_candidate(
             # never ids/URLs) so run diagnostics stay observable.
             merge_reasons = stats["merge_reasons"]
             merge_reasons[match.decision] = merge_reasons.get(match.decision, 0) + 1
+            stats["cross_provider_merges"] += 1
 
     effective_role = role if role is not None else _role_for(artist, candidate.primary_artist)
     _add_release_artist(db, row.id, artist.id, effective_role)
@@ -628,6 +732,7 @@ async def _level1_artist(
         identity = next(row for row in identities if row.provider == provider_name)
         snapshot = _identity_artist_snapshot(artist, identity)
         try:
+            stats["provider_calls"][provider_name] = stats["provider_calls"].get(provider_name, 0) + 1
             if provider.name == PROVIDER_MB:
                 candidates = await provider.fetch_releases(
                     snapshot, from_date, email=_contact_email(db), stats=stats
@@ -672,6 +777,8 @@ async def _level1_artist(
             )
             continue
         if provider_name == PROVIDER_ITUNES:
+            if accepted > 0:
+                stats["apple_success_count"] += 1
             if accepted >= _APPLE_MIN_USABLE_RESULTS:
                 # Apple covered the window: stop the redundant catalog discovery
                 # (spec:869-871); the remaining providers are not queried.
@@ -707,6 +814,7 @@ async def _level2_artist(
     artist: Artist,
     discovery_from: date,
     allowed_types: set[str],
+    policy_fingerprint: str,
     stats: dict,
     new_keys: list[tuple[str, str]],
     new_release_ids: list[int],
@@ -724,10 +832,16 @@ async def _level2_artist(
     identity's presence and queried by its provider_id, never by the legacy
     ``artist.mbid`` column).
 
-    Only recordings not present in ``seen_recordings`` are processed; a
-    recording is marked seen only when all its release-group fetches
-    succeeded, so a partial failure is retried the next run. Each browsed
-    artist records the ``credits_enrichment`` fallback reason (spec:878).
+    Only recordings WITHOUT a complete evaluation under the current policy
+    fingerprint (``_recording_seen``) are processed (spec 4.2): a 'seen'
+    evaluation counts only when its stored fingerprint matches this run's —
+    same fingerprint + complete evaluation skips provider work, a different
+    fingerprint evaluates again (spec:1046-1052). A successful fetch marks the
+    recording 'seen' with the current policy fingerprint even when every
+    release is rejected (spec 4.1 — a rejected-but-fetched recording is
+    remembered, not re-fetched weekly), while a failed fetch is recorded
+    'failed' so the recording stays retryable next run. Each browsed artist
+    records the ``credits_enrichment`` fallback reason (spec:878).
     """
     mb_identity = next(
         (identity for identity in list_identities(db, artist) if identity.provider == PROVIDER_MB),
@@ -751,6 +865,7 @@ async def _level2_artist(
             )
             break
         stats["api_calls"] += 1
+        stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
         data = await client.browse_artist_recordings(mb_identity.provider_id, limit=_PAGE_SIZE, offset=offset)
         recordings = data.get("recordings") or []
         count = data.get("recording-count") or data.get("count") or count
@@ -760,24 +875,26 @@ async def _level2_artist(
             logger.info("level-2: artist id=%s name=%s page=%d", artist.id, artist.name, pages)
         for recording in recordings:
             recording_mbid = recording.get("id")
-            if not recording_mbid or _recording_seen(db, recording_mbid):
+            if not recording_mbid or _recording_seen(db, recording_mbid, policy_fingerprint):
+                stats["seen_recording_cache_hits"] += 1
                 continue
             try:
                 stats["api_calls"] += 1
+                stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
                 details = await client.get_recording_with_releases(recording_mbid)
                 releases = details.get("releases") or []
-                accepted_any = False
                 for release in releases:
                     release_id = release.get("id")
                     if not release_id:
                         continue
                     stats["api_calls"] += 1
+                    stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
                     release_data = await client.get_release(release_id)
                     release_group = release_data.get("release-group")
                     if not release_group or not release_group.get("id"):
                         continue
                     candidate = provider._candidate_from_group(release_group, artist)
-                    if await _process_candidate(
+                    await _process_candidate(
                         db,
                         artist,
                         candidate,
@@ -787,17 +904,27 @@ async def _level2_artist(
                         role=ROLE_FEATURED,
                         new_keys=new_keys,
                         new_release_ids=new_release_ids,
-                    ):
-                        accepted_any = True
+                    )
                     # Phase 12b: release the write lock before the next network
                     # call (slow MusicBrainz requests must not lock the DB).
                     db.commit()
             except MBError:
+                # Spec 4.1: a failed fetch is a FAILED state, not a rejection —
+                # the recording stays retryable next run (a 'failed' row is not
+                # seen). The rollback guarantees a clean session before the
+                # failed row is written (the per-candidate commits already
+                # released the write lock; this is a no-op safeguard).
+                db.rollback()
                 _record_fallback_reason(stats, FALLBACK_PROVIDER_FAILURE)
                 logger.warning("level-2: release fetch failed for recording %s", recording_mbid)
+                _mark_recording_failed(db, artist.id, recording_mbid)
                 continue
-            if not releases or accepted_any:
-                _mark_recording_seen(db, artist.id, recording_mbid)
+            # Spec 4.1: the fetch SUCCEEDED and every release was evaluated
+            # (accepted or rejected) — the recording is remembered for the
+            # current policy fingerprint instead of being re-fetched weekly.
+            # The skip above is fingerprint-gated (spec 4.2): the recording is
+            # re-evaluated only when the policy fingerprint changes.
+            _mark_recording_seen(db, artist.id, recording_mbid, policy_fingerprint)
         offset += _PAGE_SIZE
         if not recordings or (count is not None and offset >= count):
             break
@@ -818,9 +945,19 @@ async def _level2(db: Session, stats: dict, new_keys: list, new_release_ids: lis
     scan_locks.update_progress(SCAN_TYPE_FEAT, total=len(artists), phase="level 2")
     discovery_from = _discovery_from_date(db)
     allowed_types = _allowed_types(db)
+    policy_fingerprint = _policy_fingerprint(db)
     for index, artist in enumerate(artists, start=1):
         try:
-            await _level2_artist(db, artist, discovery_from, allowed_types, stats, new_keys, new_release_ids)
+            await _level2_artist(
+                db,
+                artist,
+                discovery_from,
+                allowed_types,
+                policy_fingerprint,
+                stats,
+                new_keys,
+                new_release_ids,
+            )
             db.commit()
             scan_locks.update_progress(SCAN_TYPE_FEAT, done=index)
         except MBError:
@@ -1010,6 +1147,14 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         "links_resolved": 0,
         "pipeline_errors": 0,
         "fallback_reasons": {},
+        # Spec 4.3: performance counters (non-secret, additive).
+        "provider_calls": {},
+        "apple_success_count": 0,
+        "fallback_count": 0,
+        "cross_provider_merges": 0,
+        "candidates_rejected": 0,
+        "seen_recording_cache_hits": 0,
+        "notification_count": 0,
         "duration_s": 0.0,
     }
     if feat_scan:
@@ -1033,6 +1178,7 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         # Spec 8.4.3: one aggregate notification per run, never one per release.
         if new_release_ids:
             await notify_service.maybe_notify_new_releases(new_release_ids)
+            stats["notification_count"] = len(new_release_ids)
     except asyncio.CancelledError:
         logger.warning("discovery cancelled mid-run type=%s", scan_type)
         status = "error"
