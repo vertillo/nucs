@@ -251,6 +251,56 @@ export function useLinkArtist() {
   })
 }
 
+export interface UpsertIdentityPayload {
+  id: number
+  provider: ArtistProvider
+  provider_id: string
+  external_url?: string | null
+}
+
+/** Add/replace exactly one provider identity of an artist (spec 1.3); the
+ * artist's other identities are never touched. */
+export function useUpsertIdentity() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, provider, provider_id, external_url }: UpsertIdentityPayload) =>
+      apiFetch<ArtistItem>(`/api/v1/artists/${id}/identities/${provider}`, {
+        method: 'PUT',
+        body: JSON.stringify({ provider_id, external_url: external_url ?? null }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artists'] })
+      queryClient.invalidateQueries({ queryKey: ['artists-count'] })
+    },
+  })
+}
+
+/** Unlink exactly one provider identity of an artist (spec:687). */
+export function useUnlinkIdentity() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, provider }: { id: number; provider: string }) =>
+      apiFetch<{ removed: boolean }>(`/api/v1/artists/${id}/identities/${provider}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artists'] })
+      queryClient.invalidateQueries({ queryKey: ['artists-count'] })
+    },
+  })
+}
+
+/** Unlink every identity of an artist; it returns to Needs match unless ignored. */
+export function useUnlinkAllIdentities() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) =>
+      apiFetch<{ removed: number }>(`/api/v1/artists/${id}/identities`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['artists'] })
+      queryClient.invalidateQueries({ queryKey: ['artists-count'] })
+    },
+  })
+}
+
 /** Delete an artist (release links cascade; releases stay). */
 export function useDeleteArtist() {
   const queryClient = useQueryClient()
