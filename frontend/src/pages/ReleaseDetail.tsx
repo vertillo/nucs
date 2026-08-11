@@ -264,17 +264,31 @@ export default function ReleaseDetail() {
           </div>
 
           <div className="mt-6 flex flex-wrap gap-2">
+            {release.classification !== 'upcoming' ? (
+              <button
+                type="button"
+                aria-pressed={!!release.seen}
+                onClick={() => setState.mutate({ seen: !release.seen })}
+                className={`rounded-full px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                  release.seen
+                    ? 'bg-accent text-black'
+                    : 'border border-light-border text-light-textDim hover:text-light-text dark:border-dark-border dark:text-dark-textDim dark:hover:text-dark-text'
+                }`}
+              >
+                Seen
+              </button>
+            ) : null}
             <button
               type="button"
-              aria-pressed={!!release.seen}
-              onClick={() => setState.mutate({ seen: !release.seen })}
+              aria-pressed={!!release.favorite}
+              onClick={() => setState.mutate({ favorite: !release.favorite })}
               className={`rounded-full px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                release.seen
+                release.favorite
                   ? 'bg-accent text-black'
                   : 'border border-light-border text-light-textDim hover:text-light-text dark:border-dark-border dark:text-dark-textDim dark:hover:text-dark-text'
               }`}
             >
-              Seen
+              ★ Favorite
             </button>
             <button
               type="button"

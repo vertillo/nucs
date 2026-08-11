@@ -100,14 +100,16 @@ export default function ReleaseCard({
       to={`/releases/${release.id}`}
       className="group relative flex flex-col gap-2 rounded-2xl bg-light-surface p-2 transition-transform hover:scale-[1.02] hover:shadow-lg hover:shadow-black/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent dark:bg-dark-surface dark:hover:shadow-black/40"
     >
-      <div className="absolute right-3.5 top-3.5 z-10 flex items-center gap-1.5">
-        {isNew && (
-          <span
-            aria-label="New"
-            className="h-2.5 w-2.5 rounded-full bg-accent shadow-sm shadow-black/30"
-          />
-        )}
-        {onToggleSeen && (
+      {/* Spec 5.4 (spec:1159): without onToggleSeen (upcoming view) the card
+          carries no seen semantics — neither the toggle nor the new-dot. */}
+      {onToggleSeen && (
+        <div className="absolute right-3.5 top-3.5 z-10 flex items-center gap-1.5">
+          {isNew && (
+            <span
+              aria-label="New"
+              className="h-2.5 w-2.5 rounded-full bg-accent shadow-sm shadow-black/30"
+            />
+          )}
           <button
             type="button"
             aria-label={release.seen ? 'Mark as unseen' : 'Mark as seen'}
@@ -126,8 +128,8 @@ export default function ReleaseCard({
           >
             <EyeIcon filled={!!release.seen} />
           </button>
-        )}
-      </div>
+        </div>
+      )}
       <CardCover coverKey={release.cover_key} hasCover={!!release.cover_path} />
       <div className="px-1 pb-1">
         <h3 className="line-clamp-2 text-sm font-semibold text-light-text dark:text-dark-text">

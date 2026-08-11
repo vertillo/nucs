@@ -10,6 +10,7 @@ import {
   type ReleaseFilters,
   type ReleaseListItem,
   type ReleaseType,
+  type ReleaseView,
 } from '../api/releases'
 import { useScanStatus, useStartScan } from '../api/settings'
 import { useTrackedArtistsCount } from '../api/artists'
@@ -23,6 +24,11 @@ const TYPE_CHIPS: { value: ReleaseType | 'all'; label: string }[] = [
   { value: 'ep', label: 'EPs' },
 ]
 
+const VIEW_TABS: { value: ReleaseView; label: string }[] = [
+  { value: 'released', label: 'Released' },
+  { value: 'upcoming', label: 'Upcoming' },
+]
+
 function SkeletonCard() {
   return (
     <div className="flex flex-col gap-2 rounded-2xl bg-light-surface p-2 dark:bg-dark-surface">
@@ -33,7 +39,7 @@ function SkeletonCard() {
   )
 }
 
-function EmptyState() {
+function EmptyState({ view }: { view: ReleaseView }) {
   return (
     <div className="flex flex-col items-center gap-3 py-16 text-center">
       <svg
@@ -48,7 +54,9 @@ function EmptyState() {
         <circle cx="6" cy="18" r="3" />
         <circle cx="18" cy="16" r="3" />
       </svg>
-      <p className="text-lg font-semibold text-light-text dark:text-dark-text">No new releases</p>
+      <p className="text-lg font-semibold text-light-text dark:text-dark-text">
+        {view === 'upcoming' ? 'No upcoming releases' : 'No new releases'}
+      </p>
       <p className="text-sm text-light-textDim dark:text-dark-textDim">
         Try running a scan from{' '}
         <Link
@@ -130,7 +138,10 @@ export default function Feed() {
   const type: ReleaseType | 'all' = TYPE_CHIPS.some((chip) => chip.value === rawType)
     ? (rawType as ReleaseType | 'all')
     : 'all'
-  const unseenOnly = searchParams.get('unseen') === '1'
+  const view: ReleaseView = searchParams.get('view') === 'upcoming' ? 'upcoming' : 'released'
+  // Spec 5.4 (spec:1157): seen semantics don't apply to the upcoming view, so a
+  // stale ?unseen=1 in the URL must not filter upcoming results.
+  const unseenOnly = view === 'released' && searchParams.get('unseen') === '1'
   const q = searchParams.get('q') ?? ''
   const [searchInput, setSearchInput] = useState(q)
 
@@ -164,7 +175,19 @@ export default function Feed() {
     setSearchParams(next, { replace: true })
   }
 
-  const filters: ReleaseFilters = { type, unseenOnly, q }
+  // The view tab also drops ?unseen when entering upcoming (its control is hidden there).
+  function handleViewChange(nextView: ReleaseView) {
+    const next = new URLSearchParams(searchParamsRef.current)
+    if (nextView === 'upcoming') {
+      next.set('view', 'upcoming')
+      next.delete('unseen')
+    } else {
+      next.delete('view')
+    }
+    setSearchParams(next, { replace: true })
+  }
+
+  const filters: ReleaseFilters = { type, unseenOnly, q, view }
   const { data, isPending, isError, refetch, hasNextPage, isFetchingNextPage, fetchNextPage } =
     useReleases(filters)
   const seenAll = useSeenAll()
@@ -212,6 +235,29 @@ export default function Feed() {
     <div>
       <h1 className="text-2xl font-bold text-light-text dark:text-dark-text">New releases</h1>
 
+      <div
+        role="tablist"
+        aria-label="Release view"
+        className="mt-4 inline-flex rounded-full bg-light-surface2 p-1 dark:bg-dark-surface2"
+      >
+        {VIEW_TABS.map(({ value, label }) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={view === value}
+            onClick={() => handleViewChange(value)}
+            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+              view === value
+                ? 'bg-accent text-black'
+                : 'text-light-textDim hover:text-light-text dark:text-dark-textDim dark:hover:text-dark-text'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1">
           {TYPE_CHIPS.map(({ value, label }) => (
@@ -231,25 +277,27 @@ export default function Feed() {
           ))}
         </div>
 
-        <label className="flex cursor-pointer items-center gap-2">
-          <span className="text-sm text-light-textDim dark:text-dark-textDim">Unseen only</span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={unseenOnly}
-            aria-label="Unseen only"
-            onClick={() => updateParam('unseen', unseenOnly ? null : '1')}
-            className={`relative h-5 w-9 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-              unseenOnly ? 'bg-accent' : 'bg-light-border dark:bg-dark-border'
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-4 w-4 rounded-full bg-light-bg transition-all dark:bg-dark-bg ${
-                unseenOnly ? 'left-[18px]' : 'left-0.5'
+        {view === 'released' && (
+          <label className="flex cursor-pointer items-center gap-2">
+            <span className="text-sm text-light-textDim dark:text-dark-textDim">Unseen only</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={unseenOnly}
+              aria-label="Unseen only"
+              onClick={() => updateParam('unseen', unseenOnly ? null : '1')}
+              className={`relative h-5 w-9 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                unseenOnly ? 'bg-accent' : 'bg-light-border dark:bg-dark-border'
               }`}
-            />
-          </button>
-        </label>
+            >
+              <span
+                className={`absolute top-0.5 h-4 w-4 rounded-full bg-light-bg transition-all dark:bg-dark-bg ${
+                  unseenOnly ? 'left-[18px]' : 'left-0.5'
+                }`}
+              />
+            </button>
+          </label>
+        )}
 
         <input
           type="search"
@@ -260,14 +308,16 @@ export default function Feed() {
           className="min-w-0 flex-1 rounded-full border border-light-border bg-light-surface px-4 py-1.5 text-sm text-light-text outline-none focus:ring-2 focus:ring-accent dark:border-dark-border dark:bg-dark-surface dark:text-dark-text sm:max-w-[220px]"
         />
 
-        <button
-          type="button"
-          onClick={handleMarkAllSeen}
-          disabled={seenAll.isPending}
-          className="rounded-full px-3 py-1.5 text-sm text-light-textDim transition-colors hover:text-light-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:text-dark-textDim dark:hover:text-dark-text"
-        >
-          Mark all as seen
-        </button>
+        {view === 'released' && (
+          <button
+            type="button"
+            onClick={handleMarkAllSeen}
+            disabled={seenAll.isPending}
+            className="rounded-full px-3 py-1.5 text-sm text-light-textDim transition-colors hover:text-light-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 dark:text-dark-textDim dark:hover:text-dark-text"
+          >
+            Mark all as seen
+          </button>
+        )}
 
         <button
           type="button"
@@ -303,7 +353,7 @@ export default function Feed() {
 
       {!isPending && !isError && noTrackedArtists && <NoArtistsState />}
 
-      {!isPending && !isError && !noTrackedArtists && items.length === 0 && <EmptyState />}
+      {!isPending && !isError && !noTrackedArtists && items.length === 0 && <EmptyState view={view} />}
 
       {!isPending && !isError && items.length > 0 && (
         <>
@@ -317,7 +367,11 @@ export default function Feed() {
               </h2>
               <div className="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
                 {group.items.map((release) => (
-                  <ReleaseCard key={release.id} release={release} onToggleSeen={handleToggleSeen} />
+                  <ReleaseCard
+                    key={release.id}
+                    release={release}
+                    onToggleSeen={view === 'released' ? handleToggleSeen : undefined}
+                  />
                 ))}
               </div>
             </section>
