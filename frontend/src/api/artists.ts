@@ -3,6 +3,15 @@ import { apiFetch, get } from './client'
 
 export type ArtistSource = 'tag_artist' | 'tag_albumartist' | 'tag_feat' | 'tag_contrib' | 'tag_remix' | 'manual'
 export type ArtistProvider = 'mb' | 'deezer' | 'itunes' | 'discogs' | 'soundcloud' | 'beatport' | 'manual'
+export type ArtistStatus = 'Linked' | 'Needs match' | 'Ignored'
+
+export interface ArtistIdentity {
+  provider: string
+  provider_id: string
+  external_url: string | null
+  match_score: number | null
+  link_method: string | null
+}
 
 export interface ArtistItem {
   id: number
@@ -14,6 +23,11 @@ export interface ArtistItem {
   mbid: string | null
   mb_match_score: number | null
   ignored: 0 | 1
+  /* Phase 1 identity-model additions — additive; legacy provider/mbid fields
+   * still present in the API during the contract freeze (phase 8 retires them). */
+  status: ArtistStatus
+  identities: ArtistIdentity[]
+  split_from_artist_id: number | null
   releases_count: number
   source_files: string[]
 }
