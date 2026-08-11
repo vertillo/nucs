@@ -1642,3 +1642,230 @@ async def test_api_scan_feat_202_when_enabled(client, monkeypatch):
         await asyncio.sleep(0.02)
     with get_session_factory()() as db:
         assert db.scalar(select(ScanRun).order_by(ScanRun.id.desc())).type == "feat"
+
+
+# --- Release external identities (spec 1.4) -----------------------------------
+
+
+def _candidate(
+    provider, provider_id, *, title="Album X", date_="2024-07-01", rgid=None, tracks=(), urls=None
+):
+    """A crafted ReleaseCandidate for the identity wiring tests below."""
+    from app.services.providers.base import ReleaseCandidate
+
+    return ReleaseCandidate(
+        title=title,
+        primary_artist="Mio",
+        type="album",
+        first_release_date=date_,
+        provider=provider,
+        provider_id=provider_id,
+        rgid=rgid,
+        tracks=list(tracks),
+        urls=urls or {},
+    )
+
+
+def _process_stats() -> dict:
+    return {
+        "api_calls": 0,
+        "skipped_no_date": 0,
+        "skipped_type": 0,
+        "skipped_not_official": 0,
+        "releases_new": 0,
+        "releases_updated": 0,
+    }
+
+
+async def _process_candidate(db, artist, candidate, *, stats=None):
+    return await discovery._process_candidate(
+        db,
+        artist,
+        candidate,
+        date(2024, 1, 1),
+        {"album", "single", "ep"},
+        stats if stats is not None else _process_stats(),
+    )
+
+
+class _FakeMBProvider:
+    """Inert MusicBrainz provider for direct MB-candidate tests (spec 1.4):
+    every release group is official, so no real network is ever touched."""
+
+    name = "mb"
+
+    async def release_group_details(self, rgid, email=None, stats=None):
+        if stats is not None:
+            stats["api_calls"] += 1
+        return {"releases": [{"id": f"rel-{rgid}", "date": "2024-07-01", "status": "official"}]}
+
+    def has_official_release(self, details):
+        return True
+
+    def earliest_official_release_date(self, details):
+        return "2024-07-01"
+
+    def earliest_official_release_id(self, details):
+        return details["releases"][0]["id"]
+
+
+async def test_creation_records_release_external_identity(disc_db):
+    """A new canonical release row gets its (provider, provider_id) recorded as
+    a ReleaseExternalIdentity at creation (spec 1.4)."""
+    from app.models import ReleaseExternalIdentity
+
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        stats = _process_stats()
+        await _process_candidate(db, artist, _candidate("deezer", "dz-100"), stats=stats)
+        db.commit()
+        assert stats["releases_new"] == 1
+        row = db.scalar(select(Release))
+        identity = db.scalar(
+            select(ReleaseExternalIdentity).where(ReleaseExternalIdentity.release_id == row.id)
+        )
+        assert identity is not None
+        assert (identity.provider, identity.provider_id) == ("deezer", "dz-100")
+
+
+async def test_creation_identity_keeps_direct_provider_url(disc_db):
+    """The identity row stores the candidate's direct catalog URL (spec 1.4)."""
+    from app.models import ReleaseExternalIdentity
+
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        await _process_candidate(
+            db,
+            artist,
+            _candidate("itunes", "app-1", urls={"apple_music": "https://music.apple.com/album/app-1"}),
+        )
+        db.commit()
+        row = db.scalar(select(Release))
+        identity = db.scalar(
+            select(ReleaseExternalIdentity).where(ReleaseExternalIdentity.release_id == row.id)
+        )
+        assert identity.external_url == "https://music.apple.com/album/app-1"
+
+
+async def test_find_existing_release_reuses_by_exact_identity(disc_db):
+    """A candidate whose exact (provider, provider_id) already exists reuses the
+    canonical release even when title/date differ (identity lookup first)."""
+    from app.services.artist_identity import find_release_by_external_identity
+
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        await _process_candidate(db, artist, _candidate("deezer", "dz-100", title="Album X"))
+        db.commit()
+        row = db.scalar(select(Release))
+        # The same identity with a different title and a far-away date: only the
+        # exact external identity can match it.
+        other = _candidate("deezer", "dz-100", title="Different Title", date_="2019-01-01")
+        found = discovery._find_existing_release(db, other)
+        assert found is not None and found.id == row.id
+        assert find_release_by_external_identity(db, "deezer", "dz-100").id == row.id
+        assert find_release_by_external_identity(db, "deezer", "dz-999") is None
+
+
+async def test_exact_identity_prevents_duplicate_release(disc_db):
+    """Re-processing the same provider identity must never create a second row."""
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        stats = _process_stats()
+        await _process_candidate(db, artist, _candidate("deezer", "dz-100"), stats=stats)
+        await _process_candidate(db, artist, _candidate("deezer", "dz-100"), stats=stats)
+        db.commit()
+        assert stats["releases_new"] == 1
+        assert stats["releases_updated"] == 1
+        assert len(db.scalars(select(Release)).all()) == 1
+
+
+async def test_merge_attaches_second_provider_identity(disc_db, monkeypatch):
+    """A canonical release accumulates identities from multiple providers: a
+    Deezer candidate matching an MB-created release adds its own identity row
+    instead of discarding it (spec:526, 708)."""
+    from app.models import ReleaseExternalIdentity
+    from app.services.artist_identity import list_release_identities
+
+    monkeypatch.setattr(discovery, "get_provider", lambda name: _FakeMBProvider())
+
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        stats = _process_stats()
+        # MB creates the canonical release (its identity row is recorded).
+        await _process_candidate(db, artist, _candidate("mb", "rg-x", rgid="rg-x"), stats=stats)
+        # Deezer finds the same edition via title dedup: the Deezer identity is
+        # attached to the SAME release.
+        await _process_candidate(
+            db,
+            artist,
+            _candidate("deezer", "dz-100", urls={"deezer": "https://www.deezer.com/album/dz-100"}),
+            stats=stats,
+        )
+        db.commit()
+        assert stats["releases_new"] == 1
+        assert stats["releases_updated"] == 1
+        assert len(db.scalars(select(Release)).all()) == 1
+        row = db.scalar(select(Release))
+        providers = {identity.provider for identity in list_release_identities(db, row)}
+        assert providers == {"mb", "deezer"}
+        deezer_identity = db.scalar(
+            select(ReleaseExternalIdentity).where(
+                ReleaseExternalIdentity.release_id == row.id,
+                ReleaseExternalIdentity.provider == "deezer",
+            )
+        )
+        assert deezer_identity.external_url == "https://www.deezer.com/album/dz-100"
+
+
+async def test_preferred_track_source_prefers_apple(disc_db, monkeypatch):
+    """The tracklist capability chooses the preferred provider identity: Apple
+    (itunes) first, then Deezer, then MusicBrainz (spec 3.1 order)."""
+    from app.services.artist_identity import attach_release_identity
+
+    monkeypatch.setattr(discovery, "get_provider", lambda name: _FakeMBProvider())
+
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        await _process_candidate(db, artist, _candidate("mb", "rg-x", rgid="rg-x"))
+        db.commit()
+        row = db.scalar(select(Release))
+        assert discovery._preferred_track_source(db, row) == "mb"
+        attach_release_identity(db, row, "deezer", "dz-100")
+        assert discovery._preferred_track_source(db, row) == "deezer"
+        attach_release_identity(db, row, "itunes", "app-1")
+        assert discovery._preferred_track_source(db, row) == "itunes"
+
+
+async def test_merge_tracklist_only_from_preferred_provider(disc_db, monkeypatch):
+    """On merge, the tracklist capability is fed only by the preferred provider:
+    a lower-priority candidate's tracks are not stored (spec 1.4)."""
+    from app.models import ReleaseTrack
+    from app.services.providers.base import TrackCandidate
+
+    monkeypatch.setattr(discovery, "get_provider", lambda name: _FakeMBProvider())
+
+    itunes_track = TrackCandidate(position=1, title="Apple Track", duration_s=180)
+    with get_session_factory()() as db:
+        artist = _add_artist(db, "Mio", "mb-mio")
+        stats = _process_stats()
+        await _process_candidate(db, artist, _candidate("mb", "rg-x", rgid="rg-x"), stats=stats)
+        # Apple merges with a tracklist: Apple is preferred -> tracks stored.
+        await _process_candidate(
+            db, artist, _candidate("itunes", "app-1", tracks=(itunes_track,)), stats=stats
+        )
+        # Deezer merges with its own tracklist: Apple still preferred -> skipped.
+        await _process_candidate(
+            db,
+            artist,
+            _candidate(
+                "deezer",
+                "dz-100",
+                tracks=(TrackCandidate(position=1, title="Deezer Track", duration_s=220),),
+            ),
+            stats=stats,
+        )
+        db.commit()
+        assert stats["releases_updated"] == 2
+        row = db.scalar(select(Release))
+        tracks = db.scalars(select(ReleaseTrack).where(ReleaseTrack.release_id == row.id)).all()
+        assert [(track.position, track.title) for track in tracks] == [(1, "Apple Track")]

@@ -38,6 +38,13 @@ from app.security import get_setting
 from app.services import deezer, scan_locks, spotify
 from app.services import errors as error_service
 from app.services import notify as notify_service
+from app.services.artist_identity import (
+    IdentityConflictError,
+    attach_release_identity,
+    find_release_by_external_identity,
+    list_release_identities,
+    preferred_release_identity,
+)
 from app.services.audit import EVENT_SCAN_RUN, log_event
 from app.services.covers import fetch_cover, save_cover_response
 from app.services.dates import parse_mb_date, release_in_range
@@ -75,6 +82,22 @@ _DIRECT_URL_MAP = (
     ("discogs_url", "discogs"),
     ("beatport_url", "beatport"),
 )
+
+# Candidate.url key holding the direct catalog URL per identity provider
+# (spec 1.4 identity rows; the itunes adapter labels its URL ``apple_music``).
+_PROVIDER_URL_KEYS = {
+    "deezer": "deezer",
+    "itunes": "apple_music",
+    "discogs": "discogs",
+    "soundcloud": "soundcloud",
+    "beatport": "beatport",
+}
+
+
+def _candidate_identity_url(candidate) -> str | None:
+    """Direct catalog URL of a candidate for its identity row (spec 1.4)."""
+    url = candidate.urls.get(_PROVIDER_URL_KEYS.get(candidate.provider, ""))
+    return url if url and url.startswith("https://") else None
 
 
 def _discovery_from_date(db: Session) -> date:
@@ -125,13 +148,19 @@ def _role_for(artist: Artist, credit_phrase: str) -> str:
 
 
 def _find_existing_release(db: Session, candidate, *, same_artist: Artist | None = None) -> Release | None:
-    """Find an existing release for one candidate: by rgid, then by
-    (provider, provider_id), then by normalized title+artist within a date
-    window. When ``same_artist`` is given (cross-provider candidates, phase 15)
-    the dedup is by normalized TITLE only, among the releases linked to that
-    artist: the candidate is the same artist by construction and provider
-    artist credits may differ ("Ye" on MB vs "Kanye West" on Deezer), while
-    regional dates may be far apart."""
+    """Find an existing release for one candidate: by exact external identity,
+    then by rgid, then by (provider, provider_id), then by normalized
+    title+artist within a date window (spec 1.4: ReleaseExternalIdentity lookup
+    first, so a canonical release that accumulated identities from several
+    providers is reused by any of them). When ``same_artist`` is given
+    (cross-provider candidates, phase 15) the dedup is by normalized TITLE
+    only, among the releases linked to that artist: the candidate is the same
+    artist by construction and provider artist credits may differ ("Ye" on MB
+    vs "Kanye West" on Deezer), while regional dates may be far apart."""
+    if candidate.provider_id:
+        row = find_release_by_external_identity(db, candidate.provider, candidate.provider_id)
+        if row is not None:
+            return row
     if candidate.rgid:
         row = db.scalar(select(Release).where(Release.rgid == candidate.rgid))
         if row is not None:
@@ -180,7 +209,9 @@ def _find_existing_release(db: Session, candidate, *, same_artist: Artist | None
 
 def _create_release(db: Session, candidate) -> tuple[Release, bool]:
     """Insert one release; True when created. Direct provider URLs are stored
-    right away, so the enrich pipeline can focus on the missing pieces."""
+    right away, so the enrich pipeline can focus on the missing pieces. The
+    candidate's (provider, provider_id) is recorded as a ReleaseExternalIdentity
+    so the canonical release is findable by exact external identity (spec 1.4)."""
     row = Release(
         rgid=candidate.rgid,
         provider=candidate.provider,
@@ -207,6 +238,23 @@ def _create_release(db: Session, candidate) -> tuple[Release, bool]:
         if existing is None:
             raise
         return existing, False
+    if candidate.provider_id:
+        try:
+            attach_release_identity(
+                db,
+                row,
+                candidate.provider,
+                candidate.provider_id,
+                external_url=_candidate_identity_url(candidate),
+            )
+        except IdentityConflictError:
+            # The (provider, provider_id) pair is claimed by another canonical
+            # release: reuse it instead of creating a duplicate row.
+            db.rollback()
+            existing = _find_existing_release(db, candidate)
+            if existing is None:
+                raise
+            return existing, False
     return row, True
 
 
@@ -226,6 +274,38 @@ def _update_existing_release(row: Release, candidate) -> None:
         url = candidate.urls.get(key)
         if url and not getattr(row, column):
             setattr(row, column, url)
+
+
+def _attach_candidate_identity(db: Session, row: Release, candidate) -> None:
+    """Accumulate the candidate's provider identity onto an existing canonical
+    release (spec 1.4): merging never discards a provider id (spec:526). A
+    (provider, provider_id) pair already claimed by another release is left
+    untouched and logged; the conservative dedup decision stands.
+    """
+    if not candidate.provider_id:
+        return
+    try:
+        attach_release_identity(
+            db,
+            row,
+            candidate.provider,
+            candidate.provider_id,
+            external_url=_candidate_identity_url(candidate),
+        )
+    except IdentityConflictError:
+        logger.warning(
+            "identity conflict on release %s: %s/%s already claimed elsewhere",
+            row.id,
+            candidate.provider,
+            candidate.provider_id,
+        )
+
+
+def _preferred_track_source(db: Session, row: Release) -> str | None:
+    """Provider identity that should supply the tracklist capability (spec 1.4):
+    the highest-priority identity (Apple first, RELEASE_PROVIDER_PRIORITY)."""
+    preferred = preferred_release_identity(list_release_identities(db, row))
+    return preferred.provider if preferred is not None else None
 
 
 def _add_release_artist(db: Session, release_id: int, artist_id: int, role: str) -> None:
@@ -348,6 +428,13 @@ async def _process_candidate(
     else:
         row = existing
         _update_existing_release(row, candidate)
+        # Spec 1.4: a canonical release accumulates identities from every
+        # provider that found it — the candidate's provider id is attached, not
+        # discarded, and only the preferred provider (Apple first) supplies the
+        # tracklist capability.
+        _attach_candidate_identity(db, row, candidate)
+        if candidate.tracks and candidate.provider == _preferred_track_source(db, row):
+            _store_tracks(db, row.id, candidate.tracks)
         stats["releases_updated"] += 1
 
     effective_role = role if role is not None else _role_for(artist, candidate.primary_artist)
