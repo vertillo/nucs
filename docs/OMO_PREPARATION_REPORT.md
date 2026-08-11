@@ -10,7 +10,7 @@ before the oh-my-openagent (OMO) autonomous remediation run.
 | Branch | `main` |
 | Starting HEAD | `6cdcb16` (`chore(dev): move local dev override to 127.0.0.1:8066`) |
 | Ending HEAD (before final commit) | `6cdcb16` |
-| **Preparation commit** | **`f05acc8`** (`docs: reconcile current state before OMO remediation`) |
+| **Preparation commit** | **`22e1730`** (`docs: reconcile current state before OMO remediation`) |
 | Date/time | 2026-08-11 (local) |
 | Working tree at start | Clean except untracked `piano/NUCS_DIAGNOSTIC_CONTEXT.md` (agent diagnostic dossier, 96 KB) |
 | Unrelated uncommitted source changes | **None** — the only untracked file was a documentation artifact (handled below); no source code was modified or discarded |
