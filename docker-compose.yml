@@ -1,11 +1,11 @@
-# nucs — production compose (spec 12.2). No host port is ever published: the app is
-# reachable only via the tailnet (Tailscale, profile "tailscale") or, later, via a
-# Cloudflare Tunnel (profile "cloudflare"). For LOCAL development/verification use
-# docker-compose.dev.yml as an override — never in production.
+# nucs — production compose (spec 12.2). The app publishes port 8067 on the host
+# (8067:8080). Tailscale / Cloudflare tunnels are NOT part of this stack: they are
+# run externally by the user (own tunnel or reverse proxy) against that port. For
+# LOCAL development/verification use docker-compose.dev.yml as an override —
+# never in production.
 #
 # Usage:
-#   docker compose --profile tailscale up -d          # Tailscale (no domain needed)
-#   docker compose --profile cloudflare up -d         # Cloudflare tunnel (phase 14)
+#   docker compose up -d                                  # app on http://<host>:8067
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d   # dev only
 
 name: nucs
@@ -27,6 +27,8 @@ services:
       MUSIC_LIBRARY_PATH: /music
     expose:
       - "8080"
+    ports:
+      - "8067:8080"
     volumes:
       - nucs-data:/data
       - ${MUSIC_LIBRARY_PATH}:/music:ro
@@ -53,64 +55,9 @@ services:
     networks:
       - nucs-net
 
-  cloudflared:
-    image: cloudflare/cloudflared:2025.6.1
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
-    mem_limit: 128m
-    pids_limit: 128
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    read_only: true
-    tmpfs:
-      - /tmp
-    depends_on:
-      app:
-        condition: service_healthy
-    networks:
-      - nucs-net
-    profiles:
-      - cloudflare
-
-  tailscale:
-    image: tailscale/tailscale:v1.84.0
-    restart: unless-stopped
-    environment:
-      TS_STATE_DIR: /var/lib/tailscale
-      TS_HOSTNAME: nucs
-      TS_SERVE_CONFIG: /config/serve.json
-      TS_AUTHKEY: ${TS_AUTHKEY:-}
-      TS_USERSPACE: "false"
-    volumes:
-      - ts-state:/var/lib/tailscale
-      - ./deploy/tailscale/serve.json:/config/serve.json:ro
-      - /dev/net/tun:/dev/net/tun
-    mem_limit: 256m
-    pids_limit: 512
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/run
-    depends_on:
-      app:
-        condition: service_healthy
-    networks:
-      - nucs-net
-    profiles:
-      - tailscale
-
 networks:
   nucs-net:
     driver: bridge
 
 volumes:
   nucs-data:
-  ts-state:

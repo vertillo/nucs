@@ -510,7 +510,10 @@ Rules applied:
 - **Current observable behavior**: GitHub Actions runs `ruff check` only; pytest
   (339 items) and e2e scenarios run locally only; e2e N.A. items J1 (Cloudflare),
   J2 (Tailscale), J3 (audit log), J5 (backup integrity on prod stack) are
-  pending real-stack verification (former phase 14).
+  pending real-stack verification (former phase 14). J1/J2 are now N.A. by user
+  decision: the sidecar-based production stack was removed on 2026-08-12 —
+  port 8067 is published and tunnels run externally; J3/J5 remain verifiable on
+  the plain `app` stack.
 - **Expected behavior**: decided by remediation (CI coverage, production-stack
   verification plan).
 - **Reproduction/evidence**: `.github/workflows/ci.yml` (20 lines, ruff only);

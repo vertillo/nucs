@@ -28,17 +28,17 @@ NEEDS_PRODUCT_DECISION.
 
 | Requirement | State |
 |---|---|
-| Single-user app with argon2id login, opaque sessions, rolling renewal, rate limiting, CSRF, security headers, trusted proxies, no published ports | **IMPLEMENTED** |
+| Single-user app with argon2id login, opaque sessions, rolling renewal, rate limiting, CSRF, security headers, trusted proxies, app published on host port 8067 | **IMPLEMENTED** |
 | First-boot admin creation from env (refuses to start otherwise) | **IMPLEMENTED** |
 | Login/security hardening (13B findings) | **IMPLEMENTED** |
 | CI that guards regressions (pytest/build/e2e) | **PARTIALLY_IMPLEMENTED** — CI runs `ruff check` only (`.github/workflows/ci.yml`); 339 pytest items and e2e scenarios run locally only |
-| Production-stack verification (Cloudflare tunnel real, Tailscale real, audit log J3, backup J5 on prod stack) | **NOT_IMPLEMENTED** (pending; former phase 14; e2e N.A. rows J1/J2/J3/J5 in `fase-13-results.md`) |
+| Production-stack verification (Cloudflare tunnel real, Tailscale real, audit log J3, backup J5 on prod stack) | **NOT_IMPLEMENTED** (pending; former phase 14; e2e N.A. rows J1/J2/J3/J5 in `fase-13-results.md`) — **SUPERSEDED by user request (2026-08-12)**: the sidecar-based production stack was removed — compose now publishes port 8067 and Tailscale/Cloudflare tunnels run externally (user-managed); J1/J2 are N.A. by that decision, J3/J5 (audit log / backup integrity) still apply to the plain `app` stack |
 
 - **Code evidence**: `security.py` (183-263 limiters, 105-180 sessions), `main.py` middleware (91-196), `config.py`, `docker-compose.yml` (no ports), `ci.yml`.
 - **Existing tests**: `test_auth.py`, `test_security.py`, `test_health.py`, `test_db.py`.
 - **Missing tests**: CI integration (run pytest + build in CI); prod-stack scenario.
 - **Architectural dependencies**: none (CI file + optional workflow change).
-- **Risks**: low; e2e prod checks require real Cloudflare/Tailscale credentials.
+- **Risks**: low; e2e prod checks previously required real Cloudflare/Tailscale credentials — superseded: the sidecar stack is gone (port 8067 published, tunnels external).
 
 ## 2. Artist identity
 
@@ -266,7 +266,7 @@ NEEDS_PRODUCT_DECISION.
 | Frontend `tsc --noEmit` + build | **IMPLEMENTED** |
 | Puppeteer scenarios 06-15 with PASS/FAIL artifacts | **IMPLEMENTED** (last runs: 13b 96/96 COMPLETE, 15 40/40; QUICK 95/96 with known A5 FAIL — FINDING-A) |
 | CI beyond lint | **PARTIALLY_IMPLEMENTED** (ruff only) |
-| Production-stack verification | **NOT_IMPLEMENTED** (e2e N.A.: J1/J2/J3/J5) |
+| Production-stack verification | **NOT_IMPLEMENTED** (e2e N.A.: J1/J2/J3/J5) — **SUPERSEDED by user request (2026-08-12)**: sidecar stack removed, compose publishes 8067, tunnels external; J1/J2 N.A., J3/J5 verifiable on the plain `app` stack |
 
 - **Code evidence**: `backend/tests/`, `e2e/`, `ci.yml`, `e2e/artifacts/fase-13-results.md`, `fase-15-results.md`.
 - **Existing tests**: as above.
@@ -296,7 +296,7 @@ NEEDS_PRODUCT_DECISION.
 | Offline-hermetic test strategy (never touch network in pytest) | **IMPLEMENTED** |
 | Live validation of MB/Deezer/iTunes/Discogs/Spotify behavior | **PARTIALLY_IMPLEMENTED** — exercised only by e2e seeds and manual checks (e2e:13/15 real seeds; manual checklist items marked MANUALE in phase 15) |
 | Cross-provider live scenarios (Ye/Bully, Levellers/Pepp 'O Red, Amba Shepherd split) | **PARTIALLY_IMPLEMENTED** — verified in phase 15 on real data; not automated |
-| Cloudflare/Tailscale production reachability | **NOT_IMPLEMENTED** (pending; former phase 14) |
+| Cloudflare/Tailscale production reachability | **NOT_IMPLEMENTED** (pending; former phase 14) — **SUPERSEDED by user request (2026-08-12)**: sidecars removed, tunnels are external and user-managed |
 
 - **Code evidence**: `e2e/scenarios/*.js`, `e2e/README.md`, `deploy/*.md`.
 - **Existing tests**: e2e:12b/13/15 seeds (live MB).
@@ -391,7 +391,9 @@ before or during OMO remediation.
 - The legacy spec's §14 acceptance criteria 1-10: criteria 2-6, 8-10 are met with
   current evidence (e2e:12/13/15, backups, README); criterion 1 (Cloudflare +
   Tailscale reachable on a clean machine) and part of 7 (24 h RAM stats) remain
-  pending production verification.
+  pending production verification — superseded for criterion 1: the sidecar
+  stack was removed by user request (2026-08-12), port 8067 is published and
+  tunnels are external, so reachability is the user's own tunnel/proxy concern.
 - The legacy spec's `contributor` role, composer/performer tracking, Spotify-only
   dedup (8.3), `rgid` uniqueness, notify-default-off and 4-link detail page are
   **NO_LONGER_APPLICABLE** (superseded by phase 12b/15 changes — see

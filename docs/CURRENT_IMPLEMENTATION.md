@@ -35,7 +35,8 @@ NUCS is a self-hosted, single-user web application that tracks new music release
    (Spotify, YouTube Music, Deezer, Apple Music, Tidal, Qobuz, Discogs, Beatport,
    Google).
 5. Protected by **login** (argon2id, opaque sessions, rate limiting), served via
-   **Docker Compose** with no host ports (Tailscale / Cloudflare Tunnel sidecars).
+   **Docker Compose** publishing host port **8067** (Tailscale/Cloudflare
+   tunnels are external, run by the user against that port).
 6. Optional **Apprise notifications** (one aggregate per discovery run), daily
    **backup** (retention 7), **audit log**, persisted **error page** with export.
 
@@ -48,7 +49,7 @@ NUCS is a self-hosted, single-user web application that tracks new music release
 | Scheduler | APScheduler 3.x `AsyncIOScheduler` (in-memory jobstore), 5 jobs (library scan, releases scan, weekly feat scan, daily backup 02:30, hourly session cleanup) |
 | Tasks | All scans run **in-process** as `asyncio.Task` (discovery) or `asyncio.to_thread` (library scan); a single global `asyncio.Lock` (`scan_locks.py`) serializes all scan types |
 | Frontend | Vite 6 + React 18.3 + TypeScript 5.9 + TailwindCSS 3.4 + react-router-dom 6 + @tanstack/react-query 5; static SPA served by the backend (no Node in production) |
-| Deployment | Docker multi-stage (`docker/Dockerfile`: node:20-alpine build → python:3.12-slim runtime), `docker-compose.yml` with `app` + `cloudflared` (profile) + `tailscale` (profile); no host ports; dev override `docker-compose.dev.yml` publishes `127.0.0.1:8066:8080` |
+| Deployment | Docker multi-stage (`docker/Dockerfile`: node:20-alpine build → python:3.12-slim runtime), `docker-compose.yml` with `app` only, publishing `8067:8080` (Tailscale/Cloudflare tunnels external); dev override `docker-compose.dev.yml` publishes `127.0.0.1:8066:8080` |
 | CI | GitHub Actions `ci.yml`: **ruff check only** (no pytest, no frontend build, no e2e in CI) |
 
 Middleware chain (outermost first, `main.py:330-339`):
@@ -343,7 +344,7 @@ no-op without URLs), `notify_urls`, `spotify_client_id`, `spotify_client_secret`
   (default `172.16.0.0/12,10.0.0.0/8`), last entry used; uvicorn `--proxy-headers`.
 - **Secret handling**: all via env; settings secrets write-only (`*_set` flags);
   audit/error scrubbing; `.env` gitignored; Docker: non-root user, read-only
-  rootfs, tmpfs `/tmp`, no published ports, memory/CPU/pids limits, healthcheck on
+  rootfs, tmpfs `/tmp`, published port 8067 (host), memory/CPU/pids limits, healthcheck on
   `/api/health`.
 
 ## 14. Frontend behavior

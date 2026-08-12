@@ -14,9 +14,10 @@ uscite musicali dei tuoi artisti preferiti:
 3. **Mostra un feed** delle nuove uscite in una UI chiara/scura in stile app
    musicale, con pagina dettaglio e bottoni verso Spotify, YouTube Music, Deezer
    e ricerca Google.
-4. È protetta da **login**, gira in **Docker Compose** ed è raggiungibile via
-   **Cloudflare Tunnel** (HTTPS pubblico) o **Tailscale** (rete privata) —
-   **nessuna porta aperta sull'host**.
+4. È protetta da **login** e gira in **Docker Compose**, pubblicando la porta
+   **8067** sull'host: l'accesso da remoto avviene tramite un tunnel o
+   reverse-proxy esterno a tua scelta (Tailscale, Cloudflare Tunnel, …) puntato
+   su `http://<host>:8067`.
 
 Notifiche opzionali via **Apprise** (Telegram, ntfy, email, …), **backup
 automatico giornaliero** del database, audit log e rate limiting sul login.
@@ -52,8 +53,9 @@ specifica tecnica v1 è conservata solo come riferimento storico in
 - **Git** (per clone e aggiornamenti).
 - Una **libreria musicale locale** (montata sola lettura — l'app non scrive mai
   dentro la musica).
-- Per Tailscale: un account tailnet (gratuito). Per Cloudflare: un dominio
-  gestito da Cloudflare (opzionale, vedi sotto).
+- Opzionale, solo se vuoi l'accesso da fuori rete locale: un tunnel o
+  reverse-proxy esterno a tua scelta (Tailscale, Cloudflare Tunnel, …) puntato
+  sulla porta 8067 pubblicata dall'app.
 
 L'immagine si **costruisce localmente** per l'architettura della tua macchina
 (arm64 su Mac, amd64 su PC/mini PC): nessun registry richiesto.
@@ -82,10 +84,6 @@ cp .env.example .env
 | `NOTIFY_URLS` | ❌ | URL Apprise (uno per riga o CSV, provider misti, es. `tgram://<token>/<chat_id>`). Seed solo al primo avvio |
 | `NOTIFY_ENABLED` | ❌ | `false` per avviare con notifiche disattivate (default: attive, ma senza URL non inviano nulla) |
 | `DEV_INSECURE_COOKIES` | ❌ | `true` SOLO per sviluppo su http locale; in produzione lascia `false` |
-| `CF_TUNNEL_TOKEN` | ❌ | token del tunnel Cloudflare — solo se usi il profilo `cloudflare` |
-| `TS_AUTHKEY` | ❌ | auth key Tailscale riutilizzabile — solo se usi il profilo `tailscale` |
-| `TS_HOSTNAME` | ❌ | hostname nel tailnet, default `nucs` |
-| `TS_STATE_DIR` | ❌ | default `/var/lib/tailscale`, non toccare |
 | `TRUSTED_PROXY_CIDRS` | ❌ | rete/i dei proxy fidati per `X-Forwarded-For`; default `172.16.0.0/12,10.0.0.0/8` (rete Docker interna). Non allargare se non sai cosa fai |
 
 ### 3. Build e avvio
@@ -94,21 +92,16 @@ cp .env.example .env
 docker compose build
 ```
 
-Poi avvia con **almeno uno** dei profili rete:
+Poi avvia:
 
 ```bash
-# Senza dominio (consigliato per iniziare): accesso solo dai device del tuo tailnet
-docker compose --profile tailscale up -d
-
-# Con dominio Cloudflare: HTTPS pubblico
-docker compose --profile cloudflare up -d
-
-# Entrambi
-docker compose --profile cloudflare --profile tailscale up -d
+docker compose up -d
 ```
 
-Il compose **non pubblica nessuna porta**: si accede solo via tailnet o tunnel.
-Il primo avvio applica le migrazioni del database e crea l'utente admin dal `.env`.
+L'app è raggiungibile su **`http://<host>:8067`**. Il primo avvio applica le
+migrazioni del database e crea l'utente admin dal `.env`. Se vuoi l'accesso da
+fuori rete locale, punta un tunnel/reverse-proxy esterno a tua scelta
+(Tailscale, Cloudflare Tunnel, …) su `http://<host>:8067`.
 
 > Per una prova rapida su `http://127.0.0.1:8066` (sviluppo/verifica locale):
 > `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
@@ -117,25 +110,26 @@ Il primo avvio applica le migrazioni del database e crea l'utente admin dal `.en
 
 ---
 
-## Cloudflare Tunnel (HTTPS pubblico)
+## Accesso da remoto (opzionale)
 
-Richiede un **dominio gestito da Cloudflare**. Guida passo-passo (Zero Trust →
-Tunnels → Cloudflared → token → public hostname):
-**→ [`deploy/cloudflared.md`](deploy/cloudflared.md)**
+L'app pubblica la porta **8067** sull'host. Per accederci da fuori rete locale,
+punta un tunnel o reverse-proxy esterno a tua scelta su `http://127.0.0.1:8067`
+(o direttamente sull'host:8067):
 
-## Tailscale (rete privata)
+- **Tailscale**: `tailscale serve` dalla macchina host verso
+  `http://127.0.0.1:8067`.
+- **Cloudflare Tunnel**: un tunnel `cloudflared` verso `http://127.0.0.1:8067`.
+- Qualsiasi **reverse proxy** (Caddy, nginx, …) con la stessa destinazione.
 
-Accesso `https://nucs.<il-tuo-tailnet>.ts.net` dai device del tailnet, senza
-aprire porte. Guida (auth key oppure login interattivo al primo avvio,
-troubleshooting):
-**→ [`deploy/tailscale.md`](deploy/tailscale.md)**
+I sidecar Tailscale/Cloudflare che prima vivevano **dentro** il compose sono
+stati rimossi: il tunnel ora è esterno allo stack e gestito da te.
 
 ---
 
 ## Primo avvio e primo scan
 
-1. Apri l'URL raggiunto (tunnel o tailnet) e accedi con `ADMIN_USERNAME` /
-   `ADMIN_PASSWORD`.
+1. Apri l'URL dell'app (`http://<host>:8067`, o l'URL del tuo tunnel esterno) e
+   accedi con `ADMIN_USERNAME` / `ADMIN_PASSWORD`.
 2. Subito dopo vai su **Settings → Security** e **cambia la password** (le env
    valgono solo al primo avvio).
 3. Vai su **Settings → Discovery**: controlla "Discover releases from" (default:
@@ -215,12 +209,12 @@ L'app applica di default:
 - **CSRF**: le richieste mutanti richiedono `X-Requested-With` + Origin/Referer
   coerente.
 - **Container**: utente non-root, filesystem read-only, limiti memoria/CPU,
-  nessuna porta pubblicata, IP reali rispettando solo i proxy fidati.
+  porta 8067 pubblicata, IP reali rispettando solo i proxy fidati.
 - **Log senza segreti**: mai password/token/secret nei log.
 
-**Raccomandazione (opzionale, difesa in profondità)**: se esponi nucs con
-Cloudflare Tunnel, attiva **Cloudflare Access** sul public hostname (allowlist
-della tua email) — vedi `deploy/cloudflared.md`.
+**Raccomandazione (opzionale, difesa in profondità)**: se esponi nucs da
+remoto, attiva un controllo di accesso sul tuo tunnel/reverse proxy (es.
+allowlist email o di rete) davanti alla porta 8067.
 
 ---
 
@@ -246,10 +240,11 @@ attive, arriva una sola notifica aggregata per scan: "nucs: N new releases".
 Le notifiche partono solo se `NOTIFY_URLS` è valorizzato.
 
 **4. Come cambio la porta di accesso?**
-Non c'è una porta: l'app **non pubblica nessuna porta** sul host. Si accede
-solo via **Tailscale** (`https://nucs.<tailnet>.ts.net`) o **Cloudflare Tunnel**
-(il tuo dominio) — vedi le guide in `deploy/`. Se per test locale vuoi
-`127.0.0.1:8066`, usa il dev override (sezione Installazione, punto 3).
+La porta pubblicata sull'host è **8067** (mappatura `8067:8080` in
+`docker-compose.yml`): cambiala lì e riavvia con `docker compose up -d`. Per
+test locale c'è il dev override su `127.0.0.1:8066` (sezione Installazione,
+punto 3). L'accesso da remoto passa dal tuo tunnel/reverse-proxy esterno
+puntato sulla porta pubblicata.
 
 **5. Ho dimenticato la password. Come la resetto?**
 Da terminale, sul server:

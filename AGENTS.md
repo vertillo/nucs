@@ -6,7 +6,7 @@
 
 ## OVERVIEW
 
-NUCS is a self-hosted, single-user web app that tracks new music releases of artists from a local music library: it reads audio tags (mutagen), matches artists to MusicBrainz (plus Deezer/iTunes/Discogs/SoundCloud/Beatport), discovers new releases, and shows a light/dark feed with external links. Stack: Python 3.12 FastAPI + SQLite + APScheduler backend; React 18 + Vite + Tailwind frontend; Docker Compose deployment (no published ports — Tailscale/Cloudflare Tunnel only).
+NUCS is a self-hosted, single-user web app that tracks new music releases of artists from a local music library: it reads audio tags (mutagen), matches artists to MusicBrainz (plus Deezer/iTunes/Discogs/SoundCloud/Beatport), discovers new releases, and shows a light/dark feed with external links. Stack: Python 3.12 FastAPI + SQLite + APScheduler backend; React 18 + Vite + Tailwind frontend; Docker Compose deployment (publishes port 8067; Tailscale/Cloudflare Tunnel are external, run by the user against that port).
 
 This repo is currently under **spec-driven remediation** on the `remediation/nucs` branch: an autonomous run executes `specs/NUCS_REMEDIATION_SPEC.md` (11 phases). Treat product decisions as fixed; preserve existing app, API style, security model, SQLite constraints, tests. Not a rewrite.
 
@@ -19,7 +19,6 @@ This repo is currently under **spec-driven remediation** on the `remediation/nuc
 ├── backend/     # FastAPI app (app/), SQLite migrations (alembic/), pytest suite (tests/)
 ├── frontend/    # React/Vite/TS app (src/) — built by backend Docker stage, no own server
 ├── e2e/         # Puppeteer phase-verification harness (fase-06..15 scenarios)
-├── deploy/      # Cloudflare Tunnel + Tailscale operational guides
 ├── docker/      # Multi-stage Dockerfile (node:20 build → python:3.12 runtime)
 ├── piano/       # LEGACY only — original v1 spec, NOT authoritative
 └── .github/     # CI: ruff lint only
@@ -41,7 +40,7 @@ This repo is currently under **spec-driven remediation** on the `remediation/nuc
 | Frontend routing/auth | `frontend/src/App.tsx` | RequireAuth guard, `useMe()` |
 | Frontend data layer | `frontend/src/api/*.ts` | Types + react-query hooks per resource |
 | E2E verification | `e2e/README.md` + `e2e/scenarios/` | Deterministic per-phase browser checks |
-| Deployment config | `docker-compose.yml`, `docker/Dockerfile` | Zero published ports by design |
+| Deployment config | `docker-compose.yml`, `docker/Dockerfile` | App publishes host port 8067; tunnels/reverse proxy external |
 
 ## CODE MAP
 
@@ -92,9 +91,9 @@ Centrality unmeasured (no LSP/codegraph); from code inspection.
 ## COMMANDS
 
 ```bash
-# Build + run (production, no ports exposed)
+# Build + run (production, app publishes :8067)
 docker compose build
-docker compose --profile tailscale up -d        # or --profile cloudflare
+docker compose up -d        # app reachable at http://<host>:8067
 
 # Local dev stack
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d   # http://127.0.0.1:8066

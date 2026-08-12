@@ -36,7 +36,7 @@ deleted with its reusable content extracted into `docs/KNOWN_ISSUES.md`.
 |---|---|
 | `piano/00-specifiche-legacy.md` | Original v1 spec, renamed + LEGACY header (see next section) |
 | `README.md` | Current user/operational documentation; stale spec reference fixed |
-| `deploy/cloudflared.md`, `deploy/tailscale.md`, `deploy/tailscale/serve.json` | Valid deployment documentation, matches current compose |
+| `deploy/cloudflared.md`, `deploy/tailscale.md`, `deploy/tailscale/serve.json` | Valid deployment documentation, matches current compose — **subsequently removed** (2026-08-12, user request): the sidecar-based stack was dropped, port 8067 is published and tunnels run externally, so these guides no longer apply |
 | `e2e/README.md`, `e2e/harness.js`, `e2e/scenarios/*.js`, `e2e/package.json` | Current E2E harness and scenarios; one stale STATO.md reference fixed |
 | `docker/*`, `docker-compose*.yml`, `.env.example`, `.github/workflows/ci.yml` | Current operational/config files, not documentation |
 
@@ -133,7 +133,9 @@ Section-by-section disposition against the current implementation:
 - Errors read/unread + badge (BUG-12); client error reporting wired (GAP-6).
 - Reset-vs-scan TOCTOU (FINDING-B); level-2 seen-marking (FINDING-C); login raw
   fetch (FINDING-E); orphan cover cleanup (GAP-2); CI beyond ruff (GAP-5).
-- Production-stack verification (Cloudflare/Tailscale/audit/backup) — pending.
+- Production-stack verification (Cloudflare/Tailscale/audit/backup) — pending
+  (superseded for the Cloudflare/Tailscale parts by the 2026-08-12 user decision:
+  sidecar stack removed, port 8067 published, tunnels external).
 
 ## Product questions
 
