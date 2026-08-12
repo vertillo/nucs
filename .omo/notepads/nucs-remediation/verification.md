@@ -1722,3 +1722,40 @@ PASS — intended PiKi linked only via explicit selection; 8 live homonyms never
 ### Evidence
 
 - `.omo/evidence/task-58-live-identity.md` (full receipts: env, provider state, per-case raw MB/Deezer/iTunes candidate evidence, DB state, cleanup)
+
+## Phase 10 Live Validation (Task 60) — Axwell cross-provider dedup (spec:1798-1806)
+
+**Date:** 2026-08-12T14:42Z–14:52Z
+**Event:** task-60-completed
+**Environment:** disposable — `DATA_DIR=/var/folders/94/.../T/opencode/nucs-t60-data.eptYlZ` (fresh DB, migrations auto-run), empty temp `MUSIC_LIBRARY_PATH` (no library scan used; artist tracked via API), uvicorn on 127.0.0.1:8080, `frontend && npm run build` green. NO product code changed; `match_release`/semantic-words guard/date tolerance untouched.
+
+### Live provider state
+
+- Apple/iTunes ✅, Deezer ✅, MusicBrainz ✅ for all app-side calls that mattered (MB intermittently refused TLS from this host earlier in the session — `SSL_ERROR_SYSCALL`, ~15 min — then recovered; run A used MB's real browse + 4 provider calls, all successful; `/errors` total 0 at the end).
+
+### Tracked artist (all identities resolved live)
+
+`POST /artists {"name":"Axwell","provider":"deezer","provider_id":"3847",...}` → id 1 `Linked`; `PUT /identities/mb 4539050e-e355-4c39-bdfa-e74cb67ce365` (MB search score 100); `PUT /identities/itunes 41781292` (iTunes musicArtist search). Final identities: `[deezer, itunes, mb]`.
+
+### Run A — Deezer+MB only (window 2025-01-01): cross-provider collapse against real catalogs
+
+`POST /scans/releases` → status `ok`, 11.6s. Persisted `scan_runs.stats` (API-served): `releases_new 6, releases_updated 2, merge_reasons {"TITLE_DATE_TRACKLIST": 2}, cross_provider_merges 2, fallback_reasons {"apple_missing_identity": 1}, provider_calls {"deezer": 1, "mb": 4}`.
+
+- [x] **Same edition from multiple providers → ONE release row with accumulated identities + merge reason** — `Until The Lights Go Out` (deezer `822210831` + mb `f00d86f0`, both 2025-05-16) and `Believe Again (I Found U)` (deezer `846061362` + mb `fa787126`, both 2025-11-14) each collapsed to ONE row carrying **2 identities**; `GET /releases?q=until the lights` → total **1**, `?q=believe again` → total **1**; `merge_reasons={"TITLE_DATE_TRACKLIST": 2}` is the deciding stage (spec:938-947, fixed keys). Merged rows' rgid filled by the merge (Apple-first fix); tracklists from the preferred source (Deezer).
+- [x] **Genuinely distinct editions preserved** — `Watch The Sunrise` (Deezer) vs `Watch the Sunrise (TEDDY-0 remix)` (MB, secondary-type Remix) → TWO rows, zero merge (`?q=watch the sunrise` → total 2).
+- [x] **The spec's own case, honestly:** "Whatever Turns You On" (2026-06-26, single) is described by the three catalogs with THREE different titles — MB `Whatever Turns You On` (rgid `623911a3...`, feat credit only in artist credit), Deezer `Whatever Turns You On (ft. Bonn)` (album `991529741`), Apple `Whatever Turns You on (Ft. Bonn) - Single` (collection `6773597271`, raw `collectionName` carries the ` - Single` suffix; 2 tracks). Normalized titles all differ → conservative matcher correctly NO_MATCH (rows 1/5/7, one per provider, each with its own identity). **Documented as upstream catalog divergence, matcher NOT weakened (spec:1794)**; `GET /releases?q=whatever` → total 3 (the honest catalog state).
+
+### Run B — Apple identity attached, Apple-first natural order (window restored to 2026-01-01)
+
+- [x] **Apple-first verified live** — `provider_calls {"itunes": 1}` ONLY (Deezer/MB never queried), `apple_success_count 1, fallback_count 0` (spec:869-871); `merge_reasons {}` (no false merge forced). Apple's `Whatever Turns You on (Ft. Bonn) - Single` created row 7 (itunes `6773597271`) — NO_MATCH vs rows 1/5 for the ` - Single`-suffix reason above.
+- [x] **One Feed item per catalog description** — each catalog's own entry yields one row; the divergence (not the matcher) is why the musical edition spans 3 rows live.
+- [x] **Deluxe/Remastered variant of this edition: N.A.** — none exists in the live catalogs (Deezer album = exactly 2 tracks: main + Extended Mix; Apple trackCount 2; MB no secondary types). The Deluxe-separation half stays regression-locked by task-19 fixtures; live distinct-edition preservation demonstrated by the TEDDY-0 remix pair.
+- [x] **Cleanup** — my uvicorn (port 8080) killed; temp DATA_DIR + music dir removed; port 8080 verified free (`lsof`); parallel task's port-8081 server untouched. Evidence-only commit `docs(validation): Axwell case`.
+
+### Verdict
+
+**PASS** — collapse ✅ (2 live cross-provider merges with accumulated identities + `TITLE_DATE_TRACKLIST`), distinct-editions preservation ✅ (TEDDY-0 remix), upstream title divergence on the spec's own edition documented per spec:1794 with raw catalog evidence (no matcher weakening, no fabricated data).
+
+### Evidence
+
+- `.omo/evidence/task-60-live-axwell.md` (full receipts: raw catalog JSON fields, both runs' stats, DB dumps, API counts, cleanup)
