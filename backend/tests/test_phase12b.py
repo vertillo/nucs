@@ -14,9 +14,12 @@ from app.db import get_session_factory
 from app.models import (
     AppError,
     Artist,
+    ArtistExternalIdentity,
     ArtistFile,
+    NotificationEvent,
     Release,
     ReleaseArtist,
+    ReleaseExternalIdentity,
     ReleaseState,
     ReleaseTrack,
     ScanFile,
@@ -427,12 +430,98 @@ async def test_reset_library_wipes_everything_and_covers(client, app_env):
     assert not list(covers_dir.glob("*.jpg"))
 
 
-async def test_reset_library_refused_while_scan_running(client, monkeypatch):
+async def test_reset_library_refused_while_scan_running(client):
+    """Spec:260-266 / spec 6.9: a running scan refuses reset with 409 —
+    the reset never waits and never cancels the scan."""
     await _login(client)
-    monkeypatch.setattr(scan_locks, "try_start", _async_true)
-    monkeypatch.setattr(scan_locks, "running_scans", lambda: {"releases": {"since": "now", "progress": {}}})
+    assert await scan_locks.try_start("releases") is True
+    try:
+        response = await client.delete("/api/v1/library", headers=API_HEADERS)
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Scan already in progress"
+        # the running scan was neither cancelled nor released
+        assert scan_locks.running_scans()
+    finally:
+        scan_locks.finish("releases")
+
+
+async def test_reset_acquired_exclusion_rejects_scan_starts(client):
+    """Spec 6.9 concurrency regression: while the reset holds the SAME exclusion
+    primitive scans use, every scan start fails (spec:1406-1407), the reset is
+    not exposed as a long-running scan (spec:1409), and a scan can start again
+    after the reset completes. No scan/reset interleaving can repopulate a
+    just-reset library (spec:1417)."""
+    await _login(client)
+    assert await scan_locks.try_acquire_reset() is True
+    try:
+        # reset acquired exclusivity → every new scan start fails until completion
+        assert await scan_locks.try_start("library") is False
+        assert await scan_locks.try_start("releases") is False
+        assert await scan_locks.try_start("feat") is False
+        assert not scan_locks.running_scans()  # reset is not a long-running scan
+    finally:
+        scan_locks.release_reset()
+    # after the reset completes a scan can start again
+    assert await scan_locks.try_start("library") is True
+    scan_locks.finish("library")
+    assert not scan_locks.running_scans()
+
+
+async def test_reset_endpoint_mutually_exclusive_with_itself(client):
+    """Spec 6.9: the endpoint acquires the same lock, so a reset in progress
+    refuses a second reset; once the first completes a new reset works."""
+    await _login(client)
+    assert await scan_locks.try_acquire_reset() is True
+    try:
+        response = await client.delete("/api/v1/library", headers=API_HEADERS)
+        assert response.status_code == 409
+    finally:
+        scan_locks.release_reset()
     response = await client.delete("/api/v1/library", headers=API_HEADERS)
-    assert response.status_code == 409
+    assert response.status_code == 204
+
+
+async def test_reset_wipes_identity_notification_and_provenance(client, app_env):
+    """Spec 1861: the reset deletes the new identity/notification tables and
+    the split-provenance column (lives on artists, deleted with the row)."""
+    await _login(client)
+    with get_session_factory()() as db:
+        parent = Artist(name="Parent", normalized_name="parent", source="tag_artist")
+        db.add(parent)
+        db.flush()
+        child = Artist(
+            name="Child",
+            normalized_name="child",
+            source="tag_artist",
+            split_from_artist_id=parent.id,
+        )
+        db.add(child)
+        db.flush()
+        db.add(
+            ArtistExternalIdentity(artist_id=child.id, provider="mb", provider_id="mb-child", match_score=99)
+        )
+        release = Release(
+            rgid="rg-ident",
+            provider_id="rg-ident",
+            title="T",
+            primary_artist="Child",
+            type="album",
+            first_release_date="2024-01-01",
+        )
+        db.add(release)
+        db.flush()
+        db.add(ReleaseExternalIdentity(release_id=release.id, provider="itunes", provider_id="it-1"))
+        db.add(NotificationEvent(release_id=release.id, event_type="upcoming_discovered", state="sent"))
+        db.commit()
+        artist_id = child.id
+        release_id = release.id
+    response = await client.delete("/api/v1/library", headers=API_HEADERS)
+    assert response.status_code == 204
+    with get_session_factory()() as db:
+        assert db.get(Artist, artist_id) is None
+        assert db.get(Release, release_id) is None
+        for model in (ArtistExternalIdentity, ReleaseExternalIdentity, NotificationEvent):
+            assert db.scalar(select(model)) is None, model.__tablename__
 
 
 async def _async_true(*_args, **_kwargs):
