@@ -285,6 +285,15 @@ def scan_library_sync(full: bool = False) -> dict:
     Returns the stats dict persisted on the scan_runs row. A missing library path
     records a ``status=error`` run and then raises (CLI exits non-zero; the API
     background task logs it and the failed run is visible via /scans/status).
+
+    Cooperative cancellation (spec 6.3): this function runs in an
+    ``asyncio.to_thread`` worker thread, so ``asyncio.Task.cancel`` cannot stop
+    it. Instead it polls ``scan_locks.cancel_requested`` at every spec check
+    point — before each file, after a processed file, before the cleanup phase —
+    and stops promptly while preserving the already-parsed work. The cancelled
+    run is persisted as ``status=cancelled`` (never an error record), the
+    cleanup phase is skipped, and the async wrapper skips the post-scan matching
+    phase. No async APIs are called from this thread.
     """
     started_at = utc_now()
     start_time = time.monotonic()
@@ -319,11 +328,28 @@ def scan_library_sync(full: bool = False) -> dict:
             ]
             scan_locks.update_progress(SCAN_TYPE_LIBRARY, total=len(audio_paths), phase="scanning")
             for path in audio_paths:
+                # spec 6.3: check before each file — a pending cancel stops the
+                # loop, the current (already finished) file stays committed.
+                if scan_locks.cancel_requested(SCAN_TYPE_LIBRARY):
+                    status = "cancelled"
+                    break
                 _scan_one_file(db, path, known, full, stats)
                 scan_locks.update_progress(SCAN_TYPE_LIBRARY, done=stats["files_seen"])
-            if full:
-                scan_locks.update_progress(SCAN_TYPE_LIBRARY, phase="cleanup")
-                _cleanup_orphan_artists(db, stats)
+                # spec 6.3: check after a processed file — a cancel requested
+                # while the file was read finishes that file's atomic unit.
+                if scan_locks.cancel_requested(SCAN_TYPE_LIBRARY):
+                    status = "cancelled"
+                    break
+            # spec 6.3: check before cleanup — a cancelled scan skips the orphan
+            # cleanup but keeps the scan_files/artists work already committed.
+            if status == "ok" and full:
+                if scan_locks.cancel_requested(SCAN_TYPE_LIBRARY):
+                    status = "cancelled"
+                else:
+                    # spec 6.6: reset total/done when entering a new phase
+                    # — cleanup total is unknown (indeterminate).
+                    scan_locks.update_progress(SCAN_TYPE_LIBRARY, total=0, done=0, phase="cleanup")
+                    _cleanup_orphan_artists(db, stats)
             db.commit()
             stats["artists_total"] = db.scalar(select(func.count()).select_from(Artist)) or 0
             log_event(db, EVENT_SCAN_RUN, None, {"type": SCAN_TYPE_LIBRARY, "status": status})
@@ -362,13 +388,40 @@ async def _run_scan_task(full: bool) -> None:
     try:
         scan_locks.update_progress(SCAN_TYPE_LIBRARY, phase="library scan")
         stats = await asyncio.to_thread(scan_library_sync, full)
-        scan_locks.update_progress(SCAN_TYPE_LIBRARY, phase="matching artists")
+        # spec 6.3: check before post-scan matching — a cancelled run never
+        # starts the matching phase (the worker already persisted `cancelled`;
+        # this also covers the race where the cancel request landed after the
+        # worker committed its `ok` run but before this check).
+        if scan_locks.cancel_requested(SCAN_TYPE_LIBRARY):
+            logger.info("library scan cancelled; skipping post-scan matching")
+            _mark_last_run_cancelled()
+            return
+        # spec 6.6: reset to indeterminate — matching has no known total.
+        scan_locks.update_progress(SCAN_TYPE_LIBRARY, total=0, done=0, phase="matching artists")
         match_stats = await _match_pending_after_scan()
         logger.info("library scan done stats=%s match=%s", json.dumps(stats), json.dumps(match_stats))
     except Exception:
         logger.exception("library scan task failed")
     finally:
         scan_locks.finish(SCAN_TYPE_LIBRARY)
+
+
+def _mark_last_run_cancelled() -> None:
+    """Force the just-finished library run to ``cancelled`` (spec 6.3).
+
+    The synchronous worker persists ``cancelled`` whenever it observes the
+    cancellation flag itself, so this is normally a no-op. It exists to cover
+    the narrow race where a cancel request lands after the worker committed an
+    ``ok`` run (its final check points already passed) but before the async
+    wrapper polls the flag: the persisted status must still say ``cancelled``.
+    """
+    with get_session_factory()() as db:
+        row = db.scalar(
+            select(ScanRun).where(ScanRun.type == SCAN_TYPE_LIBRARY).order_by(ScanRun.id.desc()).limit(1)
+        )
+        if row is not None and row.status != "cancelled":
+            row.status = "cancelled"
+            db.commit()
 
 
 async def _match_pending_after_scan() -> dict:

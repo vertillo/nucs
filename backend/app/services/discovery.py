@@ -562,6 +562,24 @@ def _policy_fingerprint(db: Session) -> str:
     )
 
 
+def _check_cancelled(scan_type: str) -> None:
+    """Raise ``CancelledError`` when the running scan's cancellation is requested.
+
+    The spec 6.2 cancellation seam: the releases/feat workers poll
+    ``scan_locks.cancel_requested`` at SAFE POINTS only — per artist, per
+    provider fetch boundary, per candidate/recording batch (spec:1254) — always
+    after a commit, so the write transaction is never open when the error
+    propagates. ``run_discovery`` maps the raised ``CancelledError`` to ScanRun
+    status ``cancelled`` (never ``error``, spec:1260), already-committed
+    releases survive (spec:1261), and ``_run_discovery_task``'s ``finally``
+    always releases the global lock (spec:1263). Raising the real asyncio
+    ``CancelledError`` (instead of a custom exception) lets it propagate
+    correctly through the task machinery (spec:1258).
+    """
+    if scan_locks.cancel_requested(scan_type):
+        raise asyncio.CancelledError(f"cancellation requested for {scan_type}")
+
+
 async def _process_candidate(
     db: Session,
     artist: Artist,
@@ -704,6 +722,7 @@ async def _level1_artist(
     stats: dict,
     new_keys: list[tuple[str, str]],
     new_release_ids: list[int],
+    scan_type: str,
 ) -> None:
     """Level 1 for one artist via its PERSISTED external identities (spec 3.2).
 
@@ -752,6 +771,10 @@ async def _level1_artist(
         _record_fallback_reason(stats, FALLBACK_APPLE_MISSING_IDENTITY)
     latest_seen = artist.last_release_check
     for provider_name in catalog:
+        # Spec 6.2 safe point: one provider fetch boundary. The session is
+        # clean here (the previous provider's candidates were committed), so a
+        # cancellation raise cannot leave a write transaction open.
+        _check_cancelled(scan_type)
         provider = get_provider(provider_name)
         identity = next(row for row in identities if row.provider == provider_name)
         snapshot = _identity_artist_snapshot(artist, identity)
@@ -765,6 +788,9 @@ async def _level1_artist(
                 candidates = await provider.fetch_releases(snapshot, from_date, db=db)
             accepted = 0
             for candidate in candidates:
+                # Spec 6.2 safe point: one candidate batch, right after the
+                # previous candidate's commit (phase 12b write discipline).
+                _check_cancelled(scan_type)
                 seen = await _process_candidate(
                     db,
                     artist,
@@ -820,15 +846,22 @@ async def _level1_artist(
     artist.last_release_check = latest_seen
 
 
-async def _level1(db: Session, stats: dict, new_keys: list, new_release_ids: list[int]) -> None:
+async def _level1(
+    db: Session, stats: dict, new_keys: list, new_release_ids: list[int], scan_type: str
+) -> None:
     artists = db.scalars(select(Artist).where(Artist.ignored == 0).order_by(Artist.id)).all()
     stats["artists_processed"] = len(artists)
     scan_locks.update_progress(SCAN_TYPE_RELEASES, total=len(artists), phase="level 1")
     discovery_from = _discovery_from_date(db)
     allowed_types = _allowed_types(db)
     for index, artist in enumerate(artists, start=1):
+        # Spec 6.2 safe point: per artist, before any provider network call.
+        # The previous artist's work was committed by the loop below.
+        _check_cancelled(scan_type)
         try:
-            await _level1_artist(db, artist, discovery_from, allowed_types, stats, new_keys, new_release_ids)
+            await _level1_artist(
+                db, artist, discovery_from, allowed_types, stats, new_keys, new_release_ids, scan_type
+            )
             db.commit()
             scan_locks.update_progress(SCAN_TYPE_RELEASES, done=index)
         except MBError:
@@ -849,6 +882,7 @@ async def _level2_artist(
     stats: dict,
     new_keys: list[tuple[str, str]],
     new_release_ids: list[int],
+    scan_type: str,
 ) -> None:
     """Level 2 for one artist: paginated recording browse, capped per artist.
 
@@ -895,6 +929,10 @@ async def _level2_artist(
                 _MAX_FEAT_RECORDINGS_PER_ARTIST,
             )
             break
+        # Spec 6.2 safe point: per recording page, before the browse network
+        # call (the previous page's per-release commits already released the
+        # write lock).
+        _check_cancelled(scan_type)
         stats["api_calls"] += 1
         stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
         data = await client.browse_artist_recordings(mb_identity.provider_id, limit=_PAGE_SIZE, offset=offset)
@@ -909,6 +947,10 @@ async def _level2_artist(
             if not recording_mbid or _recording_seen(db, recording_mbid, policy_fingerprint):
                 stats["seen_recording_cache_hits"] += 1
                 continue
+            # Spec 6.2 safe point: per recording, before the per-recording
+            # provider fetch (a cancelled run must stop at the recording
+            # boundary without opening new work).
+            _check_cancelled(scan_type)
             try:
                 stats["api_calls"] += 1
                 stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
@@ -961,7 +1003,9 @@ async def _level2_artist(
             break
 
 
-async def _level2(db: Session, stats: dict, new_keys: list, new_release_ids: list[int]) -> None:
+async def _level2(
+    db: Session, stats: dict, new_keys: list, new_release_ids: list[int], scan_type: str
+) -> None:
     """Feat-scan eligibility (spec 3.2): artists with at least one EXTERNAL
     IDENTITY — never the legacy ``mbid`` column. An Apple-only artist is
     eligible/processed; ``_level2_artist`` then browses MusicBrainz only for
@@ -978,6 +1022,9 @@ async def _level2(db: Session, stats: dict, new_keys: list, new_release_ids: lis
     allowed_types = _allowed_types(db)
     policy_fingerprint = _policy_fingerprint(db)
     for index, artist in enumerate(artists, start=1):
+        # Spec 6.2 safe point: per artist, before any provider network call.
+        # The previous artist's work was committed by the loop below.
+        _check_cancelled(scan_type)
         try:
             await _level2_artist(
                 db,
@@ -988,6 +1035,7 @@ async def _level2(db: Session, stats: dict, new_keys: list, new_release_ids: lis
                 stats,
                 new_keys,
                 new_release_ids,
+                scan_type,
             )
             db.commit()
             scan_locks.update_progress(SCAN_TYPE_FEAT, done=index)
@@ -1017,7 +1065,7 @@ def _record_scan_run(scan_type: str, started_at: str, start_time: float, status:
         db.commit()
 
 
-async def _enrich_release(key: tuple[str, str], stats: dict) -> None:
+async def _enrich_release(key: tuple[str, str], stats: dict, *, scan_type: str | None = None) -> None:
     """Cover + links for one new release (spec 8.4 + phase 12b); never raises.
 
     The cover comes from the candidate-provided URL when available (stored in
@@ -1025,7 +1073,14 @@ async def _enrich_release(key: tuple[str, str], stats: dict) -> None:
     provider URLs already stored at creation; here we fill Spotify, Apple Music
     (via iTunes search), Deezer fallback and all the search URLs. Tracklists
     are fetched lazily by the release detail endpoint, not here.
+
+    ``scan_type`` (spec 6.2): when a run-scoped value is passed, a cancellation
+    request is checked BEFORE this release's pipeline starts — a safe point,
+    since the release rows were committed by the level scans and each network
+    block below commits before the next await.
     """
+    if scan_type is not None:
+        _check_cancelled(scan_type)
     try:
         with get_session_factory()() as db:
             row = db.scalar(select(Release).where(Release.provider == key[0], Release.provider_id == key[1]))
@@ -1103,12 +1158,16 @@ async def _enrich_release(key: tuple[str, str], stats: dict) -> None:
         logger.warning("cover/link pipeline failed for release %s", key, exc_info=True)
 
 
-async def _enrich_new_releases(new_keys: list[tuple[str, str]], stats: dict) -> None:
+async def _enrich_new_releases(
+    new_keys: list[tuple[str, str]], stats: dict, *, scan_type: str | None = None
+) -> None:
     """Run the §8.4 pipeline over the new releases, 2 tasks at a time.
 
     Every external service keeps its own rate limiter (1 req/s MusicBrainz
     shared with CAA, 2 req/s Deezer, 5 req/s Spotify, gentle iTunes), so the
-    concurrency cap only bounds the number of in-flight downloads.
+    concurrency cap only bounds the number of in-flight downloads. ``scan_type``
+    is forwarded to ``_enrich_release`` so a cancellation request stops the
+    pipeline at the next release boundary (spec 6.2).
     """
     if not new_keys:
         return
@@ -1116,7 +1175,7 @@ async def _enrich_new_releases(new_keys: list[tuple[str, str]], stats: dict) -> 
 
     async def _one(key: tuple[str, str]) -> None:
         async with semaphore:
-            await _enrich_release(key, stats)
+            await _enrich_release(key, stats, scan_type=scan_type)
 
     await asyncio.gather(*(_one(key) for key in new_keys))
 
@@ -1198,14 +1257,15 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
             if get_setting(db, "feat_scan_enabled") != "true":
                 logger.warning("feat scan requested but feat_scan_enabled is false; nothing to do")
             else:
-                await _level2(db, stats, new_keys, new_release_ids)
+                await _level2(db, stats, new_keys, new_release_ids, scan_type)
         else:
             scan_locks.update_progress(SCAN_TYPE_RELEASES, phase="level 1")
-            await _level1(db, stats, new_keys, new_release_ids)
+            await _level1(db, stats, new_keys, new_release_ids, scan_type)
         # Spec 8.4: enrich every NEW release with cover + links. The pipeline
         # never raises; per-release failures land in pipeline_errors.
-        scan_locks.update_progress(scan_type, phase="enriching covers and links")
-        await _enrich_new_releases(new_keys, stats)
+        # spec 6.6: reset total/done — enrichment total is indeterminate.
+        scan_locks.update_progress(scan_type, total=0, done=0, phase="enriching covers and links")
+        await _enrich_new_releases(new_keys, stats, scan_type=scan_type)
         # Spec 8.4.3 + 5.6: one aggregate notification per run, never one per
         # release (spec:465). Newly RELEASED releases keep the existing "new
         # releases" aggregate; newly discovered FUTURE releases are announced
@@ -1230,8 +1290,14 @@ async def run_discovery(db: Session, feat_scan: bool = False) -> dict:
         if new_release_ids:
             stats["notification_count"] = len(new_release_ids)
     except asyncio.CancelledError:
+        # Spec 6.2 (spec:1256-1263): a cancellation is NOT an application
+        # failure — the run is recorded as status ``cancelled``, no error row is
+        # written, already-committed releases stay, and the notification block
+        # above was never reached (no success notification for incomplete
+        # work). The error re-propagates so the task ends cancelled; the task
+        # wrapper's ``finally`` releases the global lock.
         logger.warning("discovery cancelled mid-run type=%s", scan_type)
-        status = "error"
+        status = "cancelled"
         raise
     except Exception:
         logger.exception("discovery aborted")

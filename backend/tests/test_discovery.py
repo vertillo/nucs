@@ -21,10 +21,12 @@ import app.services.discovery as discovery
 import app.services.library_scan as library_scan_module
 import app.services.musicbrainz as musicbrainz
 import app.services.notify as notify
+import app.services.scan_locks as scan_locks
 from app.config import get_settings
 from app.db import get_session_factory
 from app.main import run_migrations, seed_settings_if_empty
 from app.models import (
+    AppError,
     Artist,
     ArtistExternalIdentity,
     NotificationEvent,
@@ -1538,9 +1540,11 @@ async def test_run_discovery_records_error_status_on_fatal_exception(disc_db, mo
         assert run.type == "releases"
 
 
-async def test_run_discovery_cancelled_mid_run_records_error_status(disc_db, monkeypatch):
-    """Graceful shutdown cancels the background task: the partial run must
-    be persisted as status=error, never as ok (coherent /scans/status)."""
+async def test_run_discovery_cancelled_mid_run_records_cancelled_status(disc_db, monkeypatch):
+    """Spec 6.2 (spec:1256-1263): a cancelled run is persisted as status
+    ``cancelled`` — never ``ok`` and never the old ``error`` — so the coherent
+    /scans/status history distinguishes a user shutdown from an application
+    failure (spec:1260, spec:1935)."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     fake.gate = asyncio.Event()
@@ -1558,7 +1562,7 @@ async def test_run_discovery_cancelled_mid_run_records_error_status(disc_db, mon
 
     with get_session_factory()() as db:
         run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
-        assert run.status == "error"
+        assert run.status == "cancelled"
         assert run.type == "releases"
 
 
@@ -1723,7 +1727,7 @@ async def test_enrich_new_releases_caps_concurrency_at_two(disc_db, monkeypatch)
     active = 0
     peak = 0
 
-    async def _fake_enrich(key, stats):
+    async def _fake_enrich(key, stats, *, scan_type=None):
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
@@ -1898,9 +1902,10 @@ async def test_start_releases_scan_runs_in_background_and_releases_lock(disc_db,
         assert db.scalar(select(ScanRun).order_by(ScanRun.id.desc())).type == "releases"
 
 
-async def test_cancel_all_persists_error_run_and_releases_locks(disc_db, monkeypatch):
-    """Graceful shutdown cancels in-flight tasks: partial run persisted as
-    status=error and the scan locks are released."""
+async def test_cancel_all_persists_cancelled_run_and_releases_locks(disc_db, monkeypatch):
+    """Graceful shutdown cancels in-flight tasks: the partial run is persisted
+    as status=``cancelled`` (spec 6.2, spec:1935) and the scan locks are
+    released."""
     fake = _FakeClient()
     _install_fake(monkeypatch, fake)
     fake.gate = asyncio.Event()
@@ -1917,10 +1922,163 @@ async def test_cancel_all_persists_error_run_and_releases_locks(disc_db, monkeyp
     with get_session_factory()() as db:
         run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
         assert run.type == "releases"
-        assert run.status == "error"
+        assert run.status == "cancelled"
     # lock released: a new scan can start immediately
     assert await discovery.start_releases_scan() is True
     fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+
+
+class _CancelGateFake(_FakeClient):
+    """Spec 6.2 fixture: parks exactly ONE artist's fetch on a gate.
+
+    The base ``_FakeClient`` parks EVERY call on ``gate``, which cannot express
+    "let the first artist commit, then park the second" in a single run. This
+    subclass gates only the artist whose mbid matches ``parked_mbid`` (both for
+    the level-1 search and the level-2 browse), so a test can deterministically
+    request a cancellation after earlier artists' work is already committed.
+    """
+
+    def __init__(self, parked_mbid: str) -> None:
+        super().__init__()
+        self.parked_mbid = parked_mbid
+        self.gate = asyncio.Event()
+        self.parked = False
+
+    async def search_release_groups(self, mbid, from_date, limit=100, offset=0):
+        self.search_calls.append((mbid, from_date, limit, offset))
+        if mbid == self.parked_mbid:
+            self.parked = True
+            await self.gate.wait()
+        page_index = offset // limit
+        pages = self.search_pages.get(mbid, [])
+        groups = pages[page_index] if page_index < len(pages) else []
+        return {"release-groups": groups, "count": self.search_counts.get(mbid)}
+
+    async def browse_artist_recordings(self, mbid, limit=100, offset=0):
+        self.browse_calls.append((mbid, limit, offset))
+        if mbid == self.parked_mbid:
+            self.parked = True
+            await self.gate.wait()
+        page_index = offset // limit
+        pages = self.browse_pages.get(mbid, [])
+        recordings = pages[page_index] if page_index < len(pages) else []
+        return {"recordings": recordings, "recording-count": self.browse_counts.get(mbid)}
+
+
+async def test_cancel_releases_mid_run_cancelled_partial_work_and_lock_released(disc_db, monkeypatch):
+    """Spec 6.2 acceptance: cancelling a releases scan mid-run (via the spec
+    6.1 registry flag) records ScanRun status ``cancelled``, preserves the
+    already-committed releases, releases the global lock (a second scan starts
+    immediately), records no application error and sends no success
+    notification for the incomplete run."""
+    fake = _CancelGateFake(parked_mbid="mb-altro")
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"), ("Altro", "mb-altro"))
+    fake.search_pages["mb-mio"] = [[_rg("rg-a", "Album A", "Album", "2024-07-01", _credit(("Mio", "")))]]
+    fake.search_counts["mb-mio"] = 1
+    fake.search_pages["mb-altro"] = [[_rg("rg-b", "Album B", "Album", "2024-07-01", _credit(("Altro", "")))]]
+    fake.search_counts["mb-altro"] = 1
+
+    sent: list[str] = []
+
+    async def _recording_send(title, body):
+        sent.append(title)
+        return (True, "")
+
+    monkeypatch.setattr(notify, "send_notification", _recording_send)
+    with get_session_factory()() as db:
+        set_setting(db, "notify_enabled", "true")
+        set_setting(db, "notify_urls", "tgram://tok/chat")
+        db.commit()
+
+    assert await discovery.start_releases_scan() is True
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not fake.parked and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert fake.parked  # "Altro" is parked at its fetch; "Mio"'s release is committed
+
+    assert scan_locks.request_cancel("releases") is True
+    fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert not discovery.running_scans()  # the global lock was always released
+
+    with get_session_factory()() as db:
+        run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
+        assert run.type == "releases"
+        assert run.status == "cancelled"  # not ok, not error
+        rows = db.scalars(select(Release)).all()
+        assert [row.rgid for row in rows] == ["rg-a"]  # partial work preserved
+        assert db.scalar(select(AppError)) is None  # cancellation is not a failure
+    assert sent == []  # no success notification for the incomplete run
+
+    # The lock was released: a second scan starts immediately.
+    assert await discovery.start_releases_scan() is True
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+
+
+async def test_cancel_feat_mid_run_cancelled_partial_work_and_lock_released(disc_db, monkeypatch):
+    """Spec 6.2 acceptance for the weekly feat scan: cancelling mid-run records
+    ``cancelled`` (not ``error``), keeps the featured releases already
+    committed, releases the global lock and sends no success notification."""
+    fake = _CancelGateFake(parked_mbid="mb-altro")
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"), ("Altro", "mb-altro"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-1"}]]
+    fake.browse_counts["mb-mio"] = 1
+    fake.recording_details["rec-1"] = _recording_detail("rec-1", ["rel-1"])
+    fake.release_details["rel-1"] = _release_detail(
+        "rel-1", _rg("rg-feat-a", "Album A", "Album", "2024-07-01", _credit(("Altro", "")))
+    )
+    fake.browse_pages["mb-altro"] = [[{"id": "rec-2"}]]
+    fake.browse_counts["mb-altro"] = 1
+    fake.recording_details["rec-2"] = _recording_detail("rec-2", ["rel-2"])
+    fake.release_details["rel-2"] = _release_detail(
+        "rel-2", _rg("rg-feat-b", "Album B", "Album", "2024-07-01", _credit(("Mio", "")))
+    )
+
+    sent: list[str] = []
+
+    async def _recording_send(title, body):
+        sent.append(title)
+        return (True, "")
+
+    monkeypatch.setattr(notify, "send_notification", _recording_send)
+    with get_session_factory()() as db:
+        set_setting(db, "notify_enabled", "true")
+        set_setting(db, "notify_urls", "tgram://tok/chat")
+        db.commit()
+
+    assert await discovery.start_feat_scan() is True
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not fake.parked and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert fake.parked  # "Altro" is parked at its browse; "Mio"'s feat release is committed
+
+    assert scan_locks.request_cancel("feat") is True
+    fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert not discovery.running_scans()  # the global lock was always released
+
+    with get_session_factory()() as db:
+        run = db.scalar(select(ScanRun).order_by(ScanRun.id.desc()))
+        assert run.type == "feat"
+        assert run.status == "cancelled"  # not ok, not error
+        rows = db.scalars(select(Release)).all()
+        assert [row.rgid for row in rows] == ["rg-feat-a"]  # partial work preserved
+        assert db.scalar(select(AppError)) is None  # cancellation is not a failure
+    assert sent == []  # no success notification for the incomplete run
+
+    # The lock was released: a second feat scan starts immediately.
+    assert await discovery.start_feat_scan() is True
     deadline = asyncio.get_running_loop().time() + 5.0
     while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.02)
@@ -2026,6 +2184,70 @@ async def test_api_scan_feat_202_when_enabled(client, monkeypatch):
         await asyncio.sleep(0.02)
     with get_session_factory()() as db:
         assert db.scalar(select(ScanRun).order_by(ScanRun.id.desc())).type == "feat"
+
+
+async def test_refresh_survival_releases_new_client_sees_same_scan(client, make_client, monkeypatch):
+    """Spec 6.7: browser refresh must NOT stop the server task nor create a duplicate.
+
+    - Client A starts a releases scan (blocked on gate) → 202
+    - Client B (simulated reload — new httpx client, separate session) reads
+      status → same running scan
+    - Client B tries to start → 409 (scan_locks is process-global)
+    - Original scan completes normally
+    - Exactly one ScanRun exists with status ``ok``
+    """
+    fake = _FakeClient()
+    _install_fake(monkeypatch, fake)
+    fake.gate = asyncio.Event()
+    _seed_artists(("RefreshSurvival", "mb-refresh"))
+    fake.search_pages["mb-refresh"] = [
+        [_rg("rg-refresh", "Survived Refresh", "Album", "2024-07-01", _credit(("RefreshSurvival", "")))]
+    ]
+    fake.search_counts["mb-refresh"] = 1
+
+    # ---- Client A (original browser tab) ----
+    await _login(client)
+
+    first = await client.post("/api/v1/scans/releases", headers=API_HEADERS)
+    assert first.status_code == 202
+    assert discovery.running_scans() != {}
+
+    status_a = await client.get("/api/v1/scans/status")
+    running_a = status_a.json()["running"]
+    assert running_a is not None
+    assert running_a["type"] == "releases"
+    started_at = running_a["started_at"]
+    assert started_at is not None
+
+    # ---- Client B (simulated browser reload — new httpx client) ----
+    async with make_client() as client_b:
+        await _login(client_b)
+
+        # Client B sees the SAME running scan (process-global scan_locks state)
+        status_b = await client_b.get("/api/v1/scans/status")
+        running_b = status_b.json()["running"]
+        assert running_b is not None, "new client must see the running scan"
+        assert running_b["type"] == "releases"
+        assert running_b["started_at"] == started_at
+
+        # Client B tries to start a scan → 409 (lock is held process-wide)
+        second = await client_b.post("/api/v1/scans/releases", headers=API_HEADERS)
+        assert second.status_code == 409
+        assert second.json()["detail"] == "Scan already in progress"
+
+    # ---- Release the gate → original scan completes ----
+    fake.gate.set()
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while discovery.running_scans() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert not discovery.running_scans()
+
+    # ---- Verify: exactly one ScanRun with status "ok" ----
+    with get_session_factory()() as db:
+        runs = db.scalars(select(ScanRun).order_by(ScanRun.id)).all()
+        assert len(runs) == 1, "refresh must not create a duplicate scan run"
+        assert runs[0].status == "ok"
+        assert runs[0].type == "releases"
 
 
 # --- Release external identities (spec 1.4) -----------------------------------
@@ -4081,3 +4303,33 @@ async def test_upcoming_notification_acceptance_sequence(disc_db, monkeypatch, m
     with get_session_factory()() as db:
         state = db.get(ReleaseState, release_id)
         assert state.favorite == 1 and state.hidden == 1
+
+
+# ---------------------------------------------------------------------------
+# spec 6.6 — enrichment phase resets progress to indeterminate
+# ---------------------------------------------------------------------------
+
+
+async def test_enrichment_phase_resets_progress(disc_db, monkeypatch):
+    """Enrichment phase resets total/done to 0 (indeterminate — spec 6.6)."""
+    captured: dict = {}
+
+    async def spy_enrich(keys, stats, scan_type=None):
+        snap = scan_locks.running_scans()
+        if "releases" in snap:
+            captured["enrich_progress"] = dict(snap["releases"]["progress"])
+
+    monkeypatch.setattr(discovery, "_enrich_new_releases", spy_enrich)
+
+    scan_locks.reset_state()
+    assert await scan_locks.try_start(discovery.SCAN_TYPE_RELEASES) is True
+    try:
+        with get_session_factory()() as db:
+            await discovery.run_discovery(db)
+        assert "enrich_progress" in captured
+        p = captured["enrich_progress"]
+        assert p["total"] == 0, f"enrich total should be 0, got {p['total']}"
+        assert p["done"] == 0, f"enrich done should be 0, got {p['done']}"
+        assert p["phase"] == "enriching covers and links"
+    finally:
+        scan_locks.reset_state()
