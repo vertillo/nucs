@@ -1759,3 +1759,24 @@ PASS — intended PiKi linked only via explicit selection; 8 live homonyms never
 ### Evidence
 
 - `.omo/evidence/task-60-live-axwell.md` (full receipts: raw catalog JSON fields, both runs' stats, DB dumps, API counts, cleanup)
+
+## Phase 10 Live Validation (Task 61)
+
+**Date:** 2026-08-12T14:57:00Z
+**Event:** task-61-completed
+**HEAD:** bb28c85
+**Spec:** spec:1808-1812 (Enzo Dong featuring case) — disposable stack, never the user's data.
+
+### Checklist
+
+- [x] **Live validation, disposable test data** — tracked Enzo Dong (real Deezer identity 10375822 verified live; real MB identity 0d52888b-aacc-4e55-9a0a-f61020b19e84 verified live at score 100/IT) on uvicorn 127.0.0.1:8081 (temp DATA_DIR + temp tagged library; port 8080 left to parallel task 60's stack). Live level-1 scan discovered the reported "Panama" case: release id=1 "Panama (feat. La traviesa malcría)" (single, 2026-07-24, deezer 1037084832) — in window (default 2026-01-01 → today). Re-scan after tracking Pepp 'O Red (deezer 265213582) kept ONE canonical row (`merge_reasons {"EXACT_EXTERNAL_ID": 2}`) and added the second ReleaseArtist relation.
+- [x] **Tracked Enzo Dong visibly identified in Feed/detail** — `matched_artists` (ReleaseArtist-authoritative): `[{Enzo Dong, primary}, {Pepp 'O Red, primary}]`; browser 10/10 PASS: feed card renders both with aria-label/title "Tracked artist" (accent); detail "Your artists" renders them with role labels; screenshots task-61-feed.png / task-61-detail.png.
+- [x] **role=featured sub-claim: N.A. live** — the reported release is absent from MusicBrainz (release-group + recording searches → count 0); Enzo Dong's 32 MB recordings are all pre-window (feat run 4: 105 MB calls, 33 recordings evaluated, 35 candidates date-rejected, 0 accepted). Deezer path records role=primary by design (discovery.py:801 forced non-MB primary). Deterministic complement green: task-18 featured/homonym tests 5/5 passed.
+- [x] **No homonym-by-name false highlight** — tracked-unlinked "La traviesa malcría" (name in the release title) absent from `matched_artists` and from the DOM ("Tracked artist" elements); payload == `release_artists` rows exactly (SQL check).
+- [x] **Findings** — FIND-61-1 (non-MB forced primary for Deezer contributor albums; role re-derivation = product decision, flagged); FIND-61-2 (level-2 `_mark_recording_seen`/`_mark_recording_failed` write held across MB awaits → observed `database is locked` 500s on concurrent API requests during the feat run; fix = code change, flagged for the gate); NIT (detail-page tracked names lack the card-only "Tracked artist" aria-label).
+- [x] **Evidence** — `.omo/evidence/task-61-live-enzo.md` + screenshots; commit `docs(validation): Enzo featured case` (evidence only) pushed.
+
+### Artifacts
+
+- `.omo/evidence/task-61-live-enzo.md` (full raw evidence: Deezer/MB/iTunes receipts, API payloads, scan stats, SQL)
+- `.omo/evidence/task-61-feed.png`, `.omo/evidence/task-61-detail.png`
