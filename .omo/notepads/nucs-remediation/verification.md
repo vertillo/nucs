@@ -1688,3 +1688,37 @@ PASS — intended PiKi linked only via explicit selection; 8 live homonyms never
 ### Evidence
 
 - `.omo/evidence/task-59-live-piki.md` (full receipts: raw candidate table, normalization analysis, policy verdict, audit/DB rows, cleanup)
+
+## Phase 10 Live Validation (Task 58) — Identity/split cases (spec:1773-1786)
+
+**Date:** 2026-08-12T14:34Z–14:50Z
+**Event:** task-58-completed
+**Environment:** disposable — temp `DATA_DIR` + temp music library (copies of `backend/tests/fixtures/audio/` retagged via mutagen: `Pepp 'O Red` flac, `Enzo Dong` mp3, `Young Donghito` m4a, `Manu T4L` ogg, `La traviesa malcría` opus), `frontend && npm run build` green, NO product code changed; `decide_auto_match`/`MATCH_FULL_SCORE` untouched. Port note: parallel task-59's server held 8080 (its PiKi run), so this task's uvicorn used 8080→8099; the environment repeatedly terminated this task's uvicorn instances, so after the real-API library scan the rematch phase ran through the app's service layer (`mb_matching.match_artist` = the exact `POST /rematch` function, `split_soft`, `search_artists_everywhere` = the exact `GET /search` function) against the same temp DB.
+
+### Live provider state
+
+- MusicBrainz: ❌ down 14:36–14:43Z (IP blocked at TLS level; Deezer/iTunes/example.com/GitHub 200) — the scan-time auto-match observed the provider-outage ⇒ Needs match contract live (`match failed` warnings, zero identity rows, no `/errors` rows — `match_all_pending` logs warnings only). ✅ back from ~14:43Z; all five rematches then ran live.
+- Deezer ✅ live, iTunes ✅ live, Discogs inert (no token).
+
+### Checklist (per case: internal artist / provider identity / no unsafe homonym pick / split)
+
+| Case | Internal artist (tag → row) | Provider identity | Homonym safety | Split |
+|------|------------------------------|-------------------|----------------|-------|
+| **Pepp 'O Red** | ✅ id=4 `pepp o red` from pepp.flac | Needs match — MB `artist:"Pepp 'O Red"` → 0 results; unquoted MB top hit would be RHCP score 100 | ✅ nothing attached; Deezer 265213582 + iTunes 1745679575 (different apostrophes) = 2 cross-provider exacts → user must pick | N.A. (`split_soft`=[]) |
+| **Enzo Dong** | ✅ id=2 `enzo dong` from enzo.mp3 | ✅ **Linked** mb `0d52888b-aacc-4e55-9a0a-f61020b19e84` score 100, link_method=auto | ✅ unique MB exact; Deezer rows fuzzy-only; iTunes `Enzo D.o.n.g.` 852359740 normalizes to `enzo dong` too (picker shows both — auto path used MB only) | N.A. |
+| **Young Donghito** | ✅ id=1 `young donghito` from donghito.m4a | Needs match — MB → 0 results; no alias on Enzo Dong's MB page | ✅ **4 distinct exact same-name candidates** (deezer 244362312 + itunes ×3: 1649570481/1718556824/1823106383) — none auto-picked | N.A. |
+| **Manu T4L** | ✅ id=3 `manu t4l` from manu.ogg | Needs match — MB → 0 results; unquoted MB top hit would be **"T4L" score 100** (wrong artist) | ✅ iTunes has 2 exact `Manu T4L` homonym pages (1846878751/1878727997); Deezer fuzzy-only; none auto-picked | N.A. |
+| **La traviesa malcría** | ✅ id=5 `la traviesa malcria` from traviesa.opus (accent normalized) | ✅ **Linked** mb `ae3ba5d2-543a-4692-ad4c-20a7c650c939` score 100, link_method=auto; Deezer+iTunes consistent | ✅ unique MB exact | N.A. |
+
+- **No unsafe automatic homonym selection** ✅ — all three non-unique cases stayed identity-less (ids 1/3/4: `identities=[]`, mbid NULL after rematch); only the two unique score-100 MB candidates were auto-linked.
+- **Split provenance** N.A. — no soft separator in any of the five names (`split_soft`=[] each), `split_from_artist_id` NULL on all rows, no children; mechanism regression-locked (task 9: `test_split_finalized_only_when_all_parts_safe`).
+- **Upstream ambiguity classified, rules not weakened (spec:1794)** ✅ — MB missing Pepp 'O Red / Young Donghito / Manu T4L entirely; iTunes same-name homonym pages (3× Young Donghito, 2× Manu T4L); Deezer/iTunes identity disagreement for Pepp 'O Red. No fuzzy workaround added; deterministic policy subset re-run green (`-k "homonym or ambiguous or article_variant or split"` → 17 passed).
+- **Final DB receipts** — artists 5 rows; `artist_external_identities` exactly 2 rows (mb auto 100 for ids 2 and 5); scan_runs 1× library ok (5 files, 5 artists_new); app_errors 0.
+
+### Verdict
+
+**PASS (5/5 cases; split N.A.)** — correct internal artists from tags; correct provider identities (2 auto-linked uniquely, 3 correctly Needs match); no homonym ever auto-selected; upstream gaps/homonyms recorded as upstream ambiguity per spec:1794; matcher untouched. Evidence-only commit `docs(validation): live identity cases`.
+
+### Evidence
+
+- `.omo/evidence/task-58-live-identity.md` (full receipts: env, provider state, per-case raw MB/Deezer/iTunes candidate evidence, DB state, cleanup)
