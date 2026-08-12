@@ -16,20 +16,10 @@ import {
   type ArtistCandidate,
   type ArtistIdentity,
   type ArtistItem,
-  type ArtistSource,
   type ArtistStatus,
 } from '../api/artists'
 import { useInfiniteScroll } from '../hooks/useInfiniteScroll'
 import Toast, { useToast } from '../components/Toast'
-
-const SOURCE_LABEL: Record<ArtistSource, string> = {
-  tag_artist: 'Artist',
-  tag_albumartist: 'Album artist',
-  tag_feat: 'Featuring',
-  tag_contrib: 'Contributor',
-  tag_remix: 'Remixer',
-  manual: 'Manual',
-}
 
 const PROVIDER_LABEL: Record<string, string> = {
   mb: 'MusicBrainz',
@@ -423,9 +413,6 @@ export default function Artists() {
                   <div className="min-w-0">
                     <ArtistName artist={artist} />
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
-                      <span className="rounded-full bg-light-surface2 px-2 py-0.5 text-xs font-medium text-light-textDim dark:bg-dark-surface2 dark:text-dark-textDim">
-                        {SOURCE_LABEL[artist.source]}
-                      </span>
                       <StatusBadge status={artist.status} />
                     </div>
                     <p className="mt-1 text-sm text-light-textDim dark:text-dark-textDim">
