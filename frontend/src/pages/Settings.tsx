@@ -617,6 +617,8 @@ export default function Settings() {
                           <td className="px-2 py-2">
                             {run.status === 'ok' ? (
                               <span className="font-medium text-accentText dark:text-accent">ok</span>
+                            ) : run.status === 'cancelled' ? (
+                              <span className="font-medium text-light-textDim dark:text-dark-textDim">cancelled</span>
                             ) : (
                               <span className="font-medium text-dangerText dark:text-danger">error</span>
                             )}

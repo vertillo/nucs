@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { get } from './api/client'
+import { useScanCompletion } from './hooks/useScanCompletion'
 import { applyTheme, getStoredTheme } from './theme'
 
 import Navbar from './components/Navbar'
@@ -27,6 +28,9 @@ function useMe() {
 
 function RequireAuth() {
   const { data, isPending, isError } = useMe()
+  // Central scan-completion invalidation (spec 6.8): mounted once in the
+  // authenticated shell so every page's caches refresh when a scan ends.
+  useScanCompletion()
 
   useEffect(() => {
     if (data && data.theme !== getStoredTheme()) {
