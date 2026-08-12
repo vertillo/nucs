@@ -60,7 +60,7 @@ function SkeletonRows() {
     <>
       {Array.from({ length: 6 }, (_, i) => (
         <tr key={i} className="border-b border-light-border dark:border-dark-border">
-          {Array.from({ length: 5 }, (_, j) => (
+          {Array.from({ length: 4 }, (_, j) => (
             <td key={j} className="px-4 py-3">
               <div className="h-4 w-2/3 animate-pulse rounded bg-light-surface2 dark:bg-dark-surface2" />
             </td>
@@ -354,8 +354,7 @@ export default function Artists() {
                 </th>
                 <th className="px-4 py-2 font-medium">Status</th>
                 <th className="px-4 py-2 font-medium">Releases</th>
-                <th className="px-4 py-2 font-medium">Ignore</th>
-                <th className="px-4 py-2 font-medium" />
+                <th className="px-4 py-2 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -371,33 +370,26 @@ export default function Artists() {
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={artist.status} />
-                    {artist.status === 'Linked' && artist.identities.length > 0 && (
-                      <p className="mt-1 text-xs text-light-textDim dark:text-dark-textDim">
-                        {artist.identities.map((identity) => PROVIDER_LABEL[identity.provider] ?? identity.provider).join(' · ')}
-                      </p>
-                    )}
                   </td>
                   <td className="px-4 py-3 text-light-textDim dark:text-dark-textDim">{artist.releases_count}</td>
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={!!artist.ignored}
-                      aria-label={`Ignore ${artist.name}`}
-                      onClick={() => setIgnore.mutate({ id: artist.id, ignored: !artist.ignored })}
-                      className={`relative h-5 w-9 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-                        artist.ignored ? 'bg-accent' : 'bg-light-border dark:bg-dark-border'
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-light-bg transition-all dark:bg-dark-bg ${
-                          artist.ignored ? 'left-[18px]' : 'left-0.5'
-                        }`}
-                      />
-                    </button>
-                  </td>
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={!!artist.ignored}
+                        aria-label={`Ignore ${artist.name}`}
+                        onClick={() => setIgnore.mutate({ id: artist.id, ignored: !artist.ignored })}
+                        className={`relative mr-1 h-5 w-9 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                          artist.ignored ? 'bg-accent' : 'bg-light-border dark:bg-dark-border'
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-0.5 h-4 w-4 rounded-full bg-light-bg transition-all dark:bg-dark-bg ${
+                            artist.ignored ? 'left-[18px]' : 'left-0.5'
+                          }`}
+                        />
+                      </button>
                       <button
                         type="button"
                         aria-label={`Manage ${artist.name}`}
