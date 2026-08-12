@@ -8,6 +8,8 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+APP_VERSION = "1.0.0"
+
 
 class Settings(BaseSettings):
     """Reads configuration from environment variables and an optional .env file."""

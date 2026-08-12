@@ -31,7 +31,7 @@ from app.api.library import router as library_router
 from app.api.releases import router as releases_router
 from app.api.scans import router as scans_router
 from app.api.settings import router as settings_router
-from app.config import get_settings
+from app.config import APP_VERSION, get_settings
 from app.db import get_engine, get_session_factory
 from app.models import Setting
 from app.security import (
@@ -48,7 +48,6 @@ from app.services import deezer, discovery, spotify
 from app.services import errors as error_service
 from app.services.musicbrainz import close_client
 
-APP_VERSION = "1.0.0"
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _ALEMBIC_INI = _BACKEND_DIR / "alembic.ini"
 

@@ -29,7 +29,11 @@ function detailOf(body: unknown, fallback: string): string {
  *  the UI must never be stuck on "Saving…" forever (phase 13b finding 13B-03). */
 const FETCH_TIMEOUT_MS = 30000
 
-export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiFetch<T>(
+  path: string,
+  options: RequestInit = {},
+  opts?: { redirectOn401?: boolean },
+): Promise<T> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
   let response: Response
@@ -53,7 +57,9 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   }
 
   if (response.status === 401) {
-    window.location.assign('/login')
+    if (opts?.redirectOn401 !== false) {
+      window.location.assign('/login')
+    }
     throw new ApiError(401, 'Not authenticated')
   }
 
@@ -80,4 +86,26 @@ export function put(path: string, body: unknown): Promise<void> {
 
 export function get<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'GET' })
+}
+
+/** Fetch raw text response (for non-JSON endpoints like diagnostic reports). */
+export async function fetchText(path: string, options: RequestInit = {}): Promise<string> {
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+      ...options.headers,
+    },
+    ...options,
+  })
+  if (response.status === 401) {
+    window.location.assign('/login')
+    throw new ApiError(401, 'Not authenticated')
+  }
+  if (!response.ok) {
+    const body = await parseBody(response)
+    throw new ApiError(response.status, detailOf(body, 'Request failed'))
+  }
+  return response.text()
 }

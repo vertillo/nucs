@@ -61,6 +61,16 @@ class ErrorReport(BaseModel):
     context: str | None = Field(default=None, max_length=2000)
 
 
+class DiagnosticReportRequest(BaseModel):
+    """Optional selection of error ids for the diagnostic report (spec 7.3).
+
+    When ``ids`` is empty or absent the report includes the most-recent errors
+    (currently-visible fallback).
+    """
+
+    ids: list[int] | None = None
+
+
 class ReleaseStatePatch(BaseModel):
     """Partial state merge for POST /releases/{id}/state (spec 10)."""
 
