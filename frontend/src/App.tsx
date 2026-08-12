@@ -55,8 +55,15 @@ function RequireAuth() {
 
   return (
     <div className="min-h-screen bg-light-bg dark:bg-dark-bg">
-      <Navbar username={data.username} theme={data.theme} />
-      <ActivityBar />
+      {/* Spec 8.1 (phase 8): the entire header block (navbar + activity bar)
+          sticks to the viewport top while scrolling. Both bars already paint
+          opaque surface backgrounds, so content never shows through. z-20 sits
+          above in-flow card badges (z-10) and below modals (z-40) / toast
+          (z-50). */}
+      <div className="sticky top-0 z-20">
+        <Navbar username={data.username} theme={data.theme} />
+        <ActivityBar />
+      </div>
       <main className="mx-auto max-w-6xl px-4 py-6">
         <Outlet />
       </main>
