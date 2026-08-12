@@ -1242,6 +1242,79 @@ async def test_level2_failed_fetch_recorded_failed_and_retried(disc_db, monkeypa
         assert discovery._recording_seen(db, "rec-fail", discovery._policy_fingerprint(db)) is True
 
 
+class _Page2GateFake(_FakeClient):
+    """FIND-61-2 fixture: parks ONLY the second browse page (offset >= 100) on
+    a gate, so the first page's evaluation marks are written and the loop is
+    mid-await (the next network call pending) when the test probes the DB."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.parked = False
+
+    async def browse_artist_recordings(self, mbid, limit=100, offset=0):
+        self.browse_calls.append((mbid, limit, offset))
+        if offset >= 100:
+            self.parked = True
+            await self.gate.wait()
+        page_index = offset // limit
+        pages = self.browse_pages.get(mbid, [])
+        recordings = pages[page_index] if page_index < len(pages) else []
+        return {"recordings": recordings, "recording-count": self.browse_counts.get(mbid)}
+
+
+async def test_level2_commits_evaluation_mark_before_next_network_call(disc_db, monkeypatch):
+    """FIND-61-2 (phase 10) regression: the seen/failed evaluation marks in
+    ``_level2_artist`` are committed BEFORE the loop's next MusicBrainz await —
+    the project's #1 SQLite anti-pattern ("never hold a write transaction across
+    slow external-provider awaits") was violated here, surfacing live as
+    ``sqlite3.OperationalError: database is locked`` 500s on concurrent API
+    requests during a feat run.
+
+    Deterministic, fully offline proof: the fake parks the SECOND browse page
+    (offset 100) on a gate. While that next network call is pending, a second,
+    independent session (same DATA_DIR engine) must (a) already SEE the
+    page-0 recording's committed seen-mark and (b) complete its own write
+    without ``database is locked``. Before the fix the mark sat uncommitted in
+    the scan session: the second session saw no row and its write hit
+    ``OperationalError: database is locked`` after the busy timeout."""
+    fake = _Page2GateFake()
+    _install_fake(monkeypatch, fake)
+    _seed_artists(("Mio", "mb-mio"))
+    fake.browse_pages["mb-mio"] = [[{"id": "rec-1"}], [{"id": "rec-2"}]]
+    fake.browse_counts["mb-mio"] = 200
+    fake.recording_details["rec-1"] = _recording_detail("rec-1", ["rel-1"])
+    fake.release_details["rel-1"] = _release_detail(
+        "rel-1", _rg("rg-l2", "Album L2", "Album", "2024-07-01", _credit(("Altro", "")))
+    )
+    fake.recording_details["rec-2"] = _recording_detail("rec-2", ["rel-2"])
+    fake.release_details["rel-2"] = _release_detail(
+        "rel-2", _rg("rg-l2b", "Album L2B", "Album", "2024-07-02", _credit(("Altro", "")))
+    )
+
+    async def _gated_run() -> dict:
+        with get_session_factory()() as db:
+            return await discovery.run_discovery(db, feat_scan=True)
+
+    task = asyncio.create_task(_gated_run())
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not fake.parked and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+    assert fake.parked  # rec-1 fully evaluated; the next browse (network call) is pending
+
+    with get_session_factory()() as probe:
+        # (a) the page-0 seen-mark is committed and visible to a second session.
+        row = probe.get(SeenRecording, "rec-1")
+        assert row is not None and row.evaluation_state == discovery.SEEN_RECORDING_EVALUATED
+        # (b) the write lock is released: a second-session write completes
+        # without `database is locked` while the scan waits on the network.
+        probe.add(SeenRecording(recording_mbid="probe-lock", artist_id=1, first_seen="2024-01-01"))
+        probe.commit()
+
+    fake.gate.set()
+    await task
+
+
 async def test_level2_future_dated_release_remembered_under_current_policy(disc_db, monkeypatch):
     """Spec 4.1 + 5.2 (spec:1935 contract changes): a recording whose only
     release is future-dated was previously NOT marked seen so it was

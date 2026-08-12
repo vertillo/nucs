@@ -930,8 +930,9 @@ async def _level2_artist(
             )
             break
         # Spec 6.2 safe point: per recording page, before the browse network
-        # call (the previous page's per-release commits already released the
-        # write lock).
+        # call (the previous page's per-release commits AND the per-recording
+        # evaluation-mark commits — FIND-61-2 — already released the write
+        # lock).
         _check_cancelled(scan_type)
         stats["api_calls"] += 1
         stats["provider_calls"]["mb"] = stats["provider_calls"].get("mb", 0) + 1
@@ -991,13 +992,23 @@ async def _level2_artist(
                 _record_fallback_reason(stats, FALLBACK_PROVIDER_FAILURE)
                 logger.warning("level-2: release fetch failed for recording %s", recording_mbid)
                 _mark_recording_failed(db, artist.id, recording_mbid)
+                # FIND-61-2 (phase 10): release the write lock before the next
+                # network call — never hold a write transaction across an await.
+                db.commit()
                 continue
             # Spec 4.1: the fetch SUCCEEDED and every release was evaluated
             # (accepted or rejected) — the recording is remembered for the
             # current policy fingerprint instead of being re-fetched weekly.
             # The skip above is fingerprint-gated (spec 4.2): the recording is
-            # re-evaluated only when the policy fingerprint changes.
+            # re-evaluated only when the policy fingerprint changes. The mark
+            # is committed HERE: a fully-evaluated recording keeps its
+            # seen-mark even if the run is cancelled after this point (spec 4.1:
+            # evaluated = remembered); only in-flight partial evaluations are
+            # still discarded on cancel.
             _mark_recording_seen(db, artist.id, recording_mbid, policy_fingerprint)
+            # FIND-61-2 (phase 10): commit the evaluation mark before the next
+            # browse network call — never hold a write transaction across an await.
+            db.commit()
         offset += _PAGE_SIZE
         if not recordings or (count is not None and offset >= count):
             break
