@@ -62,25 +62,53 @@ function EyeIcon({ filled }: { filled: boolean }) {
   )
 }
 
-/** primary_artist with the tracked (primary/featured) names highlighted in accent. */
-function ArtistLine({ primaryArtist, tracked }: { primaryArtist: string; tracked: MatchedArtist[] }) {
-  if (tracked.length === 0) return <>{primaryArtist}</>
-  const parts: React.ReactNode[] = []
-  let rest = primaryArtist
-  for (const t of tracked) {
-    const idx = rest.indexOf(t.name)
-    if (idx >= 0) {
-      if (idx > 0) parts.push(rest.slice(0, idx))
-      parts.push(
-        <span key={t.id} className="font-medium text-accentText dark:text-accent">
-          {t.name}
-        </span>,
-      )
-      rest = rest.slice(idx + t.name.length)
-    }
-  }
-  parts.push(rest)
-  return <>{parts}</>
+/** Tracked artist name highlighted in accent, with accessible "Tracked artist" text (spec 8.4 / spec:1595). */
+function TrackedName({ artist }: { artist: MatchedArtist }) {
+  return (
+    <span
+      title="Tracked artist"
+      aria-label="Tracked artist"
+      className="font-medium text-accentText dark:text-accent"
+    >
+      {artist.name}
+    </span>
+  )
+}
+
+/**
+ * Credits line rendered ONLY from the authoritative ReleaseArtist payload
+ * (`release.matched_artists`, task 18 / spec 8.4 / spec:1584-1597): every
+ * name is the exact Artist row joined by discovery, and the role decides the
+ * presentation (primary inline, featured in a feat. clause, remixer in a
+ * remix clause). No case-sensitive `.indexOf()`/substring splice against the
+ * provider credit phrase — a PiKi-style homonym that merely appears in the
+ * phrase is never highlighted without the release<->artist relation
+ * (spec:1597). The raw credit phrase renders only when no tracked artist is
+ * linked to the release (nothing to highlight).
+ */
+function CreditsLine({ release }: { release: ReleaseListItem }) {
+  const { matched_artists: artists, primary_artist } = release
+  if (artists.length === 0) return <>{primary_artist}</>
+  const primary = artists.filter((a) => a.role === 'primary')
+  const featured = artists.filter((a) => a.role === 'featured')
+  const remixers = artists.filter((a) => a.role === 'remixer')
+  const joinNames = (list: MatchedArtist[]) => (
+    <>
+      {list.map((artist, i) => (
+        <span key={artist.id}>
+          {i > 0 && ', '}
+          <TrackedName artist={artist} />
+        </span>
+      ))}
+    </>
+  )
+  return (
+    <>
+      {joinNames(primary)}
+      {featured.length > 0 && <span> (feat. {joinNames(featured)})</span>}
+      {remixers.length > 0 && <span> (remix by {joinNames(remixers)})</span>}
+    </>
+  )
 }
 
 export default function ReleaseCard({
@@ -90,9 +118,6 @@ export default function ReleaseCard({
   release: ReleaseListItem
   onToggleSeen?: (release: ReleaseListItem) => void
 }) {
-  const tracked = release.matched_artists.filter((a) => a.role === 'primary' || a.role === 'featured')
-  const featured = release.matched_artists.filter((a) => a.role === 'featured')
-  const featuredExtra = featured.filter((f) => !release.primary_artist.includes(f.name))
   const isNew = !release.seen
 
   return (
@@ -136,8 +161,7 @@ export default function ReleaseCard({
           {release.title}
         </h3>
         <p className="mt-0.5 truncate text-xs text-light-textDim dark:text-dark-textDim">
-          <ArtistLine primaryArtist={release.primary_artist} tracked={tracked} />
-          {featuredExtra.length > 0 && <span> (feat. {featuredExtra.map((f) => f.name).join(', ')})</span>}
+          <CreditsLine release={release} />
         </p>
         <div className="mt-1.5 flex items-center justify-between gap-2">
           <span className="text-xs text-light-textDim dark:text-dark-textDim">
