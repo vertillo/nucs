@@ -13,19 +13,48 @@
  * - POST /releases/purge-orphans -> {removed} + releases_purged audit event
  *
  * Artists UI:
- * - Match column 4 states: MB (score + musicbrainz.org link), provider
- *   (Deezer + "open" link), Unmatched (+Retry), Split (no Retry)
- * - artist name links to the provider page (target=_blank rel=noreferrer)
+ * - Status column with the identity-model pills: Linked / Needs match /
+ *   Ignored (spec:653-662); the artist name links to its first identity's
+ *   provider page (target=_blank rel=noreferrer), plain text when none
  * - "{N} unmatched" badge == API unmatched_total
  * - Name header sort toggle (aria-sort + API order)
  * - Add by URL (Deezer locale URL; fallback name+URL when the provider is
  *   down), unsupported URL inline error
  * - candidate details panel (Add modal: details + "Track this artist" + Back)
- * - Retry modal: "Search again by name" on an unmatchable name -> modal stays
- *   open and NO fake "Matched on MusicBrainz" toast; free-text search ->
- *   candidate details -> "Link artist" -> external_url persisted
- *   (the "already resolved via split" toast is API-only: the UI never shows
- *   Retry on Split rows — verified via the rematch response instead)
+ * - Manage modal (identity manager): "No external identities yet" on a
+ *   Needs-match artist, no "Search again by name" anywhere, free-text
+ *   candidate search -> candidate details -> "Link artist" -> "Linked
+ *   {provider}" toast, identity listed in the modal (which stays open),
+ *   external_url persisted (spec:683-687)
+ *   (the "already resolved via split" rematch response is API-only: the UI
+ *   has no per-row Retry — verified via the rematch response instead)
+ *
+ * ## Contract supersession (spec:1935)
+ * Phases 2/8 replaced the Match 4-state column (MB/provider/Unmatched/Split)
+ * with the identity-model Status column and the identity-manager Manage modal.
+ * The fase-15 assertions below encoded the REMOVED UI and were converted to
+ * the new contract (old -> new):
+ * - 15-7  Match cell "MusicBrainz" text + separate match link ->
+ *         Status pill "Linked" on a row whose NAME link targets the MB page
+ *         (the name link is the only provider link now, spec 8.6).
+ * - 15-10 "Unmatched" text + per-row Retry button -> Status pill "Needs
+ *         match", no Retry button (matching moved into the Manage modal).
+ * - 15-11 "Split" text -> Status pill "Ignored" (split provenance is an API
+ *         detail; the UI only exposes the status pill).
+ * - 15-12 Retry dialog [aria-label="Match artist"] + "Search again by name"
+ *         button -> Manage dialog [aria-label="Manage {name}"] with
+ *         "No external identities yet" and no "Search again by name" button
+ *         anywhere (spec 8.6 removed it with the rematch UI).
+ * - 15-13 #retry-artist-search + toast "Artist matched" + dialog closes ->
+ *         #manage-artist-search + toast "Linked {provider}" + identity row
+ *         listed in the modal (the modal stays open: it is the identity
+ *         manager, spec 2.3) + identities[] persisted via the API.
+ * - 15-14 every row "Unmatched" or "Split" under matched=no ->
+ *         every row pill is "Needs match" or "Ignored" (never "Linked").
+ * - 15-17 match cell "Deezer" text + separate open link ->
+ *         Status pill "Linked" + NAME link to the Deezer page.
+ * The API-only checks (15-3..15-6) and the feed/purge/sort checks keep their
+ * old assertions: those contracts did not change.
  *
  * Feed UI:
  * - filters live in the URL (?q=, ?type=, ?unseen=) and survive navigation /
@@ -210,18 +239,22 @@ async function gotoArtists(page) {
   )
 }
 
+// spec:1935: the 4-state Match cell (td[2]) is the identity-model Status
+// column now (td:nth-child(2), pill text Linked/Needs match/Ignored) and the
+// per-row Retry button no longer exists (matching lives in the Manage modal).
 function artistRow(page, name) {
   return page.evaluate((n) => {
     const row = [...document.querySelectorAll('table tbody tr')].find((r) => r.textContent.includes(n))
     if (!row) return null
-    const matchCell = row.querySelectorAll('td')[2]
+    const statusCell = row.querySelector('td:nth-child(2)')
+    const nameLink = row.querySelector('td a[target="_blank"]')
     return {
       rowText: row.textContent,
-      nameIsLink: !!row.querySelector('td a[target="_blank"]'),
-      matchText: matchCell ? matchCell.textContent.trim() : '',
-      matchLink: matchCell ? matchCell.querySelector('a') : null,
-      nameHref: row.querySelector('td a[target="_blank"]') ? row.querySelector('td a[target="_blank"]').href : null,
+      nameIsLink: !!nameLink,
+      statusText: statusCell ? statusCell.textContent.trim() : '',
+      nameHref: nameLink ? nameLink.href : null,
       hasRetry: [...row.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Retry'),
+      hasManage: [...row.querySelectorAll('button')].some((b) => (b.getAttribute('aria-label') || '').startsWith('Manage ')),
     }
   }, name)
 }
@@ -270,7 +303,9 @@ async function main() {
 
     const unmatchedApi = await api(page, 'GET', '/api/v1/artists?matched=no&page_size=100')
     const unmatchedItems = unmatchedApi.body.items || []
-    const unmatchedPredicate = unmatchedItems.every((a) => a.mbid == null && a.provider === 'manual')
+    // spec:1935: matched-ness is decided by the identity table now (spec Trap 2)
+    // — the legacy provider/mbid predicate is replaced by the identity-model fields.
+    const unmatchedPredicate = unmatchedItems.every((a) => (a.identities || []).length === 0 && a.status !== 'Linked')
     const allApi = await api(page, 'GET', '/api/v1/artists?page_size=1')
     t(
       'API', '15-2',
@@ -357,33 +392,34 @@ async function main() {
     console.log('\n=== 15: artists UI ===')
     await gotoArtists(page)
 
-    // Match column: MB-matched seed artist (score + musicbrainz link + linked name)
+    // Status column: MB-linked seed artist (spec:1935 — the old "Match cell
+    // with MusicBrainz text + separate link" is now the Status pill "Linked"
+    // and the NAME link to the MB page; the name link is the only link).
     const mbRow = await page.evaluate(() => {
       const row = [...document.querySelectorAll('table tbody tr')].find(
-        (r) => r.querySelectorAll('td')[2] && r.querySelector('td a[href^="https://musicbrainz.org/artist/"]'),
+        (r) => r.querySelector('td a[href^="https://musicbrainz.org/artist/"]'),
       )
       if (!row) return null
-      const cell = row.querySelectorAll('td')[2]
-      const link = cell.querySelector('a')
+      const nameLink = row.querySelector('td a[target="_blank"]')
+      const statusCell = row.querySelector('td:nth-child(2)')
       return {
         name: row.querySelector('td').textContent.trim(),
-        cellText: cell.textContent.trim(),
-        linkHref: link.href,
-        linkRel: link.rel,
-        linkTarget: link.target,
-        nameLinkHref: row.querySelector('td a[target="_blank"]') ? row.querySelector('td a[target="_blank"]').href : null,
+        statusText: statusCell ? statusCell.textContent.trim() : '',
+        linkHref: nameLink ? nameLink.href : '',
+        linkRel: nameLink ? nameLink.rel : '',
+        linkTarget: nameLink ? nameLink.target : '',
       }
     })
     if (mbRow) {
       const mbUrl = mbRow.linkHref.startsWith('https://musicbrainz.org/artist/') ? new URL(mbRow.linkHref).pathname.split('/')[2] : null
       t(
         'ART', '15-7',
-        'Match column: MB state (score + musicbrainz.org link, target=_blank, rel=noreferrer)',
-        mbRow.cellText.includes('MusicBrainz') && mbRow.linkTarget === '_blank' && mbRow.linkRel.includes('noreferrer') && !!mbUrl && mbRow.nameLinkHref === mbRow.linkHref,
-        JSON.stringify({ name: mbRow.name, href: mbRow.linkHref, rel: mbRow.linkRel }),
+        'Status column: MB-linked state (pill "Linked", name link -> musicbrainz.org, target=_blank, rel=noreferrer)',
+        mbRow.statusText === 'Linked' && mbRow.linkTarget === '_blank' && mbRow.linkRel.includes('noreferrer') && !!mbUrl,
+        JSON.stringify({ name: mbRow.name, status: mbRow.statusText, href: mbRow.linkHref, rel: mbRow.linkRel }),
       )
     } else {
-      t('ART', '15-7', 'Match column: MB state', false, 'no MB-matched row rendered in the seed')
+      t('ART', '15-7', 'Status column: MB-linked state', false, 'no MB-linked row rendered in the seed')
     }
 
     // badge "{N} unmatched" == API unmatched_total (default filters, re-fetched
@@ -429,7 +465,7 @@ async function main() {
     })
     await h.wait(1200)
 
-    // Unmatched render (created artist) + Retry modal flows
+    // Needs-match render (created artist) + Manage modal flows
     const nomatchSetup = await api(page, 'POST', '/api/v1/artists', { name: NO_MATCH_NAME })
     await setInput(page, ARTIST_SEARCH, NO_MATCH_NAME)
     await page.waitForFunction(
@@ -441,12 +477,13 @@ async function main() {
     const umRow = await artistRow(page, NO_MATCH_NAME)
     t(
       'ART', '15-10',
-      'unmatched artist renders "Unmatched" + Retry, name NOT linked',
-      umRow && umRow.matchText.includes('Unmatched') && umRow.hasRetry && umRow.nameIsLink === false,
-      umRow ? JSON.stringify({ match: umRow.matchText, retry: umRow.hasRetry, nameLink: umRow.nameIsLink }) : 'row not found',
+      'unmatched artist renders "Needs match" pill, no per-row Retry, name NOT linked',
+      umRow && umRow.statusText === 'Needs match' && !umRow.hasRetry && umRow.nameIsLink === false,
+      umRow ? JSON.stringify({ status: umRow.statusText, retry: umRow.hasRetry, nameLink: umRow.nameIsLink }) : 'row not found',
     )
 
-    // Split render: ignored artist without mbid -> "Split", no Retry
+    // Ignored render: spec:1935 — "Split" (a legacy match-cell state) is now
+    // the "Ignored" status pill; split provenance is API-only (see 15-6).
     await setInput(page, ARTIST_SEARCH, SPLIT_NAME)
     await page.waitForFunction(
       (n) => [...document.querySelectorAll('table tbody tr')].some((r) => r.textContent.includes(n)),
@@ -457,12 +494,15 @@ async function main() {
     const spRow = await artistRow(page, SPLIT_NAME)
     t(
       'ART', '15-11',
-      'ignored artist renders "Split" without Retry',
-      spRow && spRow.matchText.includes('Split') && !spRow.hasRetry && spRow.matchText.indexOf('Unmatched') === -1,
-      spRow ? spRow.matchText : 'row not found',
+      'ignored artist renders "Ignored" pill without Retry',
+      spRow && spRow.statusText === 'Ignored' && !spRow.hasRetry,
+      spRow ? spRow.statusText : 'row not found',
     )
 
-    // Retry modal: "Search again by name" on an unmatchable name
+    // Manage modal (spec:1935 — the Retry dialog is the identity manager now):
+    // an unmatchable artist opens with "No external identities yet" and there
+    // is NO "Search again by name" button/text anywhere (removed with the
+    // rematch UI, spec 8.6); the artist must not be auto-matched (no fake match).
     await setInput(page, ARTIST_SEARCH, NO_MATCH_NAME)
     await page.waitForFunction(
       (n) => [...document.querySelectorAll('table tbody tr')].some((r) => r.textContent.includes(n)),
@@ -471,65 +511,93 @@ async function main() {
     )
     await page.evaluate((n) => {
       const row = [...document.querySelectorAll('table tbody tr')].find((r) => r.textContent.includes(n))
-      const btn = row && [...row.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Retry')
+      const btn = row && row.querySelector(`button[aria-label="Manage ${n}"]`)
       if (btn) btn.click()
     }, NO_MATCH_NAME)
-    await page.waitForSelector('[role="dialog"][aria-label="Match artist"]', { timeout: 10000 })
-    t('ART', '15-12', 'Retry opens the match dialog', true)
-    await clickByText(page, 'Search again by name')
-    // wait for the rematch to finish (button back from "Searching…")
-    await page.waitForFunction(
-      () => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Search again by name'),
-      { timeout: 30000 },
-    )
-    await h.wait(600)
-    const afterRetry = await page.evaluate(() => ({
-      dialogOpen: !!document.querySelector('[role="dialog"][aria-label="Match artist"]'),
-      toast: (() => {
-        const el = document.querySelector('[role="status"]')
-        return el ? el.textContent.trim() : null
-      })(),
-      noCandidates: document.body.innerText.includes('No candidates yet'),
-    }))
+    await page.waitForSelector(`[role="dialog"][aria-label="Manage ${NO_MATCH_NAME}"]`, { timeout: 10000 })
+    t('ART', '15-12', 'Manage opens the identity-manager dialog', true)
+    const manageModal = await page.evaluate((n) => {
+      const dialog = document.querySelector(`[role="dialog"][aria-label="Manage ${n}"]`)
+      const text = dialog ? dialog.textContent : ''
+      return {
+        dialogOpen: !!dialog,
+        hasSearchAgain: text.includes('Search again by name'),
+        hasSearchAgainBtn: dialog ? [...dialog.querySelectorAll('button')].some((b) => b.textContent.includes('Search again by name')) : false,
+        hasNoIdentitiesHint: text.includes('No external identities yet'),
+        toast: (() => {
+          const el = document.querySelector('[role="status"]')
+          return el ? el.textContent.trim() : null
+        })(),
+      }
+    }, NO_MATCH_NAME)
     t(
       'ART', '15-12',
-      '"Search again by name" on an unmatchable name -> NO fake "Matched on MusicBrainz", modal stays open',
-      afterRetry.dialogOpen && (!afterRetry.toast || !afterRetry.toast.includes('Matched on MusicBrainz')),
-      JSON.stringify(afterRetry),
+      'Manage modal on an unmatchable name -> "No external identities yet", NO "Search again by name", no fake "Matched on MusicBrainz" toast',
+      manageModal.dialogOpen && manageModal.hasNoIdentitiesHint && !manageModal.hasSearchAgain && !manageModal.hasSearchAgainBtn &&
+        (!manageModal.toast || !manageModal.toast.includes('Matched on MusicBrainz')),
+      JSON.stringify(manageModal),
+    )
+    await page.keyboard.press('Escape').catch(() => {})
+    await h.wait(400)
+    // no fake match: the artist is still Needs match with zero identities
+    const umNow = await api(page, 'GET', `/api/v1/artists?q=${encodeURIComponent(NO_MATCH_NAME)}&page_size=10`)
+    const umItem = (umNow.body.items || [])[0]
+    t(
+      'ART', '15-12',
+      'unmatchable name stays "Needs match" with no identity after the modal flow (no fake match)',
+      !!umItem && umItem.status === 'Needs match' && (umItem.identities || []).length === 0,
+      JSON.stringify({ status: umItem && umItem.status, identities: umItem && umItem.identities }),
     )
 
-    // Retry free-text search -> candidate details panel -> "Link artist"
-    await setInput(page, '#retry-artist-search', 'deadmau5')
+    // Manage free-text search -> candidate details panel -> "Link artist"
+    // (spec:1935: the retry dialog became the identity manager; the candidate
+    // search input is #manage-artist-search and the link toast is the generic
+    // "Linked {provider}" — never a fake MB-specific success)
+    await setInput(page, ARTIST_SEARCH, NO_MATCH_NAME)
+    await page.waitForFunction(
+      (n) => {
+        const row = [...document.querySelectorAll('table tbody tr')].find((r) => r.textContent.includes(n))
+        return row && row.querySelector(`button[aria-label="Manage ${n}"]`) !== null
+      },
+      { timeout: 15000 },
+      NO_MATCH_NAME,
+    )
+    await page.evaluate((n) => {
+      const btn = document.querySelector(`button[aria-label="Manage ${n}"]`)
+      if (btn) btn.click()
+    }, NO_MATCH_NAME)
+    await page.waitForSelector(`[role="dialog"][aria-label="Manage ${NO_MATCH_NAME}"]`, { timeout: 10000 })
+    await setInput(page, '#manage-artist-search', 'deadmau5')
     const freeCandidates = await (async () => {
       for (let i = 0; i < 60; i++) {
-        const n = await page.evaluate(() => {
-          const dialog = document.querySelector('[role="dialog"][aria-label="Match artist"]')
+        const n = await page.evaluate((nm) => {
+          const dialog = document.querySelector(`[role="dialog"][aria-label="Manage ${nm}"]`)
           return dialog ? [...dialog.querySelectorAll('button')].filter((b) => b.textContent.includes('deadmau5')).length : 0
-        })
+        }, NO_MATCH_NAME)
         if (n > 0) return n
         await h.wait(500)
       }
       return 0
     })()
     if (freeCandidates > 0) {
-      await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"][aria-label="Match artist"]')
+      await page.evaluate((nm) => {
+        const dialog = document.querySelector(`[role="dialog"][aria-label="Manage ${nm}"]`)
         const btn = [...dialog.querySelectorAll('button')].find((b) => b.textContent.includes('deadmau5'))
         if (btn) btn.click()
-      })
+      }, NO_MATCH_NAME)
       await page.waitForFunction(
         () => [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Link artist'),
         { timeout: 15000 },
       )
       await h.wait(1500)
-      const panel = await page.evaluate(() => {
-        const dialog = document.querySelector('[role="dialog"][aria-label="Match artist"]')
+      const panel = await page.evaluate((nm) => {
+        const dialog = document.querySelector(`[role="dialog"][aria-label="Manage ${nm}"]`)
         const text = dialog ? dialog.textContent : ''
         return {
           hasLinkBtn: [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Link artist'),
           hasDetails: /Disambiguation:|Aliases:|Type:|Country:|Genre:|albums/.test(text) || text.includes('Details unavailable.'),
         }
-      })
+      }, NO_MATCH_NAME)
       t(
         'ART', '15-13',
         'free search -> candidate details panel with "Link artist"',
@@ -537,38 +605,47 @@ async function main() {
         JSON.stringify(panel),
       )
       await clickByText(page, 'Link artist')
-      const linkedToast = await waitForToast(page, /Artist matched/)
+      const linkedToast = await waitForToast(page, /^Linked /)
       await h.wait(800)
-      const dialogGone = await page.evaluate(() => !document.querySelector('[role="dialog"][aria-label="Match artist"]'))
-      // no GET /artists/{id} route: verify the linked state via the list search
+      // spec:1935: the identity manager STAYS open and lists the new identity
+      // (it manages more than one provider) — the old dialog-close contract is
+      // gone; the identity table is authoritative (spec 1.3)
+      const modalIds = await page.evaluate((nm) => {
+        const dialog = document.querySelector(`[role="dialog"][aria-label="Manage ${nm}"]`)
+        return dialog ? [...dialog.querySelectorAll('li')].map((li) => li.textContent) : []
+      }, NO_MATCH_NAME)
       const linkedList = await api(page, 'GET', `/api/v1/artists?q=${encodeURIComponent(NO_MATCH_NAME)}&page_size=10`)
       const linked = (linkedList.body.items || [])[0]
       t(
         'ART', '15-13',
-        '"Link artist" -> toast "Artist matched", dialog closes, external_url persisted',
-        linkedToast !== null && dialogGone && linked && linked.provider !== 'manual' && !!linked.external_url,
-        JSON.stringify({ toast: linkedToast, provider: linked && linked.provider, url: linked && linked.external_url }),
+        '"Link artist" -> toast "Linked {provider}", identity listed in the modal, external_url persisted',
+        linkedToast !== null && modalIds.length === 1 && linked && linked.status === 'Linked' &&
+          linked.identities.length === 1 && !!linked.identities[0].external_url,
+        JSON.stringify({ toast: linkedToast, modalIds, status: linked && linked.status, identities: linked && linked.identities }),
       )
     } else {
-      tSkip('ART', '15-13', 'retry free-text search -> candidate -> link', 'no provider candidates for "deadmau5" (providers unreachable)')
+      tSkip('ART', '15-13', 'manage free-text search -> candidate -> link', 'no provider candidates for "deadmau5" (providers unreachable)')
     }
     await page.keyboard.press('Escape').catch(() => {})
+    await h.wait(400)
 
-    // "Unmatched only" filter: every row is Unmatched or Split (never a provider/MB row)
+    // "Unmatched only" filter: every row is Needs match or Ignored (spec:1935 —
+    // the old Unmatched/Split cell text is the Status pill now; matched=no
+    // selects zero-identity artists, ignored ones included, spec Trap 2)
     await setInput(page, ARTIST_SEARCH, '')
     await h.wait(800)
     await page.select('#artist-matched-filter', 'no')
     await h.wait(1500)
     const unmatchedRows = await page.evaluate(() =>
       [...document.querySelectorAll('table tbody tr')].map((r) => {
-        const cell = r.querySelectorAll('td')[2]
+        const cell = r.querySelector('td:nth-child(2)')
         return cell ? cell.textContent.trim() : ''
       }),
     )
     t(
       'ART', '15-14',
-      '"Unmatched only" filter -> every row is Unmatched or Split',
-      unmatchedRows.length > 0 && unmatchedRows.every((c) => c.includes('Unmatched') || c.includes('Split')),
+      '"Unmatched only" filter -> every row is "Needs match" or "Ignored" (never "Linked")',
+      unmatchedRows.length > 0 && unmatchedRows.every((c) => c === 'Needs match' || c === 'Ignored'),
       `rows=${unmatchedRows.length} ${unmatchedRows.slice(0, 3).join(' | ')}`,
     )
     await page.select('#artist-matched-filter', 'all')
@@ -685,19 +762,18 @@ async function main() {
       }, { timeout: 30000 })
       await h.wait(800)
       // single self-contained probe: poll the table until the row appears and
-      // return the match cell/name link data (same mechanism as the diag)
+      // return the Status pill + name link data (same mechanism as the diag)
       const probe = await page.evaluate(async (n) => {
         const deadline = Date.now() + 15000
         for (;;) {
           const row = [...document.querySelectorAll('table tbody tr')].find((r) => r.textContent.includes(n))
           if (row) {
-            const matchCell = row.querySelectorAll('td')[2]
+            const statusCell = row.querySelector('td:nth-child(2)')
             const nameLink = row.querySelector('td a[target="_blank"]')
             return {
               found: true,
               rowText: row.textContent.trim().slice(0, 90),
-              matchText: matchCell ? matchCell.textContent.trim() : '',
-              matchHref: matchCell && matchCell.querySelector('a') ? matchCell.querySelector('a').href : null,
+              statusText: statusCell ? statusCell.textContent.trim() : '',
               nameHref: nameLink ? nameLink.href : null,
             }
           }
@@ -712,14 +788,15 @@ async function main() {
       }, addedName)
       t(
         'ART', '15-17',
-        'Add by URL (UI): artist created linked, Match column shows "Deezer" + open link, name linked',
-        // external_url preserves the URL as given (locale prefix included), so
-        // match only the host + the artist id path
-        probe.found && probe.matchText.includes('Deezer') && probe.matchHref && probe.matchHref.includes('www.deezer.com/') && probe.matchHref.includes(`artist/${DEEZER_UI_ID}`) && probe.nameHref === probe.matchHref,
+        'Add by URL (UI): artist created linked, Status pill "Linked", name links to the Deezer page',
+        // spec:1935: the match cell is the Status pill now and the name link is
+        // the only link; external_url preserves the URL as given (locale prefix
+        // included), so match only the host + the artist id path
+        probe.found && probe.statusText === 'Linked' && probe.nameHref && probe.nameHref.includes('www.deezer.com/') && probe.nameHref.includes(`artist/${DEEZER_UI_ID}`),
         JSON.stringify(probe),
       )
     } else {
-      t('ART', '15-17', 'Add by URL (UI): artist created linked, Match column shows "Deezer"', false, 'ui-added artist not found via API')
+      t('ART', '15-17', 'Add by URL (UI): artist created linked, Status pill "Linked"', false, 'ui-added artist not found via API')
     }
     if (!uiAddUrlOk) tSkip('API', '15-3b', 'add-by-URL name resolution (provider down) -> name+URL fallback used', 'provider unreachable; UI link path verified via name+URL')
     await setInput(page, ARTIST_SEARCH, '')
