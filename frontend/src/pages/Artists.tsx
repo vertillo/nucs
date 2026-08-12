@@ -88,12 +88,6 @@ function providerPageUrl(provider: string, providerId: string | null): string | 
   }
 }
 
-/** The provider page where the artist's match was found (phase 15). */
-function providerUrl(artist: ArtistItem): string | null {
-  if (artist.external_url) return artist.external_url
-  return providerPageUrl(artist.provider, artist.provider === 'mb' ? artist.mbid : artist.provider_id)
-}
-
 /** External page of one stored identity (identity table is authoritative, spec 1.3). */
 function identityUrl(identity: ArtistIdentity): string | null {
   return identity.external_url ?? providerPageUrl(identity.provider, identity.provider_id)
@@ -112,9 +106,10 @@ function StatusBadge({ status }: { status: ArtistStatus }) {
   )
 }
 
-/** Artist name, linked to the provider page when the artist is matched. */
+/** Artist name, linked to its first identity's provider page when it has
+ * identities; plain text otherwise (spec 8.6 — no single-provider assumption). */
 function ArtistName({ artist }: { artist: ArtistItem }) {
-  const url = providerUrl(artist)
+  const url = artist.identities.length > 0 ? identityUrl(artist.identities[0]) : null
   const label = <span className="font-medium text-light-text dark:text-dark-text">{artist.name}</span>
   if (!url) return label
   return (
@@ -190,7 +185,6 @@ export default function Artists() {
         name: candidate.name,
         provider: candidate.provider,
         provider_id: candidate.provider_id ?? undefined,
-        mbid: candidate.mbid,
         external_url: candidate.url,
       },
       {

@@ -1,7 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch, get } from './client'
 
-export type ArtistSource = 'tag_artist' | 'tag_albumartist' | 'tag_feat' | 'tag_contrib' | 'tag_remix' | 'manual'
 export type ArtistProvider = 'mb' | 'deezer' | 'itunes' | 'discogs' | 'soundcloud' | 'beatport' | 'manual'
 export type ArtistStatus = 'Linked' | 'Needs match' | 'Ignored'
 
@@ -16,15 +15,11 @@ export interface ArtistIdentity {
 export interface ArtistItem {
   id: number
   name: string
-  source: ArtistSource
-  provider: ArtistProvider
-  provider_id: string | null
-  external_url: string | null
-  mbid: string | null
-  mb_match_score: number | null
   ignored: 0 | 1
-  /* Phase 1 identity-model additions — additive; legacy provider/mbid fields
-   * still present in the API during the contract freeze (phase 8 retires them). */
+  /* Phase 8 (spec 8.6): identity model is authoritative — status comes from
+   * the identity table, never the legacy mbid/provider columns. The backend
+   * may still emit legacy JSON keys during the contract freeze; extra keys
+   * are harmless to TS, so this interface models the new fields only. */
   status: ArtistStatus
   identities: ArtistIdentity[]
   split_from_artist_id: number | null
@@ -54,14 +49,6 @@ export interface ArtistCandidate {
   mbid: string | null
   score: number | null
   url: string | null
-}
-
-export interface RematchResult {
-  matched: boolean
-  mbid: string | null
-  resolved_split: boolean
-  split_parts: string[]
-  candidates: ArtistCandidate[]
 }
 
 function buildUrl(filters: ArtistFilters, page: number): string {
@@ -108,7 +95,6 @@ export interface AddArtistPayload {
   name?: string
   provider?: ArtistProvider
   provider_id?: string
-  mbid?: string | null
   external_url?: string | null
   url?: string
 }
@@ -206,21 +192,6 @@ export function useSetArtistIgnored() {
       }
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['artists'] })
-      queryClient.invalidateQueries({ queryKey: ['artists-count'] })
-    },
-  })
-}
-
-/** Retry the match for one artist: returns candidates for the picker. */
-export function useRematchArtist() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (id: number) =>
-      apiFetch<RematchResult>(`/api/v1/artists/${id}/rematch`, {
-        method: 'POST',
-      }),
-    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['artists'] })
       queryClient.invalidateQueries({ queryKey: ['artists-count'] })
     },
