@@ -1,95 +1,164 @@
+// OMO configuration
 {
-  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
-  "models": {
-    "nucs-deepseek": {
-      "model": "opencode-go/deepseek-v4-flash"
-    }
-  },
   "[opencode]": {
+    "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/v4.19.4/assets/omo.schema.json",
+
     "agents": {
       "sisyphus": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.2,
         "prompt_append": "NUCS remediation is specification-driven. Work exclusively on the remediation/nucs branch, commit verified coherent tasks atomically, and push them normally to origin/remediation/nucs. Never merge to main, never force-push, never rewrite published history. Do not invent product behavior; use deterministic tests before claiming completion."
       },
+
       "hephaestus": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.15
       },
+
       "prometheus": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.15,
         "prompt_append": "For NUCS remediation, treat specs/NUCS_PRODUCT_DECISIONS.md as resolved product truth and specs/NUCS_REMEDIATION_SPEC.md as authoritative remediation scope. Ask only for genuinely new user-visible ambiguities not resolved there. Produce a dependency-ordered plan with implementation, verification, adversarial review, bug-fix, and phase-gate checkpoints. Use high-accuracy plan review with Momus and Oracle."
       },
+
       "oracle": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.1
       },
+
       "librarian": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.1
       },
+
       "explore": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.1
       },
+
       "multimodal-looker": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.1
       },
+
       "metis": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.1
       },
+
       "momus": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.05
       },
+
       "atlas": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.1,
         "prompt_append": "Execute the approved NUCS remediation plan exactly. Product decisions in specs/NUCS_PRODUCT_DECISIONS.md are immutable. Do not broaden scope or silently reinterpret them. Commit verified coherent tasks atomically and push them normally to origin/remediation/nucs; never merge to main, never force-push, never rebase or rewrite history. Use the existing NUCS pytest/Ruff/Vite/Puppeteer stack and preserve accumulated notepad wisdom."
       },
+
       "sisyphus-junior": {
-        "model": "nucs-deepseek",
+        "model": "opencode-go/deepseek-v4-flash",
+        "reasoning": "max",
         "temperature": 0.2,
         "prompt_append": "Work only on the delegated NUCS task. Inspect relevant callers, persistence, tests, and frontend contracts before editing. Do not make new product decisions. Add regression coverage, keep SQLite write transactions short, and never hold a write transaction across external network awaits."
       }
     },
+
     "categories": {
       "visual-engineering": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.2
       },
+
       "artistry": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.2
       },
+
       "ultrabrain": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.1
       },
+
       "deep": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.15
       },
+
       "quick": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.1
       },
+
       "unspecified-low": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.15
       },
+
       "unspecified-high": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.15
       },
+
       "writing": {
-        "model": "nucs-deepseek",
+        "models": [
+          {
+            "model": "opencode-go/deepseek-v4-flash",
+            "reasoning": "max"
+          }
+        ],
         "temperature": 0.1
       }
     },
+
+    "runtime_fallback": false,
+
     "background_task": {
       "providerConcurrency": {
         "opencode-go": 2
@@ -98,16 +167,20 @@
         "opencode-go/deepseek-v4-flash": 2
       }
     },
+
     "experimental": {
       "task_system": true
     },
+
     "team_mode": {
       "enabled": false
     },
+
     "tmux": {
       "enabled": false
     }
   },
+
   "_migrations": [
     "2026-08-reasoning-unification"
   ]
