@@ -98,7 +98,7 @@ export default function Navbar({ username, theme }: NavbarProps) {
   const queryClient = useQueryClient()
   const [current, setCurrent] = useState<Theme>(() => getStoredTheme() ?? theme)
   const { data: errorsData } = useErrors()
-  const errorCount = errorsData?.total ?? 0
+  const errorCount = errorsData?.unread_total ?? 0
 
   const logout = useMutation({
     mutationFn: () => post('/api/v1/auth/logout', {}),
