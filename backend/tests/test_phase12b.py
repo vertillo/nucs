@@ -532,6 +532,7 @@ async def _async_true(*_args, **_kwargs):
 
 
 async def test_errors_report_list_clear(client):
+    """Spec 7.1: report, list with read/unread_total, clear."""
     await _login(client)
     response = await client.post(
         "/api/v1/errors",
@@ -543,8 +544,10 @@ async def test_errors_report_list_clear(client):
     assert listing.status_code == 200
     body = listing.json()
     assert body["total"] == 1
+    assert body["unread_total"] == 1
     assert body["items"][0]["source"] == "client"
     assert body["items"][0]["message"] == "Client failed to do a thing"
+    assert body["items"][0]["read"] is False
     cleared = await client.delete("/api/v1/errors", headers=API_HEADERS)
     assert cleared.status_code == 204
     assert (await client.get("/api/v1/errors")).json()["total"] == 0
@@ -585,6 +588,250 @@ async def test_record_error_scrubs_secrets(app_env):
     assert "AKIAIOSFODNN7EXAMPLE" not in combined
     assert '"note": "ok note"' in combined
     assert "***" in combined
+
+
+# --- Errors read/unread state (spec 7.1 / 1423-1442) ---------------------------
+
+
+async def test_errors_unread_total_counts_only_unread(client):
+    """Spec 7.1: unread_total reflects rows where read_at IS NULL."""
+    await _login(client)
+    # Report two errors
+    await client.post("/api/v1/errors", json={"message": "First"}, headers=API_HEADERS)
+    await client.post("/api/v1/errors", json={"message": "Second"}, headers=API_HEADERS)
+    body = (await client.get("/api/v1/errors")).json()
+    assert body["total"] == 2
+    assert body["unread_total"] == 2
+    # Mark one read
+    error_id = body["items"][0]["id"]
+    resp = await client.post(f"/api/v1/errors/{error_id}/read", headers=API_HEADERS)
+    assert resp.status_code == 200
+    body2 = (await client.get("/api/v1/errors")).json()
+    assert body2["total"] == 2
+    assert body2["unread_total"] == 1
+
+
+async def test_errors_mark_one_read_persists(client):
+    """Spec 7.1: mark one read -> error persists with read=true, not deleted."""
+    await _login(client)
+    await client.post("/api/v1/errors", json={"message": "Test mark read"}, headers=API_HEADERS)
+    listing = (await client.get("/api/v1/errors")).json()
+    error_id = listing["items"][0]["id"]
+    resp = await client.post(f"/api/v1/errors/{error_id}/read", headers=API_HEADERS)
+    assert resp.status_code == 200
+    item = resp.json()
+    assert item["read"] is True
+    assert item["id"] == error_id
+    assert item["message"] == "Test mark read"
+    # Confirm still in list
+    listing2 = (await client.get("/api/v1/errors")).json()
+    assert listing2["total"] == 1
+    assert listing2["items"][0]["read"] is True
+
+
+async def test_errors_mark_all_read(client):
+    """Spec 7.1: mark-all-read sets read_at on every unread row."""
+    await _login(client)
+    for msg in ("A", "B", "C"):
+        await client.post("/api/v1/errors", json={"message": msg}, headers=API_HEADERS)
+    resp = await client.post("/api/v1/errors/read-all", headers=API_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["updated"] == 3
+    body = (await client.get("/api/v1/errors")).json()
+    assert body["total"] == 3
+    assert body["unread_total"] == 0
+    for item in body["items"]:
+        assert item["read"] is True
+
+
+async def test_errors_mark_all_read_idempotent(client):
+    """Spec 7.1: second mark-all-read is a no-op on already-read rows."""
+    await _login(client)
+    await client.post("/api/v1/errors", json={"message": "One"}, headers=API_HEADERS)
+    resp1 = await client.post("/api/v1/errors/read-all", headers=API_HEADERS)
+    assert resp1.json()["updated"] == 1
+    resp2 = await client.post("/api/v1/errors/read-all", headers=API_HEADERS)
+    assert resp2.json()["updated"] == 0
+
+
+async def test_errors_mark_one_unread(client):
+    """Spec 7.1: mark one unread flips read_at back to NULL."""
+    await _login(client)
+    await client.post("/api/v1/errors", json={"message": "Flip me"}, headers=API_HEADERS)
+    listing = (await client.get("/api/v1/errors")).json()
+    error_id = listing["items"][0]["id"]
+    # Mark read first
+    await client.post(f"/api/v1/errors/{error_id}/read", headers=API_HEADERS)
+    body = (await client.get("/api/v1/errors")).json()
+    assert body["unread_total"] == 0
+    # Mark unread
+    resp = await client.post(f"/api/v1/errors/{error_id}/unread", headers=API_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["read"] is False
+    body2 = (await client.get("/api/v1/errors")).json()
+    assert body2["unread_total"] == 1
+    assert body2["items"][0]["read"] is False
+
+
+async def test_errors_read_unknown_id_returns_404(client):
+    """Spec 7.1: mark-read on non-existent error id returns 404."""
+    await _login(client)
+    resp = await client.post("/api/v1/errors/99999/read", headers=API_HEADERS)
+    assert resp.status_code == 404
+
+
+async def test_errors_unread_unknown_id_returns_404(client):
+    """Spec 7.1: mark-unread on non-existent error id returns 404."""
+    await _login(client)
+    resp = await client.post("/api/v1/errors/99999/unread", headers=API_HEADERS)
+    assert resp.status_code == 404
+
+
+async def test_errors_unread_default_after_report(client):
+    """Spec 7.1: newly reported errors default to unread (read_at=NULL)."""
+    await _login(client)
+    resp = await client.post("/api/v1/errors", json={"message": "Fresh"}, headers=API_HEADERS)
+    item = resp.json()
+    assert item["read"] is False
+    assert item["id"] is not None
+
+
+async def test_errors_reading_never_deletes(client):
+    """Spec 7.1 / 1455: mark-read/mark-all-read never removes any row."""
+    await _login(client)
+    msgs = ["One", "Two", "Three"]
+    for msg in msgs:
+        await client.post("/api/v1/errors", json={"message": msg}, headers=API_HEADERS)
+    body = (await client.get("/api/v1/errors")).json()
+    for item in body["items"]:
+        await client.post(f"/api/v1/errors/{item['id']}/read", headers=API_HEADERS)
+    await client.post("/api/v1/errors/read-all", headers=API_HEADERS)
+    body2 = (await client.get("/api/v1/errors")).json()
+    assert body2["total"] == 3  # Nothing deleted
+    assert body2["unread_total"] == 0
+    # Clear is still destructive and separate (spec:286-288)
+    await client.delete("/api/v1/errors", headers=API_HEADERS)
+    assert (await client.get("/api/v1/errors")).json()["total"] == 0
+
+
+# --- Diagnostic report (spec 7.3 / 1457-1495) -----------------------------------
+
+
+async def test_diagnostic_report_structure(client):
+    """Spec 7.3: report header contains Generated/Version/Commit/Scan state
+    and per-error sections in Markdown."""
+    await _login(client)
+    await client.post("/api/v1/errors", json={"message": "Discovery timeout"}, headers=API_HEADERS)
+    resp = await client.post("/api/v1/errors/diagnostic", json={}, headers=API_HEADERS)
+    assert resp.status_code == 200
+    text = resp.text
+    assert resp.headers["content-type"] == "text/markdown; charset=utf-8"
+    assert text.startswith("# NUCS Diagnostic Report")
+    assert "Generated:" in text
+    assert "Version: 1.0.0" in text
+    assert "Commit:" in text
+    assert "Current/recent scan state:" in text
+    assert "## Error 1" in text
+    assert "Timestamp:" in text
+    assert "Source: client" in text
+    assert "Level: error" in text
+    assert "Message: Discovery timeout" in text
+
+
+async def test_diagnostic_report_requires_auth(client):
+    resp = await client.post("/api/v1/errors/diagnostic", json={})
+    assert resp.status_code in (401, 403)  # CSRF reject or auth check — both mean unauthenticated
+
+
+async def test_diagnostic_report_with_selected_ids(client):
+    """Spec 7.3: selection — only the specified error ids appear."""
+    await _login(client)
+    await client.post("/api/v1/errors", json={"message": "First"}, headers=API_HEADERS)
+    await client.post("/api/v1/errors", json={"message": "Second"}, headers=API_HEADERS)
+    body = (await client.get("/api/v1/errors")).json()
+    first_id = body["items"][1]["id"]
+    resp = await client.post(
+        "/api/v1/errors/diagnostic",
+        json={"ids": [first_id]},
+        headers=API_HEADERS,
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "Message: First" in text
+    assert "Message: Second" not in text
+
+
+async def test_diagnostic_report_fallback_no_ids(client):
+    """Spec 7.3 / 1465: when no ids specified, report includes the most-recent errors."""
+    await _login(client)
+    await client.post(
+        "/api/v1/errors",
+        json={"message": "Fallback test"},
+        headers=API_HEADERS,
+    )
+    resp = await client.post("/api/v1/errors/diagnostic", json={}, headers=API_HEADERS)
+    assert resp.status_code == 200
+    assert "Message: Fallback test" in resp.text
+
+
+async def test_diagnostic_report_no_secret_leak(client, app_env):
+    """Spec 7.3 / 1490 / 1709: the report never exposes secrets — notification
+    URLs, auth cookies, API tokens, or passwords. Even token-like context
+    stored via the scrubbing service must NOT appear in the diagnostic Markdown.
+    """
+    from app.main import run_migrations
+    from app.services import errors as error_service
+
+    run_migrations()
+    error_service.record_error(
+        "test-leak",
+        "error",
+        "tgram://123456:ABC-DEF/chat failed; password=hunter2secretpw; long-token "
+        "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        context={
+            "url": "https://user:pass@example.com/x",
+            "api_key": "AKIAIOSFODNN7EXAMPLE",
+            "notify_url": "ntfy://mytopic/mytoken123/extra",
+            "normal_key": "safe visible value",
+        },
+    )
+    await _login(client)
+    resp = await client.post("/api/v1/errors/diagnostic", json={}, headers=API_HEADERS)
+    assert resp.status_code == 200
+    text = resp.text
+    # All secrets must be absent from the report
+    for secret in (
+        "tgram://",
+        "ABC-DEF",
+        "hunter2secretpw",
+        "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "user:pass@",
+        "AKIAIOSFODNN7EXAMPLE",
+        "mytoken123",
+    ):
+        assert secret not in text, f"secret '{secret[:30]}…' leaked into diagnostic report"
+    # The scrubbing marker must confirm scrubbing happened
+    assert "***" in text
+    # Safe visible value should still appear
+    assert "safe visible value" in text
+    # Normal structural elements should remain
+    assert "test-leak" in text
+    assert "# NUCS Diagnostic Report" in text
+
+
+async def test_diagnostic_report_unknown_ids_silently_omitted(client):
+    """Spec 7.3: requesting ids that don't exist returns a report without them."""
+    await _login(client)
+    await client.post("/api/v1/errors", json={"message": "Only real error"}, headers=API_HEADERS)
+    resp = await client.post(
+        "/api/v1/errors/diagnostic",
+        json={"ids": [99999]},
+        headers=API_HEADERS,
+    )
+    assert resp.status_code == 200
+    text = resp.text
+    assert "## Error 1" not in text
+    assert "Only real error" not in text
 
 
 # --- Feed: ReleaseArtist-authoritative highlighting (spec 3.6, Trap 3) ---------

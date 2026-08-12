@@ -229,6 +229,7 @@ class AppError(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     stack: Mapped[str | None] = mapped_column(Text, nullable=True)
     context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    read_at: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("ix_app_errors_ts", "ts"),)
 
