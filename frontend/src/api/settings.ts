@@ -42,7 +42,7 @@ export interface ScanRun {
   type: 'library' | 'releases' | 'feat'
   started_at: string
   finished_at: string | null
-  status: 'ok' | 'error'
+  status: 'ok' | 'error' | 'cancelled'
   stats: Record<string, number | string> | null
 }
 
@@ -53,7 +53,13 @@ export interface ScanProgress {
 }
 
 export interface ScanStatus {
-  running: { type: string; since: string; progress: ScanProgress } | null
+  running: {
+    type: 'library' | 'releases' | 'feat'
+    since: string
+    progress: ScanProgress
+    cancel_requested: boolean
+    cancellable: boolean
+  } | null
   last_runs: ScanRun[]
 }
 
@@ -70,6 +76,16 @@ export function useStartScan() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (type: 'library' | 'releases' | 'feat') => apiFetch<void>(`/api/v1/scans/${type}`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scan-status'] })
+    },
+  })
+}
+
+export function useCancelScan() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (type: 'library' | 'releases' | 'feat') => apiFetch<void>(`/api/v1/scans/${type}/cancel`, { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scan-status'] })
     },

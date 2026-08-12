@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -60,6 +60,24 @@ async def trigger_feat_scan(
     return Response(status_code=202)
 
 
+@router.post("/{scan_type}/cancel", status_code=202)
+async def cancel_scan(
+    scan_type: str = Path(..., pattern="^(library|releases|feat)$"),
+    db: Session = Depends(get_db),
+    current: DbSession = Depends(require_user),
+) -> dict:
+    """Cancel a running scan (spec 6.4).
+
+    Idempotent: calling cancel on an already-cancelled-but-still-running scan
+    returns 202 again (scan_locks.request_cancel is unconditional for running
+    types). Returns 404 when the scan type is not running.
+    """
+    if not scan_locks.request_cancel(scan_type):
+        raise HTTPException(status_code=404, detail="No running scan")
+    snapshot = scan_locks.running_scans().get(scan_type, {"type": scan_type, "cancel_requested": True})
+    return snapshot
+
+
 @router.get("/status")
 async def scan_status(
     db: Session = Depends(get_db),
@@ -67,12 +85,14 @@ async def scan_status(
 ) -> dict:
     """Running scan (if any) plus the last 10 scan_runs.
 
-    ``running`` carries ``{type, since, progress:{total,done,phase}}`` (phase
-    12b: the progress dict is updated live by the scan workers).
+    ``running`` carries the full spec 6.1 registry state — ``{type,
+    started_at, since, phase, progress:{total,done,phase},
+    cancel_requested, cancellable}`` (``since`` is kept for the phase-12b
+    frontend contract).
     """
     running = None
-    for scan_type, snapshot in scan_locks.running_scans().items():
-        running = {"type": scan_type, "since": snapshot["since"], "progress": snapshot["progress"]}
+    for snapshot in scan_locks.running_scans().values():
+        running = snapshot
     rows = db.scalars(select(ScanRun).order_by(ScanRun.id.desc()).limit(10)).all()
     last_runs = []
     for row in rows:
