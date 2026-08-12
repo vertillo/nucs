@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 class Settings(BaseSettings):

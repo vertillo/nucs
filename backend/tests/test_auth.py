@@ -488,7 +488,7 @@ def test_health_still_public_with_lifespan(app_env):
     with TestClient(create_app()) as test_client:
         response = test_client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "1.0.0"}
+    assert response.json() == {"status": "ok", "version": "1.1.0"}
 
 
 # --- rolling renewal re-issues the cookie (audit finding, phase 12) ----------

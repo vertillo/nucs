@@ -12,7 +12,7 @@ def test_health_returns_ok(app_env):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0"
+    assert body["version"] == "1.1.0"
 
 
 def test_health_does_not_require_auth(app_env):

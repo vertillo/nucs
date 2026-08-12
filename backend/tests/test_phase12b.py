@@ -728,7 +728,7 @@ async def test_diagnostic_report_structure(client):
     assert resp.headers["content-type"] == "text/markdown; charset=utf-8"
     assert text.startswith("# NUCS Diagnostic Report")
     assert "Generated:" in text
-    assert "Version: 1.0.0" in text
+    assert "Version: 1.1.0" in text
     assert "Commit:" in text
     assert "Current/recent scan state:" in text
     assert "## Error 1" in text

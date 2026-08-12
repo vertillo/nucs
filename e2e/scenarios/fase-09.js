@@ -463,7 +463,8 @@ async function main() {
     })
     h.check(
       'About shows version, counts and library path placeholder',
-      about.includes('1.0.0') && about.includes('Configured via environment variable'),
+      // Version assert — keep in sync with the current release tag (spec:1935)
+      about.includes('1.1.0') && about.includes('Configured via environment variable'),
       about.replace(/\s+/g, ' ').slice(0, 140),
     )
 
