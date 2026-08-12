@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
+import { ApiError, apiFetch } from '../api/client'
 
 const INVALID_CREDENTIALS = 'Invalid credentials'
+const RATE_LIMIT_MESSAGE = 'Too many attempts. Try again later.'
+const TIMEOUT_MESSAGE = 'Connection timed out. Check your network and try again.'
 const GENERIC_ERROR = 'Something went wrong. Try again.'
 
 export default function Login() {
@@ -18,23 +21,26 @@ export default function Login() {
     setError(null)
     setSubmitting(true)
     try {
-      const response = await fetch('/api/v1/auth/login', {
+      await apiFetch('/api/v1/auth/login', {
         method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
         body: JSON.stringify({ username, password }),
-      })
-      if (response.status === 204) {
-        await queryClient.invalidateQueries({ queryKey: ['me'] })
-        navigate('/', { replace: true })
-        return
+      }, { redirectOn401: false })
+      await queryClient.invalidateQueries({ queryKey: ['me'] })
+      navigate('/', { replace: true })
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          setError(INVALID_CREDENTIALS)
+        } else if (err.status === 429) {
+          setError(err.message !== 'Request failed' ? err.message : RATE_LIMIT_MESSAGE)
+        } else if (err.status === 0) {
+          setError(TIMEOUT_MESSAGE)
+        } else {
+          setError(GENERIC_ERROR)
+        }
+      } else {
+        setError(GENERIC_ERROR)
       }
-      setError(response.status === 401 ? INVALID_CREDENTIALS : GENERIC_ERROR)
-    } catch {
-      setError(GENERIC_ERROR)
     } finally {
       setSubmitting(false)
     }
