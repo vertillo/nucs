@@ -109,7 +109,12 @@ current code/config/test evidence and the user impact.
   `mbid`/provider columns set *before* calling `attach_external_identity`
   (`artists.py:456-457` commit, `:464-470` attach). On `IdentityConflictError`
   it returns 409 but the committed row remains: legacy `mbid` set, no identity
-  row. Auto-match skips it via `if not list_identities`, so it sits as an
+  row. The stray row is excluded from bulk auto-match by the `match_all_pending`
+  eligibility predicate (`mb_matching.py:240-250`), which requires
+  `Artist.mbid IS NULL`, no external identity, `ignored == 0` and
+  `provider == "manual"`: an MB conflict row fails the first clause (its `mbid`
+  is set) and a non-MB conflict row fails the last clause (its provider is not
+  `manual`), while both have no external identity. It therefore sits as an
   effectively-unlinked artist.
 - **Expected behavior**: attach the identity before commit, or roll back the
   artist row on conflict (optional hardening).
