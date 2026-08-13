@@ -4,7 +4,7 @@ Reconciled register of every known defect, finding and gap with a documented
 disposition, current as of release `v1.1.0` (commit `d36a864`; app code
 unchanged through `bca93c0`). It supersedes the pre-remediation issue list that
 was written against baseline `6cdcb16` and predates the remediation: every
-entry of that old list (33 items) plus every post-remediation finding (29) is
+entry of that old list (33 items) plus every post-remediation finding (31) is
 disposed 1:1 below. Nothing is silently dropped.
 
 ## Status vocabulary
@@ -22,20 +22,20 @@ disposed 1:1 below. Nothing is silently dropped.
 - **DUPLICATE**: same underlying item tracked under another identifier; the
   mapping is explicit in the Duplicates section.
 
-Census: 62 rows = 33 legacy issue entries + 29 post-remediation findings.
+Census: 64 rows = 33 legacy issue entries + 31 post-remediation findings.
 
 ## Summary counts
 
-| Status | Legacy (33) | Post-remediation (29) | Total |
+| Status | Legacy (33) | Post-remediation (31) | Total |
 |---|---|---|---|
-| OPEN | 7 | 11 | 18 |
+| OPEN | 7 | 13 | 20 |
 | RESOLVED | 24 | 5 | 29 |
 | REJECTED | 2 | 8 | 10 |
 | DUPLICATE | 0 | 5 | 5 |
 | BLOCKED_PRODUCT_DECISION | 0 | 0 | 0 |
-| **Total** | **33** | **29** | **62** |
+| **Total** | **33** | **31** | **64** |
 
-The 18 OPEN rows split into 16 active technical residuals (section A) and 2
+The 20 OPEN rows split into 18 active technical residuals (section A) and 2
 documentation-class residuals (section B). The old register's summary block was
 internally inconsistent (it claimed 34 total / 26 OPEN while its own entries
 numbered 33 with 25 OPEN) and cited a stale test count of 339; both are
@@ -278,11 +278,57 @@ current code/config/test evidence and the user impact.
 - **User impact**: a background match can be lost at shutdown; observability
   only.
 
+### A.9 FIND-2-3: Phase-12b migration drops release child rows (upgrade data loss)
+
+- **Status**: OPEN (critical upgrade defect; repair out of scope for a
+  documentation-only plan)
+- **Current behavior**: the phase-12b migration batch-recreates `releases`
+  (`b1a2c3d4e5f6_phase_12b_multi_provider.py:56`,
+  `op.batch_alter_table("releases", ..., recreate="always")`), and Alembic
+  connections run with `PRAGMA foreign_keys=ON` (`alembic/env.py:55` →
+  `app/db.py:33-38`). SQLite batch-recreate drops the old table, and
+  `DROP TABLE releases` fires the `ON DELETE CASCADE` foreign keys declared in
+  the initial schema (`9cb782c0d8f5_initial_schema.py:102` for
+  `release_artists.release_id`, `:113` for `release_state.release_id`).
+  Independently reproduced on a populated temp database: before 1 release /
+  1 release_artist / 1 release_state → after `alembic upgrade head`,
+  releases=1, release_artists=0, release_state=0. The release rows are copied
+  back; their child relations and seen/hidden/favorite state are wiped.
+- **Expected behavior**: `specs/NUCS_PRODUCT_SPEC.md` §20.1: migration MUST
+  preserve releases, release state, favorites, hidden state, seen state and
+  release/provider links; no destructive schema leap without migration
+  coverage.
+- **User impact**: upgrading a populated pre-phase-12b database to v1.1.0
+  silently loses every release's seen/hidden/favorite state and every
+  release↔artist link; highlighting and tracking reset.
+- **Caveat**: manifests only when upgrading a database populated before the
+  phase-12b migration; the defect is fixed by neither this register nor any
+  documentation commit — the migration repair stays OPEN and out of scope for
+  the documentation reconciliation.
+
+### A.10 FIND-LOG-ROTATION: Structured logs without rotation
+
+- **Status**: OPEN (implementation discrepancy; no rotation parameters
+  invented here)
+- **Current behavior**: `configure_logging` (`backend/app/main.py:220-226`)
+  installs a single `logging.StreamHandler()` writing key=value records to
+  stdout; neither `docker-compose.yml` nor `docker-compose.dev.yml` defines a
+  `logging:` section, so the container runtime keeps the default unlimited
+  json-file log. Nothing rotates or caps log growth.
+- **Expected behavior**: `specs/NUCS_PRODUCT_SPEC.md` §1.2 requires
+  "structured logs with rotation" (requirement restored in `7bda6ee`). The
+  structured part exists; the rotation part is missing.
+- **User impact**: unbounded container log growth on a long-running
+  self-hosted deployment.
+- **Caveat**: the rotation mechanism and its parameters (handler, size,
+  retention) are deliberately not specified here; the residual is the absence
+  against the normative requirement.
+
 ---
 
 ## B. Documentation-class residuals (truthful execution-time status)
 
-These two rows are part of the 18 OPEN dispositions but are not active
+These two rows are part of the 20 OPEN dispositions but are not active
 technical issues. Their status reflects what the register does about them.
 
 ### B.1 D-DOC-1: Stale summary counts in the old register
@@ -291,7 +337,7 @@ technical issues. Their status reflects what the register does about them.
 - **What it was**: the old `KNOWN_ISSUES.md` summary claimed 34 total / 26 OPEN
   while its own item-level statuses enumerated 33 entries with 25 OPEN.
 - **Disposition**: the discrepancy was the baseline artifact of this rewrite;
-  the counts here are recomputed from the full 62-row census (33 + 29) and no
+  the counts here are recomputed from the full 64-row census (33 + 31) and no
   stale totals remain.
 
 ### B.2 D-DOC-2: Stale pytest count ("339 items")

@@ -49,6 +49,7 @@ the current facts replace them section by section below.
 | Persistence | SQLite in WAL mode (`journal_mode=WAL`), `foreign_keys=ON`, `busy_timeout=5000` (`backend/app/db.py`); timestamps are ISO-8601 UTC `TEXT` via `utc_now()` |
 | Scheduler | APScheduler `AsyncIOScheduler` (in-memory jobstore), 5 jobs: daily library scan, daily release scan, weekly feat scan (optional), daily backup 02:30, hourly session cleanup; jobs share the same global scan lock as manual scans and skip when already running (`backend/app/scheduler.py`) |
 | Tasks | Scans run in-process: discovery as tracked `asyncio.Task` in `discovery._tasks`, library scan via `asyncio.to_thread(scan_library_sync)`; a single global `asyncio.Lock` (`services/scan_locks.py`) serializes every scan type and the library reset |
+| Logging | structured key=value logs on stdout via a root `logging.StreamHandler` (`_KeyValueFormatter` + `configure_logging` in `backend/app/main.py`, level from `LOG_LEVEL`); rotation is not configured in the application or in Docker Compose (no `logging:` section) — tracked as FIND-LOG-ROTATION in `KNOWN_ISSUES.md` |
 | Frontend | Vite + React 18 + TypeScript (strict, `noUnusedLocals/Parameters`) + TailwindCSS 3 (`darkMode: 'class'`) + react-router-dom + @tanstack/react-query 5; static SPA served by the backend (no Node in production) |
 | Deployment | Docker multi-stage (`docker/Dockerfile`: node:20 build → python:3.12-slim runtime); `docker-compose.yml` with a single `app` service publishing `8067:8080`; Tailscale/Cloudflare tunnels run externally against that port; dev-only override `docker-compose.dev.yml` publishes `127.0.0.1:8066:8080` |
 | CI | GitHub Actions `ci.yml`: `ruff check` only, triggered only on `main` push/PR (no CI runs on `remediation/nucs`) |
@@ -140,6 +141,25 @@ Cross-check: `grep -c "op.create_table("` summed across the 8 files is 16,
 matching the 16 application models (`alembic_version` brings the physical total
 to 17). Migrations run automatically in the app lifespan; a failed migration
 fails the container at boot.
+
+**Populated-upgrade caveat (FIND-2-3, open)**: upgrading a database that
+already contains release data through `b1a2c3d4e5f6` (the phase-12b expansion)
+deletes every `release_artists` and `release_state` row while the `releases`
+rows themselves survive. Mechanism: the Alembic environment applies the app's
+connection pragmas (`foreign_keys=ON`, `backend/alembic/env.py:55` →
+`app/db.py:33-38`); the revision recreates `releases` via
+`batch_alter_table("releases", copy_from=_releases, recreate="always")`
+(`b1a2c3d4e5f6:56`), which copies the rows to a temp table and issues
+`DROP TABLE releases`; with foreign keys enforced, that drop performs an
+implicit DELETE of every parent row, firing the `ON DELETE CASCADE` foreign
+keys declared on `release_artists` and `release_state`
+(`9cb782c0d8f5:102,113`); the temp table is then renamed to `releases`, so the
+parent rows reappear while all child rows are gone. Reproduced by seeding a
+database at `d3a09182f69b` with one release plus one `release_artists` and one
+`release_state` row, then upgrading to `b1a2c3d4e5f6`: `releases` 1→1,
+`release_artists` 1→0, `release_state` 1→0. Fresh databases are unaffected
+(no rows to cascade); the loss manifests only on the populated upgrade path.
+Tracked as FIND-2-3 in `KNOWN_ISSUES.md`.
 
 ## 5. Artist identity model
 
@@ -568,6 +588,13 @@ Only items relevant for orientation; full detail and statuses live in
     enrichment and cancellation are mixed in one module.
 16. **String-compared ISO dates/timestamps** throughout: fragile to format
     drift; partial dates in cursor arithmetic can wobble.
+17. **Populated-upgrade migration loss (FIND-2-3, open)**: upgrading a
+    populated database through `b1a2c3d4e5f6` cascade-deletes all
+    `release_artists` and `release_state` rows while `releases` rows survive
+    (mechanism and reproduction in §4); no repair implemented.
+18. **No log rotation (FIND-LOG-ROTATION, open)**: logs are written to stdout
+    (structured key=value) with no rotation configured in the application or
+    in Docker Compose; the normative rotation requirement is not implemented.
 
 ## 19. Code map (key symbols)
 
