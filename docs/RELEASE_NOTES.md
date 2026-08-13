@@ -1,7 +1,10 @@
 # NUCS Release Notes — v1.1.0
 
-Release of the spec-driven remediation (`specs/NUCS_REMEDIATION_SPEC.md`,
-phases 0–10, `remediation/nucs` branch). **Semver: MINOR** — the release adds
+Release of the spec-driven remediation (phases 0–10, `remediation/nucs`
+branch). The working spec of that remediation (`specs/NUCS_REMEDIATION_SPEC.md`)
+is historical and Git-recoverable (tag `v1.1.0`, `d36a864`); the current single
+authority is [`specs/NUCS_PRODUCT_SPEC.md`](../specs/NUCS_PRODUCT_SPEC.md).
+**Semver: MINOR** — the release adds
 backward-compatible functionality (additive, backfilled identity model); the
 phase-10 final independent audit (task 62) found no compatibility-breaking
 change. Existing git tag `v1.0.0` is untouched; this release is tagged
@@ -84,12 +87,15 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
   startup (`run_migrations` in the app lifespan); a failed migration fails the
   container at boot, so backup before upgrading (daily automatic backups
   exist; `docker compose exec app python -m app.cli backup-now`).
-- **Backfill preserves legacy identity data** (spec C): MusicBrainz links and
-  non-manual provider pairs become identity rows (`link_method='migration'`)
-  with `external_url` preserved; unmatched/manual artists keep `Needs match`;
-  release identities deduplicate via `INSERT OR IGNORE`; seen-recordings gain
-  `evaluation_state='seen'` with a NULL policy fingerprint (re-evaluated once
-  under the new policy); all existing tables/rows are preserved.
+- **Backfill preserves legacy identity data** (spec §20.1 expand → backfill →
+  migrate contract): MusicBrainz links and non-manual provider pairs become
+  identity rows (`link_method='migration'`) with `external_url` preserved;
+  unmatched/manual artists keep `Needs match`; release identities deduplicate
+  via `INSERT OR IGNORE`; seen-recordings gain `evaluation_state='seen'` with a
+  NULL policy fingerprint (re-evaluated once under the new policy). Caveat: the
+  phase-12b migration recreates the `releases` table, dropping `release_artists`
+  and `release_state` child rows on upgraded databases (FIND-2-3, tracked in
+  [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md#a9-find-2-3-phase-12b-migration-drops-release-child-rows-upgrade-data-loss)).
 
 ## Known limitations
 
@@ -99,13 +105,14 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
   is an open implementation discrepancy, not a product decision; the normative
   behavior (a generic `Tracked artist` relation) is not yet implemented.
   Tracked in [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md#a1-find-61-1-non-mb-provider-candidates-forced-primary-role-implementation-discrepancy).
-- **Upstream catalog gaps are documented, not worked around** (spec:1794,
-  phase-10 live validation, tasks 58–61): e.g. iTunes exposes multiple
-  same-name artists with no disambiguation signal (PiKi case); the spec's own
-  Axwell edition is described with three different titles across catalogs —
-  the matcher is deliberately not weakened, so such editions stay separate.
+- **Upstream catalog gaps are documented, not worked around** (spec §5
+  Matching safety; phase-10 live validation, tasks 58–61): e.g. iTunes exposes
+  multiple same-name artists with no disambiguation signal (PiKi case); a
+  phase-10 live-validation Axwell case is described with three different titles
+  across catalogs — the matcher is deliberately not weakened, so such editions
+  stay separate.
 - **The internal provider key `itunes` is load-bearing and kept**
-  (spec:500–503); it is not renamed.
+  (spec §9 Provider strategy); it is not renamed.
 - **e2e fase-15/16 require a live backend** (fase-16 deterministic hermetic;
   fase-15 needs real MusicBrainz network and ~6–10 min seed).
 - Three pre-existing LOW findings (orphan cleanup legacy proxy,
