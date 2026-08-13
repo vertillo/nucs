@@ -22,15 +22,17 @@ prescribe fixes, and it is not a remediation plan.
 |---|---|
 | Application version (`APP_VERSION`) | `1.1.0` (`backend/app/config.py:11`); reported by `/api/health` |
 | Release tag | `v1.1.0` (annotated) pointing at commit `d36a864 chore(release): v1.1.0` |
-| Commit baseline of this description | branch `remediation/nucs`, HEAD `5206a8b docs(spec): consolidate permanent product requirements` (2026-08-13) |
-| App code since the tag | unchanged: `git diff --name-only d36a864..HEAD` lists only docs, deploy, config, spec, CI-adjacent files (`.env.example`, `AGENTS.md`, `README.md`, `deploy/*`, `docker-compose*.yml`, `docs/*`, `opencode.json`, `specs/NUCS_PRODUCT_SPEC.md`) |
+| Application snapshot described | the application code (`backend/app/**`, `backend/alembic/**`, `backend/tests/**`, `frontend/src/**`) as of release tag `d36a864`; no application-code file changed on `remediation/nucs` since the tag — `git diff --name-only d36a864..HEAD` touches only docs, deploy, configuration, spec and scaffold files |
+| Documentation revision reviewed | branch `remediation/nucs`, commit `2456534 docs(spec): require release identity uniqueness per provider` (2026-08-13, HEAD at review time) |
 | `main` branch | untouched by the remediation work: `origin/main` tip `21414f6` is also the merge-base with `remediation/nucs` |
 
-The tag `v1.1.0` and the current HEAD are deliberately stated separately. The
-post-release commits on `remediation/nucs` (port `8067` publishing and sidecar
-removal in `ca8edd9`, opencode plugin scaffolding in `bca93c0`, the product-spec
-consolidation in `5206a8b`) changed deployment, documentation and configuration
-only; they do not constitute a new application version.
+The release tag and the documentation revision are deliberately stated
+separately. The post-release commits on `remediation/nucs` (port `8067`
+publishing and sidecar removal in `ca8edd9`, opencode plugin scaffolding in
+`bca93c0`, the product-spec consolidation in `5206a8b`, plus subsequent
+documentation-only commits up to `2456534`) changed deployment, documentation,
+configuration and scaffolding only; they do not constitute a new application
+version.
 
 **Superseded baseline note:** the previous version of this document described
 the repository as of commit `6cdcb16` (branch `main`, pre-remediation) with
@@ -100,11 +102,21 @@ SQLAlchemy model. Reproducible by migrating a fresh database to head
 | 16 | `NotificationEvent` | `notification_events` | Persisted delivery state: `UNIQUE(release_id, event_type)`, `state` (`sent`/`retryable_failed`), `sent_at`, `created_at` |
 
 **Legacy single-provider columns** (`artists.mbid/provider/provider_id`, plus
-`releases.rgid`) are a write-mirror kept under a contract freeze: the identity
-tables are authoritative for status, discovery and matching, while a few legacy
-read sites (`mb_matching.py`, `artists.py`, `library_scan.py` orphan cleanup)
-still read `mbid` as a mirror. This is tracked as a residual (FA-LOW-3) in
-`KNOWN_ISSUES.md`.
+`releases.rgid`) are kept under a contract freeze as a write-mirror of the
+identity tables. The identity tables are authoritative for **status**
+(`derive_status` never consults `mbid`) and for **discovery** (level-1 and
+level-2 queries read identity rows only). The legacy `mbid` column still
+carries behavioral authority in the **matching flow**: `match_artist` treats
+any artist whose `mbid` is set as already resolved (`mb_matching.py:196`),
+`_attach_mb_identity` reports success without creating an identity row when
+`mbid` is set (`mb_matching.py:135`), `match_all_pending` excludes `mbid`-set
+artists from the bulk pending set (`mb_matching.py:243`), and the rematch
+endpoint uses `mbid IS NULL` to detect resolved split parents
+(`artists.py:519`). Consequence: an artist carrying only a legacy `mbid` (no
+identity row) is never bulk-matched and a manual rematch attaches no identity,
+so the artist remains `Needs match` by status (interaction documented in
+KNOWN_ISSUES A.3.2); the orphan-cleanup `mbid IS NULL` proxy is described in
+§7. These reads are tracked as a residual (FA-LOW-3) in `KNOWN_ISSUES.md`.
 
 ## 4. Migrations
 
