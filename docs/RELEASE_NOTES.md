@@ -13,7 +13,10 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
   External identities (MusicBrainz, Deezer, iTunes, …) are first-class rows on
   artists and releases; every stored identity is queried by discovery. The
   legacy single-provider columns are kept as a write-mirror during the contract
-  freeze and are never consulted for behavior.
+  freeze; status and discovery read the identity rows only, while some legacy
+  `mbid` reads still gate matching and eligibility (residual FA-LOW-3, tracked
+  in
+  [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md#a33-fa-low-3-legacy-mbid-mirror-reads-legacy-column-retirement-umbrella)).
 - **Conservative automatic matching with homonym safety** (phase 2, spec 2).
   An artist is auto-linked only when exactly one unique exact candidate exists
   (score ≥ 90 where a score exists); ambiguous homonym sets, fuzzy matches and
