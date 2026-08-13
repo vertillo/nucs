@@ -79,7 +79,7 @@ Centrality unmeasured (no LSP/codegraph); from code inspection.
 
 - **Never auto-pick a low-confidence artist match or homonym** — false positives worse than unmatched. Leave `Needs match`.
 - **Never hold a SQLite write transaction across slow external-provider awaits** — commit before network calls (avoids `database is locked`).
-- **No live third-party APIs in deterministic tests/CI** — mock/fixture providers; live validation happens outside the deterministic suite (e2e fase-15 seeds against the real MusicBrainz network by design).
+- **No live third-party APIs in deterministic tests/CI** — mock/fixture providers; live validation happens outside the deterministic suite (e2e fase-15 seeds against the real MusicBrainz network and e2e fase-16 flow 5 runs a live provider candidate search, both by design).
 - **No row-moving/promotion copy jobs, no library-reset-as-migration-shortcut** — prefer expand → backfill → migrate → switch → contract.
 - **Don't treat `docs/CURRENT_IMPLEMENTATION.md` as desired behavior** — it describes as-built state; defects live in KNOWN_ISSUES.md.
 - **Do not invent product behavior** — new ambiguity = `BLOCKED_PRODUCT_DECISION`, never a guess; do not reopen decisions already resolved in the spec.

@@ -58,7 +58,7 @@ e2e/
 
 ## ANTI-PATTERNS
 
-- No live third-party APIs as acceptance — deterministic local behavior only; live seeds (fase-15) are the documented exception and are not part of CI.
+- No live third-party APIs as acceptance for new checks — deterministic local behavior only; the documented live exceptions are fase-15's live MusicBrainz seed and fase-16 flow 5's live provider candidate search (flow 5 records a documented FAIL, never a silent skip, when providers are unavailable); live exceptions are not part of CI.
 - No sleeps as assertions — poll real conditions (scan status); fase-13 real lockout waits are the ONLY deliberate long waits.
 - No extra test frameworks (Playwright/Cypress/vitest) — plain node scripts + harness.js; puppeteer + axe-core are the only allowed deps.
 - Don't touch `frontend/package.json` from e2e — e2e deps are isolated.
