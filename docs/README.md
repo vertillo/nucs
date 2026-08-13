@@ -1,44 +1,44 @@
 # NUCS — Documentation Index
 
-This directory contains the current, reconciled documentation of the NUCS
-repository. It replaces the historical phase-based planning documents that used
-to live in `piano/` (see `docs/OMO_PREPARATION_REPORT.md` for what was removed
-and why).
+This directory indexes the surviving documentation of the NUCS repository as of
+release v1.1.0. It replaced the historical phase-based planning documents and
+the remediation-era specification set; only the documents below remain active,
+each with a single, clearly stated role.
 
-## Authoritative documents
-
-| Document | Role |
-|---|---|
-| [`CURRENT_IMPLEMENTATION.md`](CURRENT_IMPLEMENTATION.md) | Factual, code-grounded description of what the repository currently implements (as-built: code + migrations + tests). Use as the orientation map. |
-| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | Reconciled list of known defects and UX issues (owner bug list, findings, gaps) with statuses and evidence. |
-| [`REMEDIATION_RECONCILIATION.md`](REMEDIATION_RECONCILIATION.md) | Gap analysis: what remediation work remains, classified per requirement area. Ends with the open product questions. |
-| [`OMO_PREPARATION_REPORT.md`](OMO_PREPARATION_REPORT.md) | Record of this preparation pass: baseline, files removed/retained, old-specification disposition, verification results. |
-
-## Historical documents (not active requirements)
+## Active documents
 
 | Document | Role |
 |---|---|
-| `../piano/00-specifiche-legacy.md` | Original v1 technical specification, kept only as historical reference. **Not authoritative** — see its LEGACY header. Superseded where `NUCS_PRODUCT_DECISIONS.md` / `NUCS_REMEDIATION_SPEC.md` define changed behavior. |
-| `README.md` (repo root) | User/operational documentation (install, deploy, FAQ). It describes usage, not implementation internals. |
+| [`../specs/NUCS_PRODUCT_SPEC.md`](../specs/NUCS_PRODUCT_SPEC.md) | **Normative.** The single product specification: fixed product, architecture, security and operational requirements. Never reinterpret, weaken or replace it; a new ambiguity that would change user-visible behavior is recorded as `BLOCKED_PRODUCT_DECISION` and asked of the owner. |
+| [`CURRENT_IMPLEMENTATION.md`](CURRENT_IMPLEMENTATION.md) | **Descriptive (as-built).** Code-grounded description of what the repository implements right now: where each concern lives and the exact counts that verify it. Use it as the orientation map. It is NOT desired behavior. |
+| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | **Descriptive (defect register).** Every known defect, finding and gap with status (OPEN / RESOLVED / REJECTED / DUPLICATE) and evidence. Discrepancies between current behavior and the product spec live here. |
+| [`README.md`](../README.md) | **User / operational.** Install, deploy, use and FAQ in Italian. Describes usage, not implementation internals. |
+| [`../e2e/README.md`](../e2e/README.md) | **User / operational (test harness).** How to run the Puppeteer phase-verification scenarios against a live backend. |
+
+[`RELEASE_NOTES.md`](RELEASE_NOTES.md) records the released version history
+(currently v1.1.0) and is updated only at release time; it is not an authority
+for current behavior.
+
+## Roles at a glance
+
+- **Normative:** what the product MUST do. Only `specs/NUCS_PRODUCT_SPEC.md`.
+- **Descriptive:** what exists and what is wrong with it.
+  `CURRENT_IMPLEMENTATION.md` describes the code; `KNOWN_ISSUES.md` lists its
+  known defects against the spec.
+- **User:** how to install, run and verify the app. Root `README.md` and
+  `e2e/README.md`.
 
 ## Important distinction
 
-> **Current implementation documentation must NOT be interpreted as desired
-> product behavior.** `CURRENT_IMPLEMENTATION.md` describes what exists; known
-> defects are listed in `KNOWN_ISSUES.md`; the gap between implementation and
-> remediation requirements is in `REMEDIATION_RECONCILIATION.md`.
+> `CURRENT_IMPLEMENTATION.md` must NOT be read as desired product behavior. It
+> describes what exists; `KNOWN_ISSUES.md` records where that differs from the
+> product spec. Only `specs/NUCS_PRODUCT_SPEC.md` is normative.
 
-## What comes next (OMO remediation)
+## What was removed
 
-The subsequent autonomous remediation run (oh-my-openagent) will receive two
-separate authoritative documents, produced outside this preparation pass:
-
-- **`NUCS_PRODUCT_DECISIONS.md`** — owner decisions on the open product
-  questions (see `REMEDIATION_RECONCILIATION.md` → "NEW PRODUCT QUESTIONS").
-- **`NUCS_REMEDIATION_SPEC.md`** — the remediation specification derived from
-  the gap analysis.
-
-Those documents supersede historical specifications where they explicitly define
-changed behavior. Until they exist, the current implementation, this index and
-the legacy spec (historical) are the only sources of truth, and product
-questions remain unresolved rather than assumed.
+The historical phase-based planning documents, the remediation-era gap analysis
+and preparation reports, and the remediation-era specification files are no
+longer part of the repository documentation. Their content is either preserved
+in the documents above or recoverable from Git history; none of them is an
+active requirement. This index intentionally references only the surviving
+active documents listed above.
