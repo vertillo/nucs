@@ -4,7 +4,7 @@ Child of the repo-root AGENTS.md; e2e-specific detail only. Read the root file f
 
 ## OVERVIEW
 
-Puppeteer + Chrome headless harness that runs the fase-06..16 scenario set: the same flow a human would click, executed headless, with a PASS/FAIL table and exit code ≠ 0 on any failure. Deterministic verification is a hard project requirement (spec 22.5). Scenarios need a live backend on `BASE`. The deterministic/live split is scenario-specific: **fase-16 is hermetic** (direct SQLite seed + the `today_override` settings seam; checks never depend on live providers), while **fase-15 seeds via the real MusicBrainz network** by design; the seed for the browser scenarios (07+) touches MusicBrainz.
+Puppeteer + Chrome headless harness that runs the fase-06..16 scenario set: the same flow a human would click, executed headless, with a PASS/FAIL table and exit code ≠ 0 on any failure. Deterministic verification is a hard project requirement (spec 22.5). Scenarios need a live backend on `BASE`. The deterministic/live split is scenario-specific: **fase-16 is locally seeded** (direct SQLite seed + the `today_override` settings seam; most checks are deterministic against the seeded state, but flow 5 runs a live provider candidate search and records a documented FAIL when providers are unavailable), while **fase-15 seeds via the real MusicBrainz network** by design; the seed for the browser scenarios (07+) touches MusicBrainz.
 
 ## STRUCTURE
 
@@ -26,8 +26,9 @@ e2e/
 │   │               #   offline, adversarial API, backend restart (self-restarts backend)
 │   ├── fase-15.js  # Status-pill UI + identity manager, add-by-URL, purge-orphans,
 │   │               #   feed filter race (live MusicBrainz seed)
-│   └── fase-16.js  # deterministic phase-9 flows (24): hermetic seed via direct
-│                   #   SQLite writes + today_override; Status not Source/Match,
+│   └── fase-16.js  # deterministic phase-9 flows (24): local seed via direct
+│                   #   SQLite writes + today_override; flow 5 does a live
+│                   #   candidate search; Status not Source/Match,
 │                   #   identity manager, sync/cancel/progress, errors read/unread,
 │                   #   Released/Upcoming under mocked date
 ├── artifacts/      # FAIL screenshots + result tables (gitignored)

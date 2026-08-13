@@ -49,7 +49,7 @@ npm run e2e:12   # fase 12: DoD §14 automatizzabili (brute force, seed+feed+det
 npm run e2e:12b  # fase 12b: feed per giorno/seen/sync, dettaglio con tracklist+9 link, artisti (filtro "Unmatched only"/file sorgente/delete), add-artist multi-provider, pagina errori, reset library
 npm run e2e:13   # fase 13b: sottoinsieme deterministico della verifica manuale (fase 13): A4 lockout reale, A5 timing, tema, feed/settings/artisti, viewport, axe, offline, API adversarial, due tab, riavvio backend
 npm run e2e:15   # fase 15: correzioni feedback: Status pill (Linked/Needs match/Ignored), sort+badge unmatched, add-by-URL, pannello dettaglio candidato, identità nel modal Manage, filtri feed nei query param, purge-orphans, stato "No tracked artists" (seed come e2e:12b; ~10-15 min)
-npm run e2e:16   # fase 16: scenario deterministico della fase 9: 24 flussi con seed ermetico (nessun provider live nei check; serve un backend live su BASE)
+npm run e2e:16   # fase 16: scenario deterministico della fase 9: 24 flussi con seed locale (solo il flow 5 fa ricerca candidati live; serve un backend live su BASE)
 ```
 
 Variabili d'ambiente:
@@ -84,13 +84,14 @@ rete reale e riavvio del backend.
 | e2e:12b | scan libreria + discovery **live** | no | browser; check deterministici |
 | e2e:13 | scan libreria + discovery (rete MusicBrainz, ~4-6 min) | **sì** (G4, con `TZ=Pacific/Kiritimati`) | sottoinsieme deterministico della checklist manuale; attese reali del lockout (~15 min) |
 | e2e:15 | scan libreria + discovery (rete MusicBrainz + cross-provider, ~6-10 min) | no | check deterministici sul seed reale; scrive nel DB via `sqlite3` per l'audit log |
-| e2e:16 | **ermetico**: identità finte via API + scrittura diretta nel DB (`today_override`); nessun provider live nei check | no | deterministico per ogni check; **richiede comunque un backend live** su `BASE` |
+| e2e:16 | **locale**: identità finte via API + scrittura diretta nel DB (`today_override`); solo il flow 5 fa ricerca candidati live | no | deterministico sul seed locale per 23 flussi; il flow 5 senza provider live degrada a FAIL documentato; **richiede comunque un backend live** su `BASE` |
 
 Sintesi: **nessuno scenario è "network-free" rispetto al backend**: tutti hanno
 bisogno di un backend in esecuzione su `BASE` (fase-06 inclusa). La
-deterministicità riguarda i CHECK e il seed: solo e2e:16 ha un seed ermetico
-senza provider live, mentre e2e:15 e gli altri scenari "seed lungo" passano da
-rete MusicBrainz/provider reali durante il seed.
+deterministicità riguarda i CHECK e il seed: e2e:16 è seminato in locale (solo
+i POST artist name-only del seed e il flow 5 toccano provider live), mentre
+e2e:15 e gli altri scenari "seed lungo" passano da rete MusicBrainz/provider
+reali durante il seed.
 
 **Riavvio automatico del backend: SOLO e2e:12 e e2e:13.** Gli altri scenari non
 riavviano nulla; e2e:15/16 usano `sqlite3` solo per leggere/scrivere nel DB di
@@ -160,14 +161,16 @@ verifica i nuovi flussi della fase 15:
 ### e2e:16 (fase 16: scenario deterministico della fase 9)
 
 Stesse env di e2e:12b, con `E2E_DATA_DIR` default `/tmp/nucs-e2e-f16` e
-`E2E_MUSIC_LIBRARY` default `/tmp/nucs-lib-f16`. Il seed è **ermetico**: gli
+`E2E_MUSIC_LIBRARY` default `/tmp/nucs-lib-f16`. Il seed è **locale**: gli
 artisti vengono creati via API con identità fisse (nessuna rete), mentre le
 release e la chiave `today_override` vengono scritte direttamente nel DB SQLite
-di test (stesso seam di test usato dal livello date). Nessun provider live nei
-check: ogni verifica è deterministica sullo stato seminato. Solo i POST artist
-name-only del seed e la ricerca candidati del flow 5 toccano la rete (match MB
-in background / ricerca candidati live), e in quel caso degradano a un FAIL
-documentato con evidenza, mai a uno skip silenzioso.
+di test (stesso seam di test usato dal livello date). Quasi tutti i check sono
+deterministici sullo stato seminato; le uniche dipendenze live sono i POST
+artist name-only del seed (match MB in background) e la ricerca candidati del
+flow 5 (ricerca live su MusicBrainz/Deezer/iTunes/Discogs): se i provider non
+rispondono il flow 5 degrada a un FAIL documentato con evidenza, mai a uno
+skip silenzioso. fase-16 non è quindi completamente ermetico: l'esito del flow
+5 dipende dalla disponibilità dei provider live.
 
 Copre i 24 flussi della fase 9 (spec §2–§4, §13, §15–§18): navbar sticky, Status senza colonne
 Match/Source, identity manager multi-provider (sostituzione senza perdere

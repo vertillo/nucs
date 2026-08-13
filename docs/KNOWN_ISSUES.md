@@ -394,7 +394,7 @@ the version context. Nothing marked implemented is left OPEN.
 | Oracle LOW-1 `today_override` exposed via settings API/UI | RESOLVED: internal-only | `dates.py` internal-only; absent from `_VALIDATORS`/Settings UI; `test_settings_api.py` | v1.1.0 |
 | `try_acquire_reset` docstring "no await between them" | RESOLVED: docstring rewritten, meta-lock documented | `scan_locks.py` `try_acquire_reset` | v1.1.0 |
 | Three-provider Axwell fixture gap | RESOLVED: fixture coverage added | `test_discovery.py` Axwell fixtures | v1.1.0 |
-| F2-NEW stale e2e docs (deterministic/live split, backend self-restart scope) | RESOLVED: e2e docs rewritten | `e2e/README.md` "Deterministico vs rete live" table (`31ce7cd`); `e2e/AGENTS.md` OVERVIEW + Backend-lifecycle convention (`886f828`): self-restart only fase-12/13, fase-16 hermetic seed, fase-15 live MusicBrainz seed | v1.1.0 |
+| F2-NEW stale e2e docs (deterministic/live split, backend self-restart scope) | RESOLVED (reopened by the F2 final wave, re-resolved): fase-16 doc truth corrected | `31ce7cd`/`886f828` fixed the self-restart scope but left unqualified "no live provider in checks" claims (e2e/README.md table + e2e/AGENTS.md OVERVIEW); final-wave correction scopes fase-16 to a local seed with a live flow-5 candidate search (`fase-16.js` flow 5, `GET /artists/search`) and keeps fase-15 live MB seed | v1.1.0 |
 
 ---
 
@@ -412,7 +412,7 @@ All 10 REJECTED dispositions, each with its reason. None is a real residual.
 | F2 `_run_discovery_task` "failed on cancel" log | Not reproducible: `CancelledError` is a `BaseException`, the `except Exception` handler never fires for cancellations. |
 | Release-note: upstream catalog gaps (iTunes same-name PiKi; Axwell 3-title edition) | Deliberate documented non-fix: matcher deliberately not weakened; not a defect. |
 | Release-note: internal `itunes` key load-bearing and kept | Deliberate per guardrail and product decision; key not renamed. |
-| Release-note: e2e fase-15/16 require a live backend | Documented test-infra characteristic (fase-16 hermetic; fase-15 needs MB network seed), not a defect. |
+| Release-note: e2e fase-15/16 require a live backend | Documented test-infra characteristic (fase-16 locally seeded with a live flow-5 provider search; fase-15 needs MB network seed), not a defect. |
 
 ---
 

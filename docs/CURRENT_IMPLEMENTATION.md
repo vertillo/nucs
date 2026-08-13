@@ -536,9 +536,11 @@ Tracked as FIND-2-3 in `KNOWN_ISSUES.md`.
 - **E2E**: **10 scenario scripts** (verified: `ls e2e/scenarios/` →
   `fase-06,07,08,09,11,12,12b,13,15,16`; no 10/14), run via
   `npm run e2e:06 … e2e:16` in `e2e/` against a live backend (`BASE` default
-  `http://127.0.0.1:8080`). fase-16 is deterministic/hermetic (fake provider
-  ids + the `today_override` seam); fase-15 seeds via a live MusicBrainz
-  network run. Recorded gates: fase-16 38/38, fase-15 41/41 (fresh live seed).
+  `http://127.0.0.1:8080`). fase-16 is locally seeded (fake provider ids + the
+  `today_override` seam; most flows are deterministic, but flow 5 runs a live
+  provider candidate search and records a documented FAIL when providers are
+  unavailable); fase-15 seeds via a live MusicBrainz network run. Recorded
+  gates: fase-16 38/38, fase-15 41/41 (fresh live seed).
   fase-13 QUICK mode still fights the per-IP login rate-limit window
   (`E2E_13B_QUICK=1` shortens waits; the 300 s window outlives the 5 s
   inter-group wait); test-infra friction tracked as FINDING-A/GAP-9.

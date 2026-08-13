@@ -59,8 +59,9 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
   Name/Status/Releases/Actions with a Manage modal for identities;
   tracked-artist highlighting renders only from authoritative
   release→artist relations (homonyms by name alone are never highlighted).
-- **fase-16 e2e scenario** (phase 9): deterministic browser verification of
-  the phase-9 surface (38/38 PASS at the phase-9 and phase-10 gates).
+- **fase-16 e2e scenario** (phase 9): browser verification of the phase-9
+  surface against a local seed (38/38 PASS at the phase-9 and phase-10 gates;
+  23 of 24 flows deterministic, flow 5 runs a live provider candidate search).
 
 ## Fixed bugs
 
@@ -113,8 +114,9 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
   stay separate.
 - **The internal provider key `itunes` is load-bearing and kept**
   (spec §9 Provider strategy); it is not renamed.
-- **e2e fase-15/16 require a live backend** (fase-16 deterministic hermetic;
-  fase-15 needs real MusicBrainz network and ~6–10 min seed).
+- **e2e fase-15/16 require a live backend** (fase-16 locally seeded but flow 5
+  needs live provider search; fase-15 needs real MusicBrainz network and
+  ~6–10 min seed).
 - Three pre-existing LOW findings (orphan cleanup legacy proxy,
   `POST /artists` stray row on identity conflict, legacy `mbid` mirror reads)
   are unchanged and tracked in

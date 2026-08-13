@@ -128,7 +128,7 @@ cd backend && .venv/bin/python -m ruff format --check .
 # Frontend: typecheck + build (no unit tests exist)
 cd frontend && npm run build
 
-# E2E (needs live backend on BASE; fase-16 is hermetic, fase-15 needs MB network seed; 10–50 min)
+# E2E (needs live backend on BASE; fase-16 locally seeded, flow 5 needs live provider search; fase-15 needs MB network seed; 10–50 min)
 cd e2e && npm ci && npm run e2e:16   # e2e:06..16
 
 # Ops inside container
