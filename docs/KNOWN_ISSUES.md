@@ -59,12 +59,12 @@ current code/config/test evidence and the user impact.
   empirically false for Deezer contributor albums: the live Enzo Dong case
   records `role='primary'` while the release's actual main artist is Pepp 'O
   Red (task-61 live validation).
-- **Expected behavior**: `specs/NUCS_PRODUCT_SPEC.md` §10 (lines 371-375): an
+- **Expected behavior**: `specs/NUCS_PRODUCT_SPEC.md` §10 (lines 376-380): an
   authoritative release-to-artist relation from a non-MusicBrainz provider that
   lacks reliable role metadata is shown with the generic `Tracked artist` label.
   `primary`, `featured` and `remixer` must never be invented in that situation;
   they stay valid only where provider metadata supports the relation. §10
-  (lines 381-383) explicitly records this deviation as an open implementation
+  (lines 386-388) explicitly records this deviation as an open implementation
   discrepancy and links this register.
 - **User impact**: on a contributor album whose main artist is someone else,
   the tracked artist is labelled "Main artist" instead of the generic
@@ -131,8 +131,9 @@ current code/config/test evidence and the user impact.
   check `row.mbid is None`). These are mirror-only reads with no behavioral
   authority; status derives from the identity table.
 - **Expected behavior**: switch to the identity table when the legacy
-  `mbid`/provider columns are retired (spec phase-8 legacy-column retirement,
-  the umbrella residual for this family).
+  `mbid`/provider columns are retired (legacy-column retirement, the umbrella
+  residual for this family; the columns stay under contract freeze in code —
+  `artists.py:652-653` — while spec §4 derives status from identities only).
 - **User impact**: none today; keeps the contract-freeze write-mirror in place
   until the retirement.
 
@@ -262,7 +263,8 @@ current code/config/test evidence and the user impact.
   registry entry, no cancellation and no shutdown coordination; and
   `_match_pending_after_scan` (`library_scan.py:427-442`) runs inside the
   library task without a per-phase registry entry. Both are by design
-  (the spec allows no new scan type), but they remain untracked background
+  (matching is documented to run inside the library scan with no new scan
+  type — `library_scan.py:430-432`), but they remain untracked background
   work for the issue registry.
 - **Expected behavior**: register/coordinate these matches, or explicitly
   document the design limitation.
@@ -323,12 +325,12 @@ the version context. Nothing marked implemented is left OPEN.
 | BUG-15 Highlighting inconsistent | RESOLVED: deterministic from authoritative rows | CreditsLine/TrackedName from `matched_artists` only | v1.1.0 |
 | BUG-16 Errors reportable format | RESOLVED: scrubbed Markdown diagnostic + JSON | diagnostic report; secrets scrubbed pre-INSERT | v1.1.0 |
 | BUG-17 Feed shows 1 release until refresh | RESOLVED: scan-completion invalidation | `useScanCompletion.ts` invalidates feed/artist caches on running→idle | v1.1.0 |
-| BUG-18 Release discovery slow | RESOLVED: algorithmic acceptance met | spec PERFORMANCE ACCEPTANCE: Apple-first, filter-aware memory, fingerprint-gated; wall-clock stays rate-limit-bound by design | v1.1.0 |
+| BUG-18 Release discovery slow | RESOLVED: algorithmic acceptance met | spec §15 algorithmic performance requirements: Apple-first, filter-aware memory, fingerprint-gated; wall-clock stays rate-limit-bound by design | v1.1.0 |
 | BUG-19 Apple Music preferred over Deezer | RESOLVED: Apple-first per decision | `PROVIDER_ITUNES` first with observable `fallback_reasons`; live `provider_calls={"itunes":1}` | v1.1.0 |
 | FINDING-B Reset-library TOCTOU | RESOLVED: race-safe mutual exclusion | `try_acquire_reset` via meta-lock; 409 both directions; `test_scan_locks.py` | v1.1.0 |
 | FINDING-C Level-2 re-processes rejected recordings | RESOLVED: evaluation memory | `evaluation_state` + `policy_fingerprint`; `test_discovery.py` seen-recording tests | v1.1.0 |
 | FINDING-E Login bypasses shared fetch wrapper | RESOLVED: login uses `apiFetch` | `Login.tsx` with `redirectOn401:false`, 30 s timeout, error mapping | v1.1.0 |
-| GAP-4 Future-dated releases silently excluded | RESOLVED: Upcoming feature per decision | spec §5; `classify_release_date`, Upcoming view/tab, `today_override` internal | v1.1.0 |
+| GAP-4 Future-dated releases silently excluded | RESOLVED: Upcoming feature per decision | spec §13; `classify_release_date`, Upcoming view/tab, `today_override` internal | v1.1.0 |
 | GAP-8 `scan_locks.finish` without ownership check | RESOLVED: release-scoped to own entry | `scan_locks.py` `finish` pops its own registered entry; docstring | v1.1.0 |
 
 ### C.2 Post-remediation findings (5)
