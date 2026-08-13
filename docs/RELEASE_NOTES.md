@@ -114,4 +114,5 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
 ---
 
 See `docs/README.md` for the documentation index and
-`specs/NUCS_REMEDIATION_SPEC.md` for the authoritative remediation spec.
+[`specs/NUCS_PRODUCT_SPEC.md`](../specs/NUCS_PRODUCT_SPEC.md) for the
+authoritative product specification.
