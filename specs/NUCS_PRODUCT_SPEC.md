@@ -267,6 +267,11 @@ URL/cover metadata to the canonical release rather than discarding it. The
 generic identity system must not depend on a single release-level provider pair
 as its only catalog identity.
 
+The release identity model MUST enforce uniqueness per `(release, provider)` and
+per `(provider, provider_id)`: there is at most one external identity per
+provider on a given canonical release, and a given provider identity string
+identifies at most one canonical release.
+
 Genuinely different editions remain separate releases. Semantic edition/version
 concepts MUST NOT be normalized away, including:
 
