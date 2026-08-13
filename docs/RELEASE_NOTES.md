@@ -90,11 +90,12 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
 
 ## Known limitations
 
-- **FIND-61-1 (BLOCKED_PRODUCT_DECISION)**: non-MB provider candidates are
-  recorded with a forced `primary` role, so a contributor album whose main
-  artist is someone else shows the tracked artist as "Main artist". Re-deriving
-  roles for non-MB candidates is a product decision and was intentionally not
-  invented (`.omo/notepads/nucs-remediation/problems.md`).
+- **FIND-61-1 (OPEN)**: non-MB provider candidates are recorded with a forced
+  `primary` role, so a contributor album whose main artist is someone else shows
+  the tracked artist as "Main artist". Re-deriving roles for non-MB candidates
+  is an open implementation discrepancy, not a product decision; the normative
+  behavior (a generic `Tracked artist` relation) is not yet implemented.
+  Tracked in [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md#a1-find-61-1-non-mb-provider-candidates-forced-primary-role-implementation-discrepancy).
 - **Upstream catalog gaps are documented, not worked around** (spec:1794,
   phase-10 live validation, tasks 58–61): e.g. iTunes exposes multiple
   same-name artists with no disambiguation signal (PiKi case); the spec's own
@@ -106,8 +107,9 @@ change. Existing git tag `v1.0.0` is untouched; this release is tagged
   fase-15 needs real MusicBrainz network and ~6–10 min seed).
 - Three pre-existing LOW findings (orphan cleanup legacy proxy,
   `POST /artists` stray row on identity conflict, legacy `mbid` mirror reads)
-  are unchanged and tracked in the phase-10 audit — optional post-release
-  hardening.
+  are unchanged and tracked in
+  [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md#a31-fa-low-1-orphan-cleanup-legacy-artistmbid-proxy)
+  as FA-LOW-1, FA-LOW-2 and FA-LOW-3; optional post-release hardening.
 
 ---
 
