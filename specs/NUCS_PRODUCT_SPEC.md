@@ -45,7 +45,7 @@ The product includes:
 - access audit log and anti brute-force login rate limiting;
 - active sessions list with revocation; password change revokes other sessions;
 - local cover cache;
-- healthcheck, structured logs and visible scan metrics;
+- healthcheck, structured logs with rotation, and visible scan metrics;
 - complete security headers, non-root container and resource limits.
 
 ### 1.3 Non-objectives
