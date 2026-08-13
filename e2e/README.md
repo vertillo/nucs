@@ -144,8 +144,8 @@ verifica i nuovi flussi della fase 15:
 - **Status a pill** (Linked / Needs match / Ignored) con il nome linkato alla
   prima identità di catalogo, badge `unmatched_total` coerente con l'API e sort
   per nome asc/desc. La vecchia colonna Match a 4 stati è stata rimossa
-  (contract supersession, spec:1935): fase-15 verifica il contratto nuovo, non
-  quello vecchio.
+  (contract supersession, spec §3 Artist status): fase-15 verifica il contratto
+  nuovo, non quello vecchio.
 - **Add Artist by URL** (locale Deezer, risoluzione nome; fallback name+URL se
   il provider è giù), pannello dettaglio candidato, gestione identità nel modal
   **Manage** con ricerca libera e toast "Linked {provider}" (mai falso
@@ -169,7 +169,7 @@ name-only del seed e la ricerca candidati del flow 5 toccano la rete (match MB
 in background / ricerca candidati live), e in quel caso degradano a un FAIL
 documentato con evidenza, mai a uno skip silenzioso.
 
-Copre i 24 flussi di spec:1736-1759: navbar sticky, Status senza colonne
+Copre i 24 flussi della fase 9 (spec §2–§4, §13, §15–§18): navbar sticky, Status senza colonne
 Match/Source, identity manager multi-provider (sostituzione senza perdere
 l'altra identità), sync + refresh che non duplica, 409 sul secondo sync, cancel
 con run finale `cancelled`, feed aggiornato senza refresh, progress che esce dal
