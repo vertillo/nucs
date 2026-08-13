@@ -10,10 +10,9 @@ disposed 1:1 below. Nothing is silently dropped.
 ## Status vocabulary
 
 - **OPEN**: real residual, active in current code/config/test evidence, with
-  a stated expected behavior and user impact. Three OPEN rows are
+  a stated expected behavior and user impact. Two OPEN rows are
   documentation-class and carry a truthful execution-time status
-  (resolved-by-this-register / tracked-to-another-task) rather than a false
-  active technical issue.
+  (resolved-by-this-register) rather than a false active technical issue.
 - **RESOLVED**: fixed in `v1.1.0` (or deliberately implemented per product
   decision); primary evidence anchor and version context listed in
   `Resolved in v1.1.0`.
@@ -29,14 +28,14 @@ Census: 62 rows = 33 legacy issue entries + 29 post-remediation findings.
 
 | Status | Legacy (33) | Post-remediation (29) | Total |
 |---|---|---|---|
-| OPEN | 7 | 12 | 19 |
-| RESOLVED | 24 | 4 | 28 |
+| OPEN | 7 | 11 | 18 |
+| RESOLVED | 24 | 5 | 29 |
 | REJECTED | 2 | 8 | 10 |
 | DUPLICATE | 0 | 5 | 5 |
 | BLOCKED_PRODUCT_DECISION | 0 | 0 | 0 |
 | **Total** | **33** | **29** | **62** |
 
-The 19 OPEN rows split into 16 active technical residuals (section A) and 3
+The 18 OPEN rows split into 16 active technical residuals (section A) and 2
 documentation-class residuals (section B). The old register's summary block was
 internally inconsistent (it claimed 34 total / 26 OPEN while its own entries
 numbered 33 with 25 OPEN) and cited a stale test count of 339; both are
@@ -274,7 +273,7 @@ current code/config/test evidence and the user impact.
 
 ## B. Documentation-class residuals (truthful execution-time status)
 
-These three rows are part of the 19 OPEN dispositions but are not active
+These two rows are part of the 18 OPEN dispositions but are not active
 technical issues. Their status reflects what the register does about them.
 
 ### B.1 D-DOC-1: Stale summary counts in the old register
@@ -295,22 +294,11 @@ technical issues. Their status reflects what the register does about them.
 - **Disposition**: the resolved-history entry for GAP-5 in section C cites the
   current 604-test figure; no stale count remains anywhere in this file.
 
-### B.3 F2-NEW: Stale e2e docs (`e2e/README.md`, `e2e/AGENTS.md`)
-
-- **Status**: TRACKED TO TASK 7 (E2E/user docs), not a technical issue
-- **What it is**: `e2e/AGENTS.md:50` still says fase-12/12b/13/15
-  "self-restart the backend", and fase-15 descriptions still mention the
-  removed Match column; the same drift was reported by F4 and the task-62 NIT
-  (see Duplicates).
-- **Disposition**: docs-only cleanup assigned to task 7 of the documentation
-  reconciliation. Listed here so the identifier stays live with its owners;
-  it is not a code defect.
-
 ---
 
 ## C. Resolved in v1.1.0
 
-Compact, evidence-based history of the 28 RESOLVED dispositions. Each row keeps
+Compact, evidence-based history of the 29 RESOLVED dispositions. Each row keeps
 its original identifier, the primary evidence anchor in current code/tests, and
 the version context. Nothing marked implemented is left OPEN.
 
@@ -343,7 +331,7 @@ the version context. Nothing marked implemented is left OPEN.
 | GAP-4 Future-dated releases silently excluded | RESOLVED: Upcoming feature per decision | spec §5; `classify_release_date`, Upcoming view/tab, `today_override` internal | v1.1.0 |
 | GAP-8 `scan_locks.finish` without ownership check | RESOLVED: release-scoped to own entry | `scan_locks.py` `finish` pops its own registered entry; docstring | v1.1.0 |
 
-### C.2 Post-remediation findings (4)
+### C.2 Post-remediation findings (5)
 
 | ID | Disposition | Primary evidence anchor | Version |
 |---|---|---|---|
@@ -351,6 +339,7 @@ the version context. Nothing marked implemented is left OPEN.
 | Oracle LOW-1 `today_override` exposed via settings API/UI | RESOLVED: internal-only | `dates.py` internal-only; absent from `_VALIDATORS`/Settings UI; `test_settings_api.py` | v1.1.0 |
 | `try_acquire_reset` docstring "no await between them" | RESOLVED: docstring rewritten, meta-lock documented | `scan_locks.py` `try_acquire_reset` | v1.1.0 |
 | Three-provider Axwell fixture gap | RESOLVED: fixture coverage added | `test_discovery.py` Axwell fixtures | v1.1.0 |
+| F2-NEW stale e2e docs (deterministic/live split, backend self-restart scope) | RESOLVED: e2e docs rewritten | `e2e/README.md` "Deterministico vs rete live" table (`31ce7cd`); `e2e/AGENTS.md` OVERVIEW + Backend-lifecycle convention (`886f828`): self-restart only fase-12/13, fase-16 hermetic seed, fase-15 live MusicBrainz seed | v1.1.0 |
 
 ---
 
@@ -381,8 +370,8 @@ These 5 DUPLICATE rows point at their canonical identifier; nothing is lost.
 | Release-note FIND-61-1 (BLOCKED_PRODUCT_DECISION label) | FIND-61-1 (A.1, reclassified OPEN): the release-note label is stale and the finding lives in A.1 |
 | Release-note "three pre-existing LOW findings" | FA-LOW-1, FA-LOW-2, FA-LOW-3 (A.3) |
 | F1-C: Phase-1 Low carry-overs unfixed | F2-K2, F2-K3, FA-LOW-2 (A.4.1, A.4.2, A.3.2) |
-| F4 observation: same e2e docs drift | F2-NEW (B.3) |
-| task-62 NIT: same e2e docs drift | F2-NEW (B.3) |
+| F4 observation: same e2e docs drift | F2-NEW (C.2) |
+| task-62 NIT: same e2e docs drift | F2-NEW (C.2) |
 
 FINDING-A and GAP-9 are intentionally NOT collapsed: they are distinct layers
 (symptom vs root cause) and stay as two OPEN rows (A.7.2, A.7.3).
