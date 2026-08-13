@@ -123,19 +123,26 @@ current code/config/test evidence and the user impact.
 #### A.3.3 FA-LOW-3: Legacy `mbid` mirror reads (legacy-column retirement umbrella)
 
 - **Status**: OPEN
-- **Current behavior**: all mirror reads/writes are still present and verified:
-  `mb_matching.py:135` (`row.mbid is not None` short-circuit), `:145`
-  (write-mirror `row.mbid = provider_id`), `:196`
-  (`artist_row.mbid is not None or any(identity…)`), `:243`
-  (`Artist.mbid.is_(None)` filter), and `artists.py:519` (ignored split-parent
-  check `row.mbid is None`). These are mirror-only reads with no behavioral
-  authority; status derives from the identity table.
-- **Expected behavior**: switch to the identity table when the legacy
-  `mbid`/provider columns are retired (legacy-column retirement, the umbrella
-  residual for this family; the columns stay under contract freeze in code —
-  `artists.py:652-653` — while spec §4 derives status from identities only).
-- **User impact**: none today; keeps the contract-freeze write-mirror in place
-  until the retirement.
+- **Current behavior**: all mirror sites are still present and verified:
+  `mb_matching.py:135` (`row.mbid is not None` short-circuit — success
+  reported without creating an identity row), `:145` (write-mirror
+  `row.mbid = provider_id`), `:196` (`artist_row.mbid is not None or
+  any(identity…)` full-name short-circuit), `:243` (`Artist.mbid.is_(None)`
+  bulk-pending filter), and `artists.py:519` (resolved split-parent check
+  `row.mbid is None`). The `mbid` reads carry behavioral authority in the
+  matching flow, not just mirror status: an artist carrying only a legacy
+  `mbid` (no identity row) is never bulk-matched and a manual rematch attaches
+  no identity, so it stays `Needs match` — the same gates keep the A.3.2 stray
+  row unlinked. Status (`derive_status`) and discovery (level-1/level-2
+  identity queries) never consult `mbid`.
+- **Expected behavior**: switch the matching-flow gates to the identity table
+  when the legacy `mbid`/provider columns are retired (legacy-column retirement,
+  the umbrella residual for this family; the columns stay under contract freeze
+  in code — `artists.py:652-653` — while spec §4 derives status from identities
+  only).
+- **User impact**: normally none (identity rows shadow the mirror); artists
+  whose only MB data sits in the legacy mirror can remain stuck at
+  `Needs match` (see A.3.2) until the retirement migrates the gates.
 
 ### A.4 Phase-1 carryovers
 
