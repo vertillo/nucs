@@ -1,586 +1,383 @@
-# NUCS — KNOWN ISSUES
+# NUCS: Known Issues (residual register)
 
-Reconciled list of all known defects, UX issues and technical defects as of
-baseline commit `6cdcb16`. Sources: the owner's verbatim bug list (2026-08-10,
-items BUG-1..BUG-19), the independent diagnostic findings (FINDING-A..E), code
-inspection during this preparation pass, e2e artifacts, and existing tests.
+Reconciled register of every known defect, finding and gap with a documented
+disposition, current as of release `v1.1.0` (commit `d36a864`; app code
+unchanged through `bca93c0`). It supersedes the pre-remediation issue list that
+was written against baseline `6cdcb16` and predates the remediation: every
+entry of that old list (33 items) plus every post-remediation finding (29) is
+disposed 1:1 below. Nothing is silently dropped.
 
-Rules applied:
-- Statuses: `OPEN` / `PARTIALLY_FIXED` / `FIXED` / `CANNOT_REPRODUCE` / `OBSOLETE`
-  / `BLOCKED_BY_PRODUCT_DECISION`.
-- Nothing is marked FIXED without code-path/test evidence.
-- Where the expected behavior is not already known, it is stated as
-  `Expected behavior: unresolved product decision` — it is NOT invented here.
-- This document is not a spec: fixing these issues is remediation work to be
-  planned later (see `docs/REMEDIATION_RECONCILIATION.md`).
+## Status vocabulary
 
----
+- **OPEN**: real residual, active in current code/config/test evidence, with
+  a stated expected behavior and user impact. Three OPEN rows are
+  documentation-class and carry a truthful execution-time status
+  (resolved-by-this-register / tracked-to-another-task) rather than a false
+  active technical issue.
+- **RESOLVED**: fixed in `v1.1.0` (or deliberately implemented per product
+  decision); primary evidence anchor and version context listed in
+  `Resolved in v1.1.0`.
+- **REJECTED**: non-issue: obsolete, deliberate product behavior, accepted
+  process deviation, not reproducible, or documented upstream/test-infra
+  characteristic.
+- **DUPLICATE**: same underlying item tracked under another identifier; the
+  mapping is explicit in the Duplicates section.
 
-## A. User-reported issues (2026-08-10 list)
-
-### BUG-1 — Navbar not sticky
-- **Status**: OPEN
-- **Current observable behavior**: the Navbar (`Feed/Artists/Settings` row) scrolls
-  away with the page; the user must scroll back to the top to navigate after long
-  scrolling.
-- **Expected behavior**: user asked for the navigation row to remain visible
-  (sticky) at the top while scrolling.
-- **Reproduction/evidence**: `frontend/src/components/Navbar.tsx:130` — `<header>`
-  has `border-b ...` classes, no `sticky`/`fixed`/`top-*`.
-- **Relevant files/symbols**: `Navbar.tsx`, `App.tsx` layout (`min-h-screen ...
-  max-w-6xl`).
-- **Existing tests**: none.
-- **Likely subsystem/root area**: frontend layout.
-- **Related issues**: none.
-- **Notes**: pure frontend change.
-
-### BUG-2 — Artists page "Match" column considered useless
-- **Status**: BLOCKED_BY_PRODUCT_DECISION
-- **Current observable behavior**: the Match column shows MB score+link / provider
-  label / Split / Unmatched+Retry. The user does not understand it and considers
-  it useless.
-- **Expected behavior**: unresolved product decision (keep as-is, simplify, or
-  remove; the phase-15 UI added it deliberately as the multi-provider match
-  status).
-- **Reproduction/evidence**: user report; `Artists.tsx` `MatchCell` (97-162).
-- **Relevant files/symbols**: `frontend/src/pages/Artists.tsx`, `api/artists.py:list_artists`.
-- **Existing tests**: e2e:15 asserts the 4-state Match column (15-7).
-- **Likely subsystem/root area**: artists UI / UX.
-- **Related issues**: BUG-5.
-- **Notes**: UX judgment — requires the owner to decide.
-
-### BUG-3 — No fast way to change a wrong/homonym MB match (only delete + re-add)
-- **Status**: OPEN
-- **Current observable behavior**: once an artist has `mbid` set (matched on
-  MusicBrainz), the Artists page shows the MB link and **no Retry button**; there
-  is no UI path to re-search/change the match. The only workaround is delete the
-  artist and re-add. Phase 15 added a rich retry/link flow but it is reachable
-  only for unmatched artists (`MatchCell` branch 4) and `match_artist` returns
-  immediately when `mbid` is already set.
-- **Expected behavior**: user wants a fast way to change the match of an
-  already-matched artist (e.g. retry/re-search that replaces the mbid).
-- **Reproduction/evidence**: user report; `Artists.tsx:97-162` (Retry only in the
-  Unmatched branch); `mb_matching.py:126-133` (`mbid is not None → True`
-  short-circuit); `api/artists.py:339-402` rematch semantics.
-- **Relevant files/symbols**: `frontend/src/pages/Artists.tsx`, `api/artists.py`
-  (`rematch_artist`, `link_artist`), `services/mb_matching.py`.
-- **Existing tests**: `test_mb_matching.py` (rematch paths), e2e:15 (retry flows
-  for unmatched artists only).
-- **Likely subsystem/root area**: artist identity / UI.
-- **Related issues**: BUG-4, BUG-6, BUG-7.
-- **Notes**: `link` with a new provider pair already wipes a previous mbid — an
-  extension of that flow could close this gap.
-
-### BUG-4 — Some split artists never get matched though they exist on other catalogs
-- **Status**: OPEN
-- **Current observable behavior**: split parts (e.g. "Young Donghito", "Manu T4L"
-  from a soft split) that do not exist on MusicBrainz stay Unmatched forever: the
-  split-child matching path only searches MusicBrainz, and the split **parent** is
-  ignored (its rematch short-circuits with `resolved_split`), so there is no
-  automatic provider linking for children either.
-- **Expected behavior**: user expects these artists to be trackable via other
-  catalogs where they exist (Deezer etc.).
-- **Reproduction/evidence**: user report (2026-08-10); `mb_matching.py:141-157`
-  (split children matched via `_best_match` MB-only), `api/artists.py:357-378`
-  (ignored parent → `resolved_split`, no search).
-- **Relevant files/symbols**: `services/mb_matching.py`, `services/discovery.py`
-  (cross-provider discovery is MB-artist-only), `api/artists.py`.
-- **Existing tests**: split tests in `test_mb_matching.py` (MB-only paths);
-  e2e:15 D8 (ignore → Split).
-- **Likely subsystem/root area**: matching / artist identity / cross-provider.
-- **Related issues**: BUG-3, BUG-9.
-- **Notes**: cross-provider candidate matching exists for discovery, not for
-  matching split parts.
-
-### BUG-5 — "Source" column (artist/deezer) confusing
-- **Status**: BLOCKED_BY_PRODUCT_DECISION
-- **Current observable behavior**: Artists table shows a Source badge (Artist /
-  Album artist / Featuring / Contributor / Remixer / Manual) plus a provider badge
-  (e.g. Deezer). The user only cares whether the artist is correctly matched.
-- **Expected behavior**: unresolved product decision (drop the column, merge with
-  Match, or relabel).
-- **Reproduction/evidence**: user report; `Artists.tsx` SOURCE_LABEL (21-28) and
-  source cell (432-440).
-- **Existing tests**: e2e:15 checks the Match column, not Source.
-- **Likely subsystem/root area**: artists UI / UX.
-- **Related issues**: BUG-2.
-- **Notes**: UX judgment.
-
-### BUG-6 — Homonym contamination in the feed (e.g. "PiKi")
-- **Status**: OPEN
-- **Current observable behavior**: releases of a *different* artist with the same
-  name as a tracked artist appear in the feed and get highlighted/matched. For
-  "PiKi": the tracked artist is matched on MusicBrainz, but the feed shows
-  releases of another artist also named PiKi — because (a) discovery pulls
-  release-groups by the matched MB artist id only (wrong artist if the MB match
-  was wrong), and (b) `_matched_artists_for` attaches any release whose
-  `primary_artist` credit contains the tracked artist's name (homonym releases
-  get highlighted as if tracked).
-- **Expected behavior**: unresolved product decision (what identifies "the same
-  artist" in the feed — mbid only, provider only, or name credit matching with
-  safeguards; the user suggested a source-priority ladder Deezer → Apple Music →
-  …).
-- **Reproduction/evidence**: user report; `releases.py:_matched_artists_for`
-  (109-147) name-based attachment; `discovery._level1_artist` MB-only browse.
-- **Relevant files/symbols**: `api/releases.py`, `services/discovery.py`,
-  `services/providers/__init__.py` (provider priority).
-- **Existing tests**: `test_releases_api.py` name-match tests (word boundary);
-  `test_discovery.py` cross-provider dedup.
-- **Likely subsystem/root area**: release↔artist matching / discovery identity.
-- **Related issues**: BUG-3, BUG-7, BUG-8, BUG-15, BUG-19.
-- **Notes**: intertwined with the provider-priority product question (BUG-19).
-
-### BUG-7 — Add-artist candidate list has no provider-page links (homonyms indistinguishable)
-- **Status**: PARTIALLY_FIXED
-- **Current observable behavior**: the Add-artist modal shows candidate rows
-  (name + provider + score) as buttons; clicking opens a details panel. There is
-  **no direct link to the provider page** from the candidate row; homonyms are
-  distinguished only via the details panel (which itself was added in phase 15).
-  In the Artists table, matched/provider artist *names* are linked to the provider
-  page.
-- **Expected behavior**: user wants a link to open each candidate's provider page
-  from the add-artist search results.
-- **Reproduction/evidence**: user report; `Artists.tsx` CandidateRow (569-592,
-  buttons, not links); `api/artists.py:search_artists` returns `url` per candidate
-  (already present in the API).
-- **Relevant files/symbols**: `frontend/src/pages/Artists.tsx`, `api/artists.py`
-  (193-222).
-- **Existing tests**: e2e:15 (candidate panel, pick flows).
-- **Likely subsystem/root area**: artists UI.
-- **Related issues**: BUG-3, BUG-6.
-- **Notes**: the API already supplies `url`; the gap is the UI link.
-
-### BUG-8 — Duplicate releases in the feed (e.g. "Whatever Turns You On" ×3)
-- **Status**: OPEN
-- **Current observable behavior**: the same physical release appears multiple
-  times in the feed. Dedup exists: `(provider, provider_id)` unique,
-  rgid unique, ±7-day normalized title+artist window, and cross-provider
-  normalized-title dedup **scoped to the tracked artist's releases only** — but
-  distinct rgids (e.g. reissue vs original, or regional variants) with the same
-  title/date are not deduped across the whole feed, and cross-provider rows for
-  the same album (MB + Deezer + iTunes) are separate releases.
-- **Expected behavior**: user expects one entry per logical release.
-- **Reproduction/evidence**: user report ("Whatever Turns You On" of Axwell ×3);
-  `discovery.py:_find_existing_release` (127-178); reissue rescue (321-324);
-  cross-provider path (150-160).
-- **Relevant files/symbols**: `services/discovery.py`.
-- **Existing tests**: `test_discovery.py` (dedup, cross-provider dedup,
-  reissue x3 — the reissue tests cover the *rescue* path, not global
-  same-title-same-date dedup).
-- **Likely subsystem/root area**: release identity / dedup.
-- **Related issues**: BUG-6, BUG-19.
-- **Notes**: see also `REMEDIATION_RECONCILIATION.md` area 5.
-
-### BUG-9 — Split/featured-artist tracking must come from metadata; album-artist featuring must surface (Panama/Enzo Dong)
-- **Status**: OPEN
-- **Current observable behavior**: (a) multi-artist tags are not split at scan
-  time; splits happen only later during MB matching (which users perceive as
-  "splits from names"); (b) a release where the tracked artist appears only as
-  featured in the **album artist** credit of another artist's release ("Panama"
-  of Pepp 'O Red with Enzo Dong) is not discovered when the featured artist
-  (Enzo Dong) is unmatched or only name-matched in a credit — level-1 discovery
-  browses per tracked artist, and credit-level featuring works only when the
-  tracked artist is in the release-group artist credit of MB search results.
-- **Expected behavior**: user expects album-artist-featured artists to be tracked
-  and their releases to appear; and metadata (tags), not names, to drive tracking.
-- **Reproduction/evidence**: user report; `library_scan.py:_candidates`
-  (165-176, no tag-value splitting), `mb_matching.split_soft` (55-70),
-  `discovery._level1_artist` (440-500).
-- **Relevant files/symbols**: `services/library_scan.py`, `services/mb_matching.py`,
-  `services/discovery.py`.
-- **Existing tests**: `test_library_scan.py` (sources, feat extraction),
-  `test_discovery.py` (roles).
-- **Likely subsystem/root area**: library metadata / discovery roles.
-- **Related issues**: BUG-4.
-- **Notes**: partially a product decision on what "featured" means.
-
-### BUG-10 — Library-scan progress bar stuck at 100% while still working
-- **Status**: OPEN
-- **Current observable behavior**: during a library scan, the ActivityBar reaches
-  100% while the background task continues (the "matching artists" phase runs
-  after scanning with no progress updates, so the last progress snapshot — 100% —
-  stays displayed; similarly the releases scan shows 100% during "enriching
-  covers and links"). When `total == 0` the bar shows a fixed 8% width with no
-  percentage.
-- **Expected behavior**: progress should reflect the running phase (or the phase
-  label should be accompanied by meaningful progress).
-- **Reproduction/evidence**: user report; `library_scan.py:_run_scan_task`
-  (361-371, phases "library scan" → "matching artists" without progress updates);
-  `ActivityBar.tsx` (26, 41).
-- **Relevant files/symbols**: `services/library_scan.py`, `services/discovery.py`
-  (enrich progress), `frontend/src/components/ActivityBar.tsx`,
-  `services/scan_locks.py`.
-- **Existing tests**: `test_phase12b.py` (progress dict shape), no UI progress
-  assertion.
-- **Likely subsystem/root area**: scan lifecycle / progress UI.
-- **Related issues**: BUG-13, BUG-14, BUG-17, BUG-18.
-- **Notes**: root cause family with BUG-17 (progress/cache lifecycle).
-
-### BUG-11 — Retry modal: "Search again by name" not wanted
-- **Status**: OPEN
-- **Current observable behavior**: the RetryModal (for unmatched artists) includes
-  a "Search again by name" button (relaunches MB matching) which the user says is
-  unnecessary.
-- **Expected behavior**: user asked to remove/hide that button from the retry
-  dialog.
-- **Reproduction/evidence**: user report; `Artists.tsx` RetryModal (810-1029,
-  button at 901-907).
-- **Existing tests**: e2e:15 asserts retry flows and toasts.
-- **Likely subsystem/root area**: artists UI.
-- **Related issues**: BUG-3.
-- **Notes**: pure frontend removal (or rework of the retry modal contents).
-
-### BUG-12 — Errors page: no "mark all/single as read"; navbar count never clears
-- **Status**: OPEN
-- **Current observable behavior**: there is no read/unread concept; the only
-  actions are Copy JSON / Download / Clear all. The navbar error badge (which
-  polls `/errors` every 15 s) stays at N until the user clears everything.
-- **Expected behavior**: user asked for a "mark all as read" button and/or
-  per-error read/dismiss so the badge clears without deleting history.
-- **Reproduction/evidence**: user report; `Errors.tsx` (no read state), `errors.py`
-  (no read column), `Navbar.tsx:100-101,146-154`.
-- **Relevant files/symbols**: `frontend/src/pages/Errors.tsx`, `frontend/src/api/errors.ts`,
-  `backend/app/api/errors.py`, `models.py` `app_errors`.
-- **Existing tests**: `test_phase12b.py` (errors API), e2e:12b (errors page).
-- **Likely subsystem/root area**: errors feature (backend model + API + UI).
-- **Related issues**: BUG-16.
-- **Notes**: requires a schema change (read flag) or a view-state mechanism.
-
-### BUG-13 — No way to cancel a running sync task
-- **Status**: OPEN
-- **Current observable behavior**: scans can only be cancelled at process
-  shutdown (`discovery.cancel_all`); the UI has no cancel button and the API has
-  no cancel endpoint. A user who starts a long sync cannot stop it.
-- **Expected behavior**: user asked for the ability to cancel the sync task.
-- **Reproduction/evidence**: user report; `discovery.py:cancel_all` (861-870,
-  shutdown-only), `api/scans.py` (no cancel endpoint).
-- **Existing tests**: none for user cancellation.
-- **Likely subsystem/root area**: scan lifecycle / API / UI.
-- **Related issues**: BUG-10, BUG-14, BUG-18.
-- **Notes**: cancellation semantics (per-scan vs per-type, scan-run recording)
-  are design work for remediation.
-
-### BUG-14 — Page refresh during sync: task must continue; no useless concurrent tasks
-- **Status**: FIXED
-- **Current observable behavior**: scans run server-side as background tasks, so a
-  browser refresh does not kill them; the global scan lock (`scan_locks.try_start`)
-  rejects any concurrent scan with 409, so no useless concurrent tasks start. A
-  re-clicked Sync after refresh gets a "Scan already in progress" toast.
-- **Expected behavior**: matches the user's request (task continues, no
-  concurrent duplicates).
-- **Reproduction/evidence**: code evidence: `scan_locks.py:32-40` (single global
-  lock, try_start), `discovery.py:_start_scan` (873-883), `api/scans.py` (409
-  contract); e2e:12b/13 verify refresh-related flows.
-- **Existing tests**: `test_discovery.py` (scan API + locks, 409),
-  `test_phase12b.py` (409), e2e:13 G4 (backend restart), e2e:15 (scan+refresh
-  checks).
-- **Likely subsystem/root area**: scan lifecycle.
-- **Related issues**: BUG-17 (remaining staleness after refresh).
-- **Notes**: the *feed data staleness* after the scan completes is tracked
-  separately in BUG-17.
-
-### BUG-15 — Feed: some artists highlighted (bold green), others not (PiKi not highlighted)
-- **Status**: OPEN
-- **Current observable behavior**: highlighting depends on `matched_artists`
-  computed by `_matched_artists_for` (name substring + word boundary against the
-  credit phrase) and the `ArtistLine` sequential `indexOf` highlighter. A
-  release whose credit text contains the artist name in a different form
-  (abbreviation, different credit, homonym release) is not highlighted; and
-  names are highlighted in `matched_artists` array order, skipping earlier
-  occurrences that come after an already-highlighted name.
-- **Expected behavior**: user expects consistent, explainable highlighting.
-- **Reproduction/evidence**: user report ("PiKi non lo è"); `releases.py:
-  _matched_artists_for` (109-147), `ReleaseCard.tsx` `ArtistLine` (66-84).
-- **Relevant files/symbols**: `api/releases.py`, `frontend/src/components/ReleaseCard.tsx`.
-- **Existing tests**: `test_releases_api.py` (name-match), e2e:08 (feed cards).
-- **Likely subsystem/root area**: feed UI / matched-artist derivation.
-- **Related issues**: BUG-6.
-- **Notes**: overlaps with BUG-6 (what counts as "the tracked artist").
-
-### BUG-16 — Errors page: want a reportable format for bug investigation
-- **Status**: PARTIALLY_FIXED
-- **Current observable behavior**: the Errors page exists with Copy JSON and
-  Download .json (structured export) and the backend `POST /errors` endpoint
-  exists for client-side reports. However the frontend helper
-  (`useReportError`/`postError`) is never wired anywhere, and there is no
-  read/dismiss concept (BUG-12).
-- **Expected behavior**: satisfied for export; the read-state part is still open
-  (see BUG-12).
-- **Reproduction/evidence**: user report; `Errors.tsx` (12-31, 52-70),
-  `errors.ts` (30-58, unused), `api/errors.py` (67-81).
-- **Existing tests**: `test_phase12b.py` errors API; e2e:12b errors page.
-- **Likely subsystem/root area**: errors feature.
-- **Related issues**: BUG-12.
-- **Notes**: the export format already exists.
-
-### BUG-17 — After library reset + scan + sync: feed shows 1 release; after refresh it shows 19
-- **Status**: OPEN
-- **Current observable behavior**: the feed list (`['releases', filters]` query)
-  is **never invalidated when a scan completes**: `useStartScan` invalidates only
-  `['scan-status']`; the only scan-completion invalidation (Settings.tsx:258-267)
-  refreshes counts only. After the Sync scan inserts new releases, the open feed
-  still shows the stale cached list (often 1 old item) until a manual refetch /
-  filter change / page refresh.
-- **Expected behavior**: the feed should reflect newly discovered releases after
-  a sync completes (the user observed refresh shows 19).
-- **Reproduction/evidence**: user report; `settings.ts:69-77` (onSuccess →
-  `['scan-status']` only), `Settings.tsx:258-267`, `Feed.tsx` Sync button
-  (340-379); no `['releases']` invalidation anywhere on scan completion.
-- **Relevant files/symbols**: `frontend/src/api/settings.ts`, `frontend/src/pages/Feed.tsx`,
-  `frontend/src/pages/Settings.tsx`.
-- **Existing tests**: none for this; e2e:15 checks feed filters, not
-  post-scan refresh.
-- **Likely subsystem/root area**: frontend cache invalidation / scan lifecycle.
-- **Related issues**: BUG-10, BUG-14.
-- **Notes**: prime remediation candidate; shared root with BUG-10 (cache/progress
-  lifecycle).
-
-### BUG-18 — Release discovery is slow
-- **Status**: OPEN
-- **Current observable behavior**: discovery is serialized (single global lock),
-  rate-limited (MusicBrainz 1 req/s; Deezer 2 req/s), enriches with concurrency 2,
-  and level-2 re-processes recordings whose releases were already handled
-  (FINDING-C) — on small containers this can take tens of minutes.
-- **Expected behavior**: user understands container constraints but wants faster
-  discovery.
-- **Reproduction/evidence**: user report; `discovery.py` (rate-limited pipeline,
-  `_PIPELINE_CONCURRENCY = 2`), `services/musicbrainz.py` (1 req/s),
-  `scan_locks` global lock; e2e seeds take 4-10 min.
-- **Existing tests**: rate-limit tests (no network), e2e seed timing.
-- **Likely subsystem/root area**: discovery performance.
-- **Related issues**: BUG-13, BUG-10, FINDING-C.
-- **Notes**: performance work needs care with MB etiquette (1 req/s is a hard
-  politeness constraint).
-
-### BUG-19 — Apple Music catalog preferred over Deezer as primary source
-- **Status**: BLOCKED_BY_PRODUCT_DECISION
-- **Current observable behavior**: discovery priority is MB → (cross-provider)
-  Deezer, iTunes, Discogs in `NAME_SEARCH_PROVIDERS` order. The user believes
-  Apple Music's catalog is more consistent and asked for it as primary with
-  fallback to the others.
-- **Expected behavior**: unresolved product decision (provider priority ladder
-  for discovery/name-search; per-artist override?).
-- **Reproduction/evidence**: user report; `providers/base.py:31`
-  (`NAME_SEARCH_PROVIDERS = (mb, deezer, itunes, discogs)`),
-  `providers/__init__.py:38-42`.
-- **Existing tests**: `test_discovery.py` cross-provider tests assume current
-  order (name-match requirement).
-- **Likely subsystem/root area**: provider orchestration.
-- **Related issues**: BUG-6, BUG-8.
-- **Notes**: changing priority affects dedup behavior and homonym behavior.
-
----
-
-## B. Independently discovered findings
-
-### FINDING-A — e2e:13 A5 (login timing) fails in QUICK mode
-- **Status**: OPEN
-- **Current observable behavior**: the last recorded e2e:13 run (QUICK mode) has
-  1 FAIL: A5 — 5 unknown-user vs 5 wrong-password logins — because in QUICK mode
-  the inter-group wait (5 s) is far below the 300 s per-IP rate-limit window, so
-  the second group is rate-limited (429), and `all401` is false. In COMPLETE mode
-  the check should pass.
-- **Expected behavior**: scenario should either pass in QUICK or be marked
-  N.A./skipped; the app's limiter behavior itself is correct by design.
-- **Reproduction/evidence**: `e2e/artifacts/fase-13-results.md` (FAIL row,
-  evidence "unknown 37.0ms vs wrong-pw 3.0ms"); `e2e/scenarios/fase-13.js:1115-1130`;
-  `security.py:183-263` (5/300 s per IP, 10 global → 900 s).
-- **Existing tests**: `test_auth.py` (limiter unit tests pass).
-- **Likely subsystem/root area**: e2e test infrastructure.
-- **Related issues**: none.
-- **Notes**: test-infrastructure interaction, not an application bug.
-
-### FINDING-B — DELETE /api/v1/library: check-without-acquire race (TOCTOU)
-- **Status**: OPEN
-- **Current observable behavior**: `reset_library` guards with a read-only peek
-  (`scan_locks.running_scans()`) but never acquires the global scan lock; a scan
-  starting after the check can write rows concurrently with or right after the
-  wipe, leaving a "reset" library with fresh scan artifacts.
-- **Expected behavior**: a reset must never interleave with a running scan
-  (409 contract per phase 12b).
-- **Reproduction/evidence**: code: `api/library.py:43-44` (peek),
-  `scan_locks.py:32-40` (try_start). Timing race; hard to reproduce
-  deterministically.
-- **Existing tests**: `test_phase12b.py::test_reset_library_refused_while_scan_running`
-  (patches `running_scans`, does NOT exercise the concurrent-start race).
-- **Likely subsystem/root area**: library reset / scan concurrency.
-- **Related issues**: BUG-17 (adjacent lifecycle), FINDING-C (same family of
-  concurrency/state issues).
-- **Notes**: see REMEDIATION area 12.
-
-### FINDING-C — Level-2 feat scan re-processes rejected recordings every run
-- **Status**: OPEN
-- **Current observable behavior**: a recording whose releases all exist or were
-  filtered out (date/type/official) is **not** marked seen (`if not releases or
-  accepted_any` at `discovery.py:596-597`), so it is re-fetched (recording +
-  releases) on every weekly run, inflating MB traffic and scan duration.
-- **Expected behavior**: dedup intent: processed-but-rejected recordings should
-  not be re-fetched; failed fetches should be retried. (Product question: what
-  happens if `discovery_from_date` changes later — see REMEDIATION.)
-- **Reproduction/evidence**: code: `discovery.py:522-600`; recorded API calls in
-  consecutive runs.
-- **Existing tests**: `test_discovery.py::test_level2_already_seen_recording_skipped_without_extra_calls`
-  covers only the seen path.
-- **Likely subsystem/root area**: discovery level-2 / dedup state.
-- **Related issues**: BUG-18 (cost amplifier).
-- **Notes**: see REMEDIATION area 7 (discovery memory/performance).
-
-### FINDING-D — Stale empty `backend/data/app.db` in the local dev data directory
-- **Status**: OBSOLETE
-- **Current observable behavior**: a 0-table SQLite file exists in the dev
-  `DATA_DIR` (journal_mode=delete, not WAL). The app migrates it at boot, so it
-  is benign, but it can mask first-boot behavior in local debugging.
-- **Expected behavior**: informational/environmental; the file is gitignored and
-  non-functional.
-- **Reproduction/evidence**: `sqlite3 backend/data/app.db ".tables"` → empty.
-- **Existing tests**: none.
-- **Likely subsystem/root area**: dev environment hygiene.
-- **Related issues**: none.
-- **Notes**: mark OBSOLETE for remediation purposes; delete the file locally if
-  a clean dev baseline is desired.
-
-### FINDING-E — Login page bypasses the shared fetch wrapper
-- **Status**: OPEN
-- **Current observable behavior**: `Login.tsx` uses raw `fetch` (no 30 s abort
-  timeout, no `ApiError` mapping): on a black-holed network the Login button can
-  stay disabled indefinitely; 429 rate-limit responses surface as generic
-  "Something went wrong" instead of the server message.
-- **Expected behavior**: consistent with the rest of the app (timeout + server
-  detail surfaced; 13B-03 fixed mutations but not Login).
-- **Reproduction/evidence**: `Login.tsx:21-29` vs `api/client.ts:30-68`.
-- **Existing tests**: e2e:13 covers login flows but not black-holed networks.
-- **Likely subsystem/root area**: frontend login.
-- **Related issues**: none.
-- **Notes**: drop-in replacement with `apiFetch` (401-redirect is harmless here).
-
----
-
-## C. Additional defects/gaps found during this preparation pass
-
-### GAP-1 — Feed not invalidated after artist operations
-- **Status**: OPEN
-- **Current observable behavior**: adding/linking/ignoring/deleting artists
-  invalidates `['artists']` + `['artists-count']` only; the feed's
-  `matched_artists`/cards are not refreshed from artist operations (feed query
-  keys untouched), so highlighting/feed membership can be stale until refetch.
-- **Expected behavior**: feed reflecting artist changes (or explicit refresh).
-- **Reproduction/evidence**: `frontend/src/api/artists.ts` (102-250) invalidation
-  sets.
-- **Existing tests**: none.
-- **Likely subsystem/root area**: frontend cache invalidation.
-- **Related issues**: BUG-15, BUG-17.
-
-### GAP-2 — Orphan cover files left on disk by purge-orphans and artist deletion
-- **Status**: OPEN
-- **Current observable behavior**: only the full library reset deletes cover
-  files; `purge-orphans` and artist deletion remove DB rows but leave `*.jpg`
-  files in `COVERS_DIR` (unbounded growth over time).
-- **Expected behavior**: covers of removed releases should be cleaned (or
-  retention policy decided).
-- **Reproduction/evidence**: `releases.py:377-401` (no disk deletion),
-  `covers.py` (no deletion API), `library.py:54-57` (reset-only).
-- **Existing tests**: none.
-- **Likely subsystem/root area**: covers/storage.
-
-### GAP-3 — "other" release type exists but the feed UI cannot filter it
-- **Status**: OPEN
-- **Current observable behavior**: `release_types` accepts `other` and Settings
-  re-appends it on save, but the Feed chips are All/Albums/Singles/EPs only; no
-  way to show/hide `other` releases explicitly.
-- **Expected behavior**: unresolved product decision (expose an "Other" chip or
-  keep internal).
-- **Reproduction/evidence**: `Feed.tsx` TYPE_CHIPS (19-24),
-  `settings.py` validators (109-117).
-- **Existing tests**: none.
-- **Likely subsystem/root area**: feed UI / release types.
-
-### GAP-4 — Future-dated releases are silently excluded
-- **Status**: BLOCKED_BY_PRODUCT_DECISION
-- **Current observable behavior**: `release_in_range` requires `start <= today`;
-  a release dated tomorrow is rejected at discovery and never re-rescued — the
-  user sees nothing until the date passes.
-- **Expected behavior**: unresolved product decision (wait vs show with future
-  date).
-- **Reproduction/evidence**: `services/dates.py:46-52`; diagnostic dossier §16 #14.
-- **Existing tests**: `test_dates.py` (range windows include today-boundary cases).
-- **Likely subsystem/root area**: discovery date filtering.
-
-### GAP-5 — e2e/CI gaps: CI runs only ruff; production-stack checks pending
-- **Status**: OPEN
-- **Current observable behavior**: GitHub Actions runs `ruff check` only; pytest
-  (339 items) and e2e scenarios run locally only; e2e N.A. items J1 (Cloudflare),
-  J2 (Tailscale), J3 (audit log), J5 (backup integrity on prod stack) are
-  pending real-stack verification (former phase 14). J1/J2 are now N.A. by user
-  decision: the sidecar-based production stack was removed on 2026-08-12 —
-  port 8067 is published and tunnels run externally; J3/J5 remain verifiable on
-  the plain `app` stack.
-- **Expected behavior**: decided by remediation (CI coverage, production-stack
-  verification plan).
-- **Reproduction/evidence**: `.github/workflows/ci.yml` (20 lines, ruff only);
-  `e2e/artifacts/fase-13-results.md` (N.A. rows).
-- **Existing tests**: n/a.
-- **Likely subsystem/root area**: CI / verification infrastructure.
-- **Related issues**: FINDING-A.
-
-### GAP-6 — `POST /errors` report endpoint and frontend helpers unused
-- **Status**: OPEN
-- **Current observable behavior**: the client-error-reporting path exists but is
-  dead code (`useReportError`, `postError` never imported; no UI uses
-  `POST /errors`).
-- **Expected behavior**: unresolved (wire it into the Errors page as a report
-  form, or remove).
-- **Reproduction/evidence**: `frontend/src/api/errors.ts:30-58` (no usage sites);
-  `api/errors.py:67-81`.
-- **Existing tests**: `test_phase12b.py` (endpoint level).
-- **Likely subsystem/root area**: errors feature.
-- **Related issues**: BUG-12, BUG-16.
-
-### GAP-7 — Dead code / unused artifacts in discovery
-- **Status**: OPEN
-- **Current observable behavior**: `discovery._ALLOWED_TYPES` (69) and
-  `stats["release_groups_found"]` (786) are never used; `beatport._MAX_PAGES`
-  unused.
-- **Expected behavior**: informational.
-- **Reproduction/evidence**: `services/discovery.py`, `services/providers/beatport.py`.
-- **Existing tests**: none.
-- **Likely subsystem/root area**: code hygiene.
-- **Related issues**: none.
-- **Notes**: low priority; included for completeness.
-
-### GAP-8 — `scan_locks.finish` releases the global lock without ownership check
-- **Status**: OPEN
-- **Current observable behavior**: `finish(scan_type)` pops its own type entries
-  but releases the shared lock regardless of which type acquired it; a logic
-  error in callers could release the lock while another type still runs.
-- **Expected behavior**: informational (currently safe because callers are
-  disciplined).
-- **Reproduction/evidence**: `services/scan_locks.py:58-68`.
-- **Existing tests**: none specifically.
-- **Likely subsystem/root area**: scan concurrency.
-- **Related issues**: FINDING-B.
-
-### GAP-9 — Login rate-limiter state not resettable externally (e2e friction)
-- **Status**: OPEN
-- **Current observable behavior**: limiter counters are process-global and
-  cannot be reset between e2e steps (cause of FINDING-A's QUICK-mode wait
-  workarounds).
-- **Expected behavior**: informational (test-hook or scenario-side fix is
-  remediation work).
-- **Reproduction/evidence**: `security.py:183-263`; `fase-13.js` A4/A5 blocks.
-- **Existing tests**: n/a.
-- **Likely subsystem/root area**: e2e infrastructure.
-- **Related issues**: FINDING-A.
-
----
+Census: 62 rows = 33 legacy issue entries + 29 post-remediation findings.
 
 ## Summary counts
 
-| Status | Count |
+| Status | Legacy (33) | Post-remediation (29) | Total |
+|---|---|---|---|
+| OPEN | 7 | 12 | 19 |
+| RESOLVED | 24 | 4 | 28 |
+| REJECTED | 2 | 8 | 10 |
+| DUPLICATE | 0 | 5 | 5 |
+| BLOCKED_PRODUCT_DECISION | 0 | 0 | 0 |
+| **Total** | **33** | **29** | **62** |
+
+The 19 OPEN rows split into 16 active technical residuals (section A) and 3
+documentation-class residuals (section B). The old register's summary block was
+internally inconsistent (it claimed 34 total / 26 OPEN while its own entries
+numbered 33 with 25 OPEN) and cited a stale test count of 339; both are
+captured in section B (D-DOC-1, D-DOC-2) and fixed by this rewrite.
+
+---
+
+## A. Open residuals (active technical issues)
+
+Detailed sections only for real, currently-open residuals. Each cites the
+current code/config/test evidence and the user impact.
+
+### A.1 FIND-61-1: Non-MB provider candidates forced `primary` role (implementation discrepancy)
+
+- **Status**: OPEN
+- **Current behavior**: `discovery.py:801` records every non-MusicBrainz
+  level-1 candidate with `role=None if provider.name == PROVIDER_MB else
+  ROLE_PRIMARY`, i.e. `primary` is invented for all of them. The `_role_for`
+  heuristic docstring (`discovery.py:278-284`) claims "For non-MB providers the
+  credit always starts with the artist's own name → primary", which is
+  empirically false for Deezer contributor albums: the live Enzo Dong case
+  records `role='primary'` while the release's actual main artist is Pepp 'O
+  Red (task-61 live validation).
+- **Expected behavior**: `specs/NUCS_PRODUCT_SPEC.md` §10 (lines 371-375): an
+  authoritative release-to-artist relation from a non-MusicBrainz provider that
+  lacks reliable role metadata is shown with the generic `Tracked artist` label.
+  `primary`, `featured` and `remixer` must never be invented in that situation;
+  they stay valid only where provider metadata supports the relation. §10
+  (lines 381-383) explicitly records this deviation as an open implementation
+  discrepancy and links this register.
+- **User impact**: on a contributor album whose main artist is someone else,
+  the tracked artist is labelled "Main artist" instead of the generic
+  `Tracked artist`.
+
+### A.2 SeenRecording.artist_id overwrite on re-evaluation
+
+- **Status**: OPEN
+- **Current behavior**: `_upsert_recording_state` (`discovery.py:492-528`)
+  upserts on the `recording_mbid` primary key and its `on_conflict_do_update`
+  `set_` includes `"artist_id": artist_id` (`discovery.py:521`), overwriting
+  the original value on every re-evaluation. The model contract
+  (`models.py`, `SeenRecording` docstring) says `artist_id` records "which
+  tracked artist surfaced it first". `first_seen` is correctly preserved.
+- **Expected behavior**: match the documented contract: `artist_id` should be
+  written only on insert (drop `"artist_id"` from `set_`), mirroring the
+  `first_seen` preservation pattern. Functionally harmless today because
+  `recording_mbid` is globally unique, but it is a docstring-vs-code contract
+  violation with a one-line fix.
+- **User impact**: none observable today; contract drift only.
+
+### A.3 Final-audit LOW carryovers
+
+#### A.3.1 FA-LOW-1: Orphan-cleanup legacy `Artist.mbid` proxy
+
+- **Status**: OPEN
+- **Current behavior**: `_cleanup_orphan_artists` (`library_scan.py:238`)
+  deletes weak-source artists whose WHERE clause is
+  `Artist.mbid.is_(None)` as the "matched" proxy (`library_scan.py:248`). A
+  weak-source artist with only a non-MB identity, no files and no releases is
+  deleted on a full scan, and the identity rows cascade.
+- **Expected behavior**: use `~has_identity` in the cleanup WHERE instead of
+  the legacy `mbid` mirror (optional hardening).
+- **User impact**: a non-MB-tracked, file-less artist can disappear from the
+  tracked list after a full library scan.
+
+#### A.3.2 FA-LOW-2: `POST /artists` stray row on identity conflict
+
+- **Status**: OPEN
+- **Current behavior**: `add_artist` commits the `Artist` row with the legacy
+  `mbid`/provider columns set *before* calling `attach_external_identity`
+  (`artists.py:456-457` commit, `:464-470` attach). On `IdentityConflictError`
+  it returns 409 but the committed row remains: legacy `mbid` set, no identity
+  row. Auto-match skips it via `if not list_identities`, so it sits as an
+  effectively-unlinked artist.
+- **Expected behavior**: attach the identity before commit, or roll back the
+  artist row on conflict (optional hardening).
+- **User impact**: a failed re-add of an already-tracked artist can leave a
+  stray, unlinked duplicate row.
+
+#### A.3.3 FA-LOW-3: Legacy `mbid` mirror reads (legacy-column retirement umbrella)
+
+- **Status**: OPEN
+- **Current behavior**: all mirror reads/writes are still present and verified:
+  `mb_matching.py:135` (`row.mbid is not None` short-circuit), `:145`
+  (write-mirror `row.mbid = provider_id`), `:196`
+  (`artist_row.mbid is not None or any(identity…)`), `:243`
+  (`Artist.mbid.is_(None)` filter), and `artists.py:519` (ignored split-parent
+  check `row.mbid is None`). These are mirror-only reads with no behavioral
+  authority; status derives from the identity table.
+- **Expected behavior**: switch to the identity table when the legacy
+  `mbid`/provider columns are retired (spec phase-8 legacy-column retirement,
+  the umbrella residual for this family).
+- **User impact**: none today; keeps the contract-freeze write-mirror in place
+  until the retirement.
+
+### A.4 Phase-1 carryovers
+
+#### A.4.1 F2-K2: `_upsert_identity` missing defensive `ValueError` catch
+
+- **Status**: OPEN
+- **Current behavior**: `_upsert_identity` (`artists.py:205-229`) catches
+  `UnknownProviderError` → 422 and `IdentityConflictError` → 409 only;
+  `attach_external_identity` raises a plain `ValueError("provider_id is
+  required")` (`artist_identity.py:78`) which would surface as a 500 for any
+  future caller that skips pre-validation. Unreachable today (all callers
+  pre-validate).
+- **Expected behavior**: catch `ValueError` → 422.
+- **User impact**: none today; defensive hardening.
+
+#### A.4.2 F2-K3: Unlink audit loses the removed `provider_id`
+
+- **Status**: OPEN
+- **Current behavior**: `delete_artist_identity` (`artists.py:634-663`) calls
+  `_audit_identity(db, client_ip, row, "unlink", provider)` at `:663` with
+  `provider_id` defaulting to `None`. The identity row is already deleted, so
+  the removed provider id is lost from the audit trail.
+- **Expected behavior**: capture `identity.provider_id` before
+  `unlink_identity` and pass it to the audit call.
+- **User impact**: the audit log cannot say which exact identity was unlinked.
+
+### A.5 Frontend gaps
+
+#### A.5.1 GAP-1: Feed not invalidated after artist operations
+
+- **Status**: OPEN
+- **Current behavior**: every mutation in `frontend/src/api/artists.ts`
+  (add/link/ignore/delete, 7 call sites) invalidates `['artists']` +
+  `['artists-count']` only; `['releases']` is untouched by artist operations,
+  so feed membership and highlighting can lag until a manual refetch.
+- **Expected behavior**: feed reflects artist changes (or an explicit refresh
+  affordance).
+- **User impact**: minor UX staleness: a newly added/linked artist's releases
+  may not appear in the open feed until a refetch.
+
+#### A.5.2 fetchText lacks a timeout
+
+- **Status**: OPEN
+- **Current behavior**: `fetchText` (`frontend/src/api/client.ts:92-111`) is a
+  raw `fetch` with no `AbortController` signal, unlike the rest of the app's
+  `apiFetch` (30 s timeout). It backs diagnostic report generation
+  (`useDiagnosticReport`, `errors.ts:124`).
+- **Expected behavior**: add the same timeout/signal discipline used by
+  `apiFetch`.
+- **User impact**: on a black-holed network the diagnostic export can hang
+  indefinitely; non-blocking UX consistency gap.
+
+#### A.5.3 GAP-6: `POST /errors` report endpoint and client helpers unused
+
+- **Status**: OPEN
+- **Current behavior**: `useReportError` (`errors.ts:32`) and `postError`
+  (`errors.ts:134`) have zero call sites in `frontend/src/` (grep finds only
+  the definitions); the `POST /errors` endpoint exists but no UI uses it.
+- **Expected behavior**: wire the helpers into a report form, or remove them.
+- **User impact**: dead code; client-side crash reporting is never exercised.
+
+### A.6 GAP-2: Orphan cover files left on disk
+
+- **Status**: OPEN
+- **Current behavior**: `purge_orphan_releases` (`releases.py:393-414`)
+  deletes only DB rows (ReleaseTrack/State/Artist/Release), never cover files;
+  only the full library reset deletes covers (`library.py` reset); artist
+  deletion also leaves covers; `covers.py` exposes no deletion API.
+- **Expected behavior**: covers of removed releases are cleaned, or a retention
+  policy is decided.
+- **User impact**: unbounded disk growth in `COVERS_DIR` over time.
+
+### A.7 CI and verification gaps
+
+#### A.7.1 GAP-5: CI runs only Ruff; production-stack checks pending
+
+- **Status**: OPEN
+- **Current behavior**: `.github/workflows/ci.yml` (20 lines) runs
+  `ruff check` only, on `main` push/PR only; pytest (604 collected) and e2e run
+  locally only; J3 (audit log) and J5 (backup integrity) remain unverified on
+  the production stack. J1/J2 (Cloudflare/Tailscale sidecars) are N.A. by
+  decision: the sidecar stack was removed, port 8067 is published and tunnels
+  run externally.
+- **Expected behavior**: decided CI coverage plus a production-stack
+  verification plan.
+- **User impact**: CI regression risk (lint-only gate); no automated
+  regression signal on this branch.
+
+#### A.7.2 FINDING-A: e2e:13 A5 (login timing) fails in QUICK mode
+
+- **Status**: OPEN (test infrastructure; LOW; root cause = GAP-9)
+- **Current behavior**: in QUICK mode the inter-group wait (`fase-13.js`) is
+  far below the per-IP 300 s rate-limit window, so the second login group can
+  be 429'd and `all401` ends up false. The app's limiter itself is correct by
+  design (`security.py`, 5/300 s per IP, 10-fail global 900 s lockout).
+- **Expected behavior**: the scenario passes in QUICK mode or is marked
+  N.A./skipped.
+- **User impact**: none; test-infrastructure interaction only.
+
+#### A.7.3 GAP-9: Login rate-limiter state not resettable externally
+
+- **Status**: OPEN (informational; root cause of FINDING-A)
+- **Current behavior**: limiter counters are process-global with no reset hook
+  (`security.py` `LoginRateLimiter`); e2e works around the window with waits.
+- **Expected behavior**: a test hook or a scenario-side fix.
+- **User impact**: e2e friction only, same as FINDING-A.
+
+### A.8 Hygiene residuals
+
+#### A.8.1 GAP-7: Dead code in discovery
+
+- **Status**: OPEN (informational, LOW)
+- **Current behavior**: `_ALLOWED_TYPES` (`discovery.py:106`),
+  `stats["release_groups_found"]` (`discovery.py:1235`) and
+  `beatport._MAX_PAGES` (`beatport.py:35`) are unused.
+- **Expected behavior**: remove on the next cleanup pass.
+- **User impact**: none.
+
+#### A.8.2 Untracked background match tasks
+
+- **Status**: OPEN (accepted residual, tracked here)
+- **Current behavior**: `add_artist` fires
+  `asyncio.get_running_loop().create_task(_match_in_background(row.id))`
+  (`artists.py:476`, fn at `:355`): a fire-and-forget MB match with no
+  registry entry, no cancellation and no shutdown coordination; and
+  `_match_pending_after_scan` (`library_scan.py:427-442`) runs inside the
+  library task without a per-phase registry entry. Both are by design
+  (the spec allows no new scan type), but they remain untracked background
+  work for the issue registry.
+- **Expected behavior**: register/coordinate these matches, or explicitly
+  document the design limitation.
+- **User impact**: a background match can be lost at shutdown; observability
+  only.
+
+---
+
+## B. Documentation-class residuals (truthful execution-time status)
+
+These three rows are part of the 19 OPEN dispositions but are not active
+technical issues. Their status reflects what the register does about them.
+
+### B.1 D-DOC-1: Stale summary counts in the old register
+
+- **Status**: RESOLVED BY THIS REGISTER
+- **What it was**: the old `KNOWN_ISSUES.md` summary claimed 34 total / 26 OPEN
+  while its own item-level statuses enumerated 33 entries with 25 OPEN.
+- **Disposition**: the discrepancy was the baseline artifact of this rewrite;
+  the counts here are recomputed from the full 62-row census (33 + 29) and no
+  stale totals remain.
+
+### B.2 D-DOC-2: Stale pytest count ("339 items")
+
+- **Status**: RESOLVED BY THIS REGISTER
+- **What it was**: the old GAP-5 text cited "pytest (339 items)"; the live
+  collection is 604 tests (`cd backend && .venv/bin/python -m pytest
+  --collect-only -q`, verified 2026-08-13 at HEAD `bca93c0`).
+- **Disposition**: the resolved-history entry for GAP-5 in section C cites the
+  current 604-test figure; no stale count remains anywhere in this file.
+
+### B.3 F2-NEW: Stale e2e docs (`e2e/README.md`, `e2e/AGENTS.md`)
+
+- **Status**: TRACKED TO TASK 7 (E2E/user docs), not a technical issue
+- **What it is**: `e2e/AGENTS.md:50` still says fase-12/12b/13/15
+  "self-restart the backend", and fase-15 descriptions still mention the
+  removed Match column; the same drift was reported by F4 and the task-62 NIT
+  (see Duplicates).
+- **Disposition**: docs-only cleanup assigned to task 7 of the documentation
+  reconciliation. Listed here so the identifier stays live with its owners;
+  it is not a code defect.
+
+---
+
+## C. Resolved in v1.1.0
+
+Compact, evidence-based history of the 28 RESOLVED dispositions. Each row keeps
+its original identifier, the primary evidence anchor in current code/tests, and
+the version context. Nothing marked implemented is left OPEN.
+
+### C.1 Legacy issue entries (24)
+
+| ID | Disposition | Primary evidence anchor | Version |
+|---|---|---|---|
+| BUG-1 Navbar not sticky | RESOLVED: sticky header | `App.tsx` `sticky top-0 z-20`; manual QA NAV-9 PASS | v1.1.0 |
+| BUG-2 Match column useless | RESOLVED: removed per decision | `Artists.tsx` columns = Name/Status/Releases/Actions; status pills | v1.1.0 |
+| BUG-3 No fast way to change a wrong MB match | RESOLVED: identity manager Replace/Unlink/Unlink-all | `artists.py` identity endpoints; ManageArtistModal | v1.1.0 |
+| BUG-4 Split artists never matchable via other catalogs | RESOLVED: provider-agnostic tracking | level-1 queries stored identities (`discovery.py` `_identity_artist_snapshot`) | v1.1.0 |
+| BUG-5 Source column confusing | RESOLVED: removed per decision | `Artists.tsx` (no source/provider chips); manual QA rows 4/4m | v1.1.0 |
+| BUG-6 Homonym contamination in feed | RESOLVED: authoritative-relation-only highlight | `_matched_artists_for` ReleaseArtist JOIN-only (`releases.py`); PiKi revalidated | v1.1.0 |
+| BUG-7 Add-artist candidate list no provider links | RESOLVED: candidate rows link out | `Artists.tsx` CandidateRow provider links | v1.1.0 |
+| BUG-8 Duplicate releases in feed | RESOLVED: conservative edition dedup | `match_release` precedence in `release_dedup.py`; Axwell cross-provider merge | v1.1.0 |
+| BUG-9 Split/featured tracking from metadata | RESOLVED: verified live | Enzo Dong/Panama live case via Deezer identity path; canonical collapse | v1.1.0 |
+| BUG-10 Progress bar stuck at 100% | RESOLVED: indeterminate phases reset progress | `ActivityBar.tsx` pulse when `total==0`; regression tests | v1.1.0 |
+| BUG-11 "Search again by name" not wanted | RESOLVED: button removed | grep 0 hits in `frontend/src/`; free-text search only | v1.1.0 |
+| BUG-12 Errors: no mark read/all; badge never clears | RESOLVED: read/unread model | `read_at`, mark-all `WHERE read_at IS NULL`; navbar badge = unread | v1.1.0 |
+| BUG-13 No way to cancel a sync | RESOLVED: cooperative cancellation | Cancel in ActivityBar; `CancelledError` → `cancelled`; lock released in `finally` | v1.1.0 |
+| BUG-14 Refresh during sync must continue | RESOLVED: kept as resolved record | server-side task survives refresh; `try_start` 409; e2e:15/16 | v1.1.0 |
+| BUG-15 Highlighting inconsistent | RESOLVED: deterministic from authoritative rows | CreditsLine/TrackedName from `matched_artists` only | v1.1.0 |
+| BUG-16 Errors reportable format | RESOLVED: scrubbed Markdown diagnostic + JSON | diagnostic report; secrets scrubbed pre-INSERT | v1.1.0 |
+| BUG-17 Feed shows 1 release until refresh | RESOLVED: scan-completion invalidation | `useScanCompletion.ts` invalidates feed/artist caches on running→idle | v1.1.0 |
+| BUG-18 Release discovery slow | RESOLVED: algorithmic acceptance met | spec PERFORMANCE ACCEPTANCE: Apple-first, filter-aware memory, fingerprint-gated; wall-clock stays rate-limit-bound by design | v1.1.0 |
+| BUG-19 Apple Music preferred over Deezer | RESOLVED: Apple-first per decision | `PROVIDER_ITUNES` first with observable `fallback_reasons`; live `provider_calls={"itunes":1}` | v1.1.0 |
+| FINDING-B Reset-library TOCTOU | RESOLVED: race-safe mutual exclusion | `try_acquire_reset` via meta-lock; 409 both directions; `test_scan_locks.py` | v1.1.0 |
+| FINDING-C Level-2 re-processes rejected recordings | RESOLVED: evaluation memory | `evaluation_state` + `policy_fingerprint`; `test_discovery.py` seen-recording tests | v1.1.0 |
+| FINDING-E Login bypasses shared fetch wrapper | RESOLVED: login uses `apiFetch` | `Login.tsx` with `redirectOn401:false`, 30 s timeout, error mapping | v1.1.0 |
+| GAP-4 Future-dated releases silently excluded | RESOLVED: Upcoming feature per decision | spec §5; `classify_release_date`, Upcoming view/tab, `today_override` internal | v1.1.0 |
+| GAP-8 `scan_locks.finish` without ownership check | RESOLVED: release-scoped to own entry | `scan_locks.py` `finish` pops its own registered entry; docstring | v1.1.0 |
+
+### C.2 Post-remediation findings (4)
+
+| ID | Disposition | Primary evidence anchor | Version |
+|---|---|---|---|
+| FIND-61-2 SQLite write held across network await | RESOLVED: committed-before-await | `db.commit()` after `_mark_recording_failed`/`_mark_recording_seen` (`discovery.py`); regression `test_discovery.py` second-session visibility; commit `b608cf2` | v1.1.0 |
+| Oracle LOW-1 `today_override` exposed via settings API/UI | RESOLVED: internal-only | `dates.py` internal-only; absent from `_VALIDATORS`/Settings UI; `test_settings_api.py` | v1.1.0 |
+| `try_acquire_reset` docstring "no await between them" | RESOLVED: docstring rewritten, meta-lock documented | `scan_locks.py` `try_acquire_reset` | v1.1.0 |
+| Three-provider Axwell fixture gap | RESOLVED: fixture coverage added | `test_discovery.py` Axwell fixtures | v1.1.0 |
+
+---
+
+## D. Rejected / non-issues (compact rationale)
+
+All 10 REJECTED dispositions, each with its reason. None is a real residual.
+
+| ID | Reason for rejection |
 |---|---|
-| OPEN | 26 |
-| PARTIALLY_FIXED | 2 |
-| FIXED | 1 |
-| CANNOT_REPRODUCE | 0 |
-| OBSOLETE | 1 |
-| BLOCKED_BY_PRODUCT_DECISION | 4 |
-| **Total** | **34** |
+| FINDING-D: Stale empty `backend/data/app.db` | OBSOLETE: file no longer present (`ls backend/data/` → only `covers/`); non-functional, gitignored, migrated at boot. |
+| GAP-3: `other` type not filterable in feed | Current behavior IS the product decision: `other` stays internal/backend, not exposed as a Feed/Settings filter. Deliberate. |
+| F1-A: ~10 commits batched plan tasks (letter deviation) | Accepted documented process deviation: ledger-recorded, conventional messages, APPROVE verdict; not an application defect. |
+| F1-B: Gate evidence files missing at plan-named paths | Gate reviews recorded in the orchestration issues file; APPROVE verdicts; process-only. |
+| F1-INFO ×2: uncommitted orchestration artifacts; "verified, no code changes" tasks | Expected final-wave orchestration state and consistent plan records; not defects. |
+| F2 `_run_discovery_task` "failed on cancel" log | Not reproducible: `CancelledError` is a `BaseException`, the `except Exception` handler never fires for cancellations. |
+| Release-note: upstream catalog gaps (iTunes same-name PiKi; Axwell 3-title edition) | Deliberate documented non-fix: matcher deliberately not weakened; not a defect. |
+| Release-note: internal `itunes` key load-bearing and kept | Deliberate per guardrail and product decision; key not renamed. |
+| Release-note: e2e fase-15/16 require a live backend | Documented test-infra characteristic (fase-16 hermetic; fase-15 needs MB network seed), not a defect. |
+
+---
+
+## E. Duplicate mapping
+
+These 5 DUPLICATE rows point at their canonical identifier; nothing is lost.
+
+| Duplicate | Canonical identifier |
+|---|---|
+| Release-note FIND-61-1 (BLOCKED_PRODUCT_DECISION label) | FIND-61-1 (A.1, reclassified OPEN): the release-note label is stale and the finding lives in A.1 |
+| Release-note "three pre-existing LOW findings" | FA-LOW-1, FA-LOW-2, FA-LOW-3 (A.3) |
+| F1-C: Phase-1 Low carry-overs unfixed | F2-K2, F2-K3, FA-LOW-2 (A.4.1, A.4.2, A.3.2) |
+| F4 observation: same e2e docs drift | F2-NEW (B.3) |
+| task-62 NIT: same e2e docs drift | F2-NEW (B.3) |
+
+FINDING-A and GAP-9 are intentionally NOT collapsed: they are distinct layers
+(symptom vs root cause) and stay as two OPEN rows (A.7.2, A.7.3).
