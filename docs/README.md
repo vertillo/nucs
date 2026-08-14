@@ -28,6 +28,21 @@ for current behavior.
 - **User:** how to install, run and verify the app. Root `README.md` and
   `e2e/README.md`.
 
+## Agent orientation layer (non-normative)
+
+`AGENTS.md` and every child `AGENTS.md` are **derived orientation layers** for
+coding agents:
+
+- they summarize, map and point to the canonical documents above;
+- they are **non-normative**;
+- they must not contain the only copy of a product requirement, an
+  implementation fact, a known defect or an operational requirement;
+- if anything in an `AGENTS.md` conflicts with a canonical document, the
+  canonical document wins.
+
+Agents that do not read `AGENTS.md` can still understand the repository from
+the canonical documents listed in this index.
+
 ## Important distinction
 
 > `CURRENT_IMPLEMENTATION.md` must NOT be read as desired product behavior. It

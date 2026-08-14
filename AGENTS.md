@@ -1,7 +1,6 @@
 # PROJECT KNOWLEDGE BASE — nucs
 
 **Generated:** 2026-08-14
-**Commit:** 9ddb313
 
 ## AUTHORITY
 

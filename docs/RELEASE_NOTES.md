@@ -1,8 +1,8 @@
 # NUCS Release Notes — v1.1.0
 
 Release of the spec-driven remediation (phases 0–10, `remediation/nucs`
-branch). The working spec of that remediation (`specs/NUCS_REMEDIATION_SPEC.md`)
-is historical and Git-recoverable (tag `v1.1.0`, `d36a864`); the current single
+branch). The remediation-era working specification is historical and
+Git-recoverable (tag `v1.1.0`, `d36a864`); the current single
 authority is [`specs/NUCS_PRODUCT_SPEC.md`](../specs/NUCS_PRODUCT_SPEC.md).
 **Semver: MINOR** — the release adds
 backward-compatible functionality (additive, backfilled identity model); the
