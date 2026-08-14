@@ -1,8 +1,19 @@
 # PROJECT KNOWLEDGE BASE — nucs
 
-**Generated:** 2026-08-13
-**Commit:** 1c423e9
-**Branch:** remediation/nucs
+**Generated:** 2026-08-14
+**Commit:** 9ddb313
+
+## AUTHORITY
+
+This file and every child `AGENTS.md` are a derived orientation layer for coding
+agents: they summarize, map and point to the canonical documents, never replace
+them. No fact needed to determine desired product behavior, current
+implementation, open defects or user operation may exist only here — canonical
+facts live in `specs/NUCS_PRODUCT_SPEC.md` (normative),
+`docs/CURRENT_IMPLEMENTATION.md` (descriptive as-built),
+`docs/KNOWN_ISSUES.md` (defect register) and the user/E2E documentation. If
+anything in this file conflicts with a canonical document, the canonical
+document wins.
 
 ## OVERVIEW
 
@@ -83,7 +94,8 @@ Centrality unmeasured (no LSP/codegraph); from code inspection.
 - **No row-moving/promotion copy jobs, no library-reset-as-migration-shortcut** — prefer expand → backfill → migrate → switch → contract.
 - **Don't treat `docs/CURRENT_IMPLEMENTATION.md` as desired behavior** — it describes as-built state; defects live in KNOWN_ISSUES.md.
 - **Do not invent product behavior** — new ambiguity = `BLOCKED_PRODUCT_DECISION`, never a guess; do not reopen decisions already resolved in the spec.
-- **Active docs must not depend on `.omo` state** — `.omo/**` is run-reporting, never a normative or evidentiary source for repository docs.
+- **Active docs must not depend on run-reporting state** — agent/automation
+  run-reporting is never a normative or evidentiary source for repository docs.
 - **Git delivery** — see the full rule set below; it is permanent and binding.
 - No `TODO/FIXME` markers exist repo-wide; don't add them casually — known defects are tracked in `docs/KNOWN_ISSUES.md`.
 - Never log secrets (passwords/tokens/Apprise URLs); error records and audit log scrub sensitive keys.
@@ -91,16 +103,43 @@ Centrality unmeasured (no LSP/codegraph); from code inspection.
 ## GIT DELIVERY (PERMANENT RULES)
 
 These rules are authoritative for every commit and push on this repository.
+They are deliberately generic: they do not depend on a particular development
+branch, automation harness or run.
 
-- Remain on the dedicated branch `remediation/nucs` for the entire run; never work directly on `main`.
-- For each verified coherent task: implementation → targeted verification → inspect the full diff → one atomic commit with a meaningful conventional message (`feat(scope):`, `fix(scope):`, `refactor(scope):`, `docs(scope):`, `test(scope):`, `chore(scope):`) → normal push to `origin/remediation/nucs`.
-- Commit only verified work: never commit changes that fail their acceptance criteria; one coherent task = one atomic commit; never one giant commit for the whole run, never a commit per tiny edit.
-- Before each push verify `git branch --show-current` returns `remediation/nucs`. If no upstream exists, establish it with `git push -u origin remediation/nucs`; afterward use ordinary `git push`.
-- If a push fails (authentication, missing remote, non-fast-forward, branch protection, or any other Git safety condition): preserve local commits, record the blocker, and NEVER recover with force push. A temporary push failure must not discard verified work.
-- Stage explicit paths only: never `git add -A`/`git add .`/`commit -a`. The working tree contains `.omo` run-state; it must never be swept into a commit. Each commit stages exactly the files belonging to the verified task.
-- NEVER automatically: merge `remediation/nucs` into `main`, push `main`, force-push (`--force` or `--force-with-lease`), destructively reset or rewrite published history, delete the remote remediation branch, publish packages/releases to external registries, or deploy to production. The final merge to `main` remains HUMAN-ONLY.
-- The release tag does NOT authorize merging to `main`. Versioning follows the single `vX.Y.Z` mechanism (`APP_VERSION` in `backend/app/config.py`, mirrored in `frontend/package.json` and `e2e/package.json`; no changelog convention, no per-phase bump); creating a tag is a release action, not a merge authorization.
-- Every completed phase ends with a Git delivery gate: verification passed, no accidental unrelated files, verified commits created and pushed, local branch and upstream state checked. Record commit SHAs, push results and test outcomes in the run ledger.
+- Work only on the repository's active development branch; never work directly
+  on `main`. Never push `main`, merge a development branch into `main`, or
+  delete a remote development branch without explicit owner authorization. The
+  final merge to `main` remains HUMAN-ONLY.
+- For each verified coherent task: implementation → targeted verification →
+  inspect the full diff → one atomic commit with a meaningful conventional
+  message (`feat(scope):`, `fix(scope):`, `refactor(scope):`, `docs(scope):`,
+  `test(scope):`, `chore(scope):`) → normal push to the branch's upstream.
+- Commit only verified work: never commit changes that fail their acceptance
+  criteria; one coherent task = one atomic commit; never one giant commit for a
+  whole run, never a commit per tiny edit.
+- Before each push verify the current branch and its upstream
+  (`git branch --show-current`, `git rev-parse @{u}`). If no upstream exists,
+  establish it safely with `git push -u origin <branch>`; afterward use
+  ordinary `git push`.
+- If a push fails (authentication, missing remote, non-fast-forward, branch
+  protection, or any other Git safety condition): preserve local commits,
+  record the blocker, and NEVER recover with force push. A temporary push
+  failure must not discard verified work.
+- Stage explicit paths only: never `git add -A`/`git add .`/`commit -a`. The
+  working tree may contain unrelated pre-existing changes and generated
+  run-state; never sweep them into a commit. Each commit stages exactly the
+  files belonging to the verified task.
+- NEVER automatically: force-push (`--force` or `--force-with-lease`),
+  destructively reset or rewrite published history, publish packages/releases
+  to external registries, or deploy to production.
+- The release tag does NOT authorize merging to `main`. Versioning follows the
+  single `vX.Y.Z` mechanism (`APP_VERSION` in `backend/app/config.py`, mirrored
+  in `frontend/package.json` and `e2e/package.json`; no changelog convention,
+  no per-phase bump); creating a tag is a release action, not a merge
+  authorization.
+- Every completed delivery unit ends with a delivery gate: verification passed,
+  no accidental unrelated files, verified commits created and pushed, local
+  branch and upstream state checked.
 
 ## UNIQUE STYLES
 
@@ -137,7 +176,7 @@ docker compose exec app python -m app.cli backup-now
 
 ## NOTES
 
-- **CI is lint-only** (`ruff check backend/ --config backend/pyproject.toml`) and only triggers on `main` pushes/PRs — `remediation/nucs` gets no push CI. Self-verify with pytest+ruff locally.
+- **CI is lint-only** (`ruff check backend/ --config backend/pyproject.toml`) and only triggers on `main` pushes/PRs — other branches get no push CI. Self-verify with pytest+ruff locally.
 - **CI ruff is unpinned** (`pip install ruff` → latest) vs local `ruff==0.16.1` — version-drift risk.
 - **No coverage threshold enforced** (pytest-cov installed, no `--cov-fail-under`). The ≥70% rule from the legacy v1 spec is not a requirement.
 - **Version/release facts**: `APP_VERSION = "1.1.0"` (`backend/app/config.py:11`); tag `v1.1.0` (annotated) at `d36a864`; `main` untouched (`origin/main` tip `21414f6` is the merge-base). No release automation beyond the manual annotated tag.
